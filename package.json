@@ -1,5 +1,5 @@
 {
-  "name": "craft-reels",
+  "name": "automontage-agent",
   "version": "1.0.0",
   "scripts": {
     "render": "remotion render"
