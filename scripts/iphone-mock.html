@@ -1,0 +1,59 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+<style>
+  @font-face{font-family:'Osw';src:url('../public/fonts/Oswald.ttf');}
+  @font-face{font-family:'JBM';src:url('../public/fonts/JetBrainsMono.ttf');}
+  @font-face{font-family:'One';src:url('../public/fonts/Onest.ttf');}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:1024px;height:1536px;overflow:hidden;font-family:'One',sans-serif;}
+  body{background:radial-gradient(120% 80% at 50% 15%,#F4ECDE,#E7D5BF);
+    display:flex;align-items:center;justify-content:center;position:relative;}
+  .grid{position:absolute;inset:0;opacity:.08;
+    background-image:linear-gradient(#3D2E24 1px,transparent 1px),linear-gradient(90deg,#3D2E24 1px,transparent 1px);
+    background-size:60px 60px;}
+  .tag{position:absolute;top:90px;left:70px;font-family:'JBM';font-weight:700;font-size:30px;
+    letter-spacing:4px;color:#B85C3E;text-transform:uppercase;}
+  /* iPhone */
+  .phone{position:relative;width:560px;height:1180px;background:#141210;border-radius:78px;
+    box-shadow:0 50px 110px rgba(61,46,36,.5), inset 0 0 0 6px #2a2622;transform:rotate(-2deg);padding:16px;}
+  .island{position:absolute;top:34px;left:50%;transform:translateX(-50%);width:150px;height:34px;
+    background:#000;border-radius:20px;z-index:5;}
+  .screen{width:100%;height:100%;border-radius:62px;overflow:hidden;background:#1c1a17;
+    display:flex;flex-direction:column;}
+  .preview{position:relative;height:52%;overflow:hidden;background:#000;}
+  .preview img{width:100%;height:100%;object-fit:cover;}
+  .play{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:96px;height:96px;
+    border-radius:50%;background:rgba(251,247,240,.85);display:flex;align-items:center;justify-content:center;}
+  .play::after{content:'';border-left:34px solid #3D2E24;border-top:20px solid transparent;
+    border-bottom:20px solid transparent;margin-left:8px;}
+  .app{flex:1;background:#211E1A;padding:26px 24px;color:#EDE4D3;}
+  .app .row{display:flex;align-items:center;gap:10px;font-family:'JBM';font-weight:700;
+    font-size:26px;letter-spacing:2px;color:#CC785C;text-transform:uppercase;}
+  .track{margin-top:20px;height:78px;border-radius:14px;background:#2C2823;display:flex;gap:6px;padding:8px;align-items:center;overflow:hidden;}
+  .clip{height:100%;border-radius:8px;flex:0 0 auto;}
+  .wave{margin-top:14px;height:54px;border-radius:12px;
+    background:repeating-linear-gradient(90deg,#CC785C 0 3px,transparent 3px 8px);opacity:.85;}
+  .lab{margin-top:20px;font-family:'Osw';font-weight:700;font-size:40px;color:#FBF7F0;text-transform:uppercase;}
+  .lab b{color:#CC785C;}
+</style></head>
+<body>
+  <div class="grid"></div>
+  <div class="tag">// монтаж в телефоне</div>
+  <div class="phone">
+    <div class="island"></div>
+    <div class="screen">
+      <div class="preview"><img src="phone_frame.jpg"><div class="play"></div></div>
+      <div class="app">
+        <div class="row">▶ таймлайн · монтаж</div>
+        <div class="track">
+          <div class="clip" style="flex-basis:90px;background:#CC785C"></div>
+          <div class="clip" style="flex-basis:130px;background:#7c9a6d"></div>
+          <div class="clip" style="flex-basis:70px;background:#D8A05C"></div>
+          <div class="clip" style="flex-basis:150px;background:#B85C3E"></div>
+          <div class="clip" style="flex-basis:60px;background:#6d7a9a"></div>
+        </div>
+        <div class="wave"></div>
+        <div class="lab">готово за <b>минуты</b></div>
+      </div>
+    </div>
+  </div>
+</body></html>

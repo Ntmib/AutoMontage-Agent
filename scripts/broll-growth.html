@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<style>
+  @font-face{font-family:'Oswald';src:url('../public/fonts/Oswald.ttf');}
+  @font-face{font-family:'JBM';src:url('../public/fonts/JetBrainsMono.ttf');}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:720px;height:1280px;overflow:hidden;}
+  body{
+    background:
+      radial-gradient(120% 80% at 70% 15%, #F6EFE3 0%, #EDE0CE 45%, #E4CBB4 100%);
+    position:relative;font-family:'Oswald',sans-serif;
+  }
+  /* сетка-подложка */
+  .grid{position:absolute;inset:0;opacity:.10;
+    background-image:linear-gradient(#3D2E24 1px,transparent 1px),linear-gradient(90deg,#3D2E24 1px,transparent 1px);
+    background-size:60px 60px;}
+  .tag{position:absolute;top:120px;left:60px;font-family:'JBM';font-weight:700;
+    font-size:30px;letter-spacing:4px;color:#B85C3E;text-transform:uppercase;}
+  .big{position:absolute;top:160px;left:56px;font-weight:700;font-size:120px;line-height:.9;
+    color:#3D2E24;text-transform:uppercase;}
+  svg{position:absolute;left:0;bottom:220px;}
+  .dot{position:absolute;width:26px;height:26px;border-radius:50%;background:#CC785C;
+    box-shadow:0 6px 18px rgba(184,92,62,.5);}
+  .peak{position:absolute;right:70px;bottom:640px;font-family:'JBM';font-weight:700;
+    font-size:56px;color:#CC785C;}
+</style></head>
+<body>
+  <div class="grid"></div>
+  <div class="tag">// динамика</div>
+  <div class="big">рост<br>х10</div>
+
+  <svg width="720" height="520" viewBox="0 0 720 520">
+    <defs>
+      <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#CC785C" stop-opacity="0.35"/>
+        <stop offset="1" stop-color="#CC785C" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <path d="M40,470 L180,410 L320,430 L460,270 L600,150 L680,60 L680,520 L40,520 Z" fill="url(#area)"/>
+    <polyline points="40,470 180,410 320,430 460,270 600,150 680,60"
+      fill="none" stroke="#B85C3E" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+
+  <div class="dot" style="left:32px;bottom:678px;"></div>
+  <div class="dot" style="left:452px;bottom:478px;"></div>
+  <div class="dot" style="left:592px;bottom:598px;background:#3D2E24;"></div>
+  <div class="peak">↗</div>
+</body></html>

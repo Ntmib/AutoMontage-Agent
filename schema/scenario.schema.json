@@ -1,0 +1,353 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "craft-reels монтажный лист",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source",
+    "blocks"
+  ],
+  "properties": {
+    "source": {
+      "type": "string"
+    },
+    "theme": {
+      "type": [
+        "string",
+        "object"
+      ]
+    },
+    "width": {
+      "type": "number"
+    },
+    "height": {
+      "type": "number"
+    },
+    "fps": {
+      "type": "number"
+    },
+    "durationInFrames": {
+      "type": "number"
+    },
+    "beatZoom": {
+      "type": "boolean"
+    },
+    "beatSec": {
+      "type": "number"
+    },
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "music": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ],
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "gain_db": {
+              "type": "number"
+            },
+            "ducking": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "threshold_db": {
+                  "type": "number"
+                },
+                "reduction_db": {
+                  "type": "number"
+                },
+                "attack_ms": {
+                  "type": "number"
+                },
+                "release_ms": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "start"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "LabelTop",
+              "InfoCard",
+              "CounterCard",
+              "SubtitleCard",
+              "CTACard",
+              "CaptionsAuto",
+              "BrollFullscreen"
+            ]
+          },
+          "start": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end": {
+            "type": "number",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "LabelTop"
+                }
+              }
+            },
+            "then": {
+              "additionalProperties": false,
+              "properties": {
+                "type": {},
+                "start": {},
+                "end": {},
+                "reason": {},
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "InfoCard"
+                }
+              }
+            },
+            "then": {
+              "additionalProperties": false,
+              "properties": {
+                "type": {},
+                "start": {},
+                "end": {},
+                "reason": {},
+                "tag": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "pills": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "countPill": {
+                  "type": "object"
+                },
+                "progress": {
+                  "type": "boolean"
+                },
+                "pos": {
+                  "type": [
+                    "string",
+                    "object",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "CounterCard"
+                }
+              }
+            },
+            "then": {
+              "additionalProperties": false,
+              "properties": {
+                "type": {},
+                "start": {},
+                "end": {},
+                "reason": {},
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "pos": {
+                  "type": [
+                    "string",
+                    "object",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "SubtitleCard"
+                }
+              }
+            },
+            "then": {
+              "additionalProperties": false,
+              "properties": {
+                "type": {},
+                "start": {},
+                "end": {},
+                "reason": {},
+                "text": {
+                  "type": "string"
+                },
+                "accent": {
+                  "type": "boolean"
+                },
+                "sub": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pos": {
+                  "type": [
+                    "string",
+                    "object",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "CTACard"
+                }
+              }
+            },
+            "then": {
+              "additionalProperties": false,
+              "properties": {
+                "type": {},
+                "start": {},
+                "end": {},
+                "reason": {},
+                "head": {
+                  "type": "string"
+                },
+                "btn": {
+                  "type": "string"
+                },
+                "pos": {
+                  "type": [
+                    "string",
+                    "object",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "CaptionsAuto"
+                }
+              }
+            },
+            "then": {
+              "additionalProperties": false,
+              "properties": {
+                "type": {},
+                "start": {},
+                "end": {},
+                "reason": {},
+                "groups": {
+                  "type": "array"
+                },
+                "pos": {
+                  "enum": [
+                    "top",
+                    "bottom"
+                  ]
+                },
+                "offset": {
+                  "type": "number"
+                },
+                "tail": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "BrollFullscreen"
+                }
+              }
+            },
+            "then": {
+              "additionalProperties": false,
+              "properties": {
+                "type": {},
+                "start": {},
+                "end": {},
+                "reason": {},
+                "image": {
+                  "type": "string"
+                },
+                "video": {
+                  "type": "string"
+                },
+                "caption": {
+                  "type": "string"
+                },
+                "fit": {
+                  "enum": [
+                    "cover",
+                    "contain"
+                  ]
+                },
+                "transition": {
+                  "enum": [
+                    "fade",
+                    "slide",
+                    "wipe"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
