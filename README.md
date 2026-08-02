@@ -34,6 +34,30 @@
 - **Node.js** (18+) и **Python 3** — обычно уже есть или агент поможет поставить;
 - **ffmpeg** — бесплатный, агент даст команду под твою систему.
 
+### Установка глобальной командой (Windows / macOS / Linux)
+
+Движок кросс-платформенный. После установки появляется команда `automontage`, доступная **из любой папки**.
+
+```bash
+git clone https://github.com/Ntmib/AutoMontage-Agent.git
+cd AutoMontage-Agent
+npm install            # Node-зависимости
+pip install -r requirements.txt   # Python: faster-whisper, opencv, numpy
+npm install -g .       # ставит глобальную команду automontage
+```
+
+Дальше — из ЛЮБОЙ папки:
+
+```bash
+automontage моё-видео.mp4            # результат появится в текущей папке
+automontage видео.mp4 --tighten --beat --autopos
+automontage --help                  # все опции
+```
+
+Особенности по ОС:
+- **macOS / Linux** — работает сразу. Если `python3` не находится — поставь через `brew install python` (Mac).
+- **Windows** — ставь Node.js и Python с официальных сайтов (при установке Python отметь «Add to PATH»). ffmpeg: `winget install Gyan.FFmpeg`. Команда `automontage` появится автоматически (npm сам делает `.cmd`-обёртку). Временные файлы, пути и запуск — уже адаптированы под Windows.
+
 ### 🔑 Ключ OpenAI — для генерации картинок
 
 Чтобы движок **генерировал картинки под смысл речи**, нужен собственный ключ OpenAI (модель `gpt-image`). Это платно — примерно копейки за картинку, платишь напрямую OpenAI.

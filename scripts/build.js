@@ -3,18 +3,21 @@
 // Использование:
 //   node scripts/build.js <video> [--theme craft] [--scenario file.json]
 //                                 [--id name] [--frames N] [--model base]
-const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { ROOT, tmp, python, remotionBin, execSync } = require('./env');
 
-const ROOT = path.join(__dirname, '..');
 const args = process.argv.slice(2);
-const video = args[0];
-if (!video || !fs.existsSync(video)) { console.error('❌ укажи существующий видеофайл'); process.exit(1); }
+let video = args[0];
+if (!video || !fs.existsSync(path.resolve(process.cwd(), video))) { console.error('❌ укажи существующий видеофайл'); process.exit(1); }
+video = path.resolve(process.cwd(), video);   // абсолютный путь — работает из любой папки (глобальный запуск)
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 
 const theme = opt('theme', 'craft');
 const id = opt('id', 'out');
+const outDir = opt('outdir', null);           // куда положить финал (по умолчанию out/ внутри пакета)
+const PY = python();                           // python3 / python — что есть в системе
+const audioWav = tmp(`${id}_audio.wav`);
 const model = opt('model', 'large-v3-turbo');
 const framesOverride = opt('frames', null);
 const scenarioFile = opt('scenario', null);
@@ -35,8 +38,8 @@ let video1 = video;
 if (args.includes('--reframe')) {
   const rmode = opt('reframe', 'track');
   log(`reframe → вертикаль (${rmode})…`);
-  const rOut = `/tmp/${id}_reframe.mp4`;
-  console.log('  ' + sh(`python3 scripts/reframe.py "${video}" ${rOut} --mode ${rmode}`).split('\n').filter(Boolean).slice(-1)[0]);
+  const rOut = tmp(`${id}_reframe.mp4`);
+  console.log('  ' + sh(`${PY} scripts/reframe.py "${video}" "${rOut}" --mode ${rmode}`).split('\n').filter(Boolean).slice(-1)[0]);
   video1 = rOut;
   const wh = sh(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "${rOut}"`).split('x');
   info.streams[0].width = +wh[0]; info.streams[0].height = +wh[1];
@@ -45,18 +48,18 @@ const W = info.streams[0].width, H = info.streams[0].height;
 
 // 2. аудио
 log('извлекаю аудио…');
-sh(`ffmpeg -y -i "${video1}" -vn -ar 16000 -ac 1 /tmp/${id}_audio.wav`);
+sh(`ffmpeg -y -i "${video1}" -vn -ar 16000 -ac 1 "${audioWav}"`);
 
 // 3. транскрипция
 log('транскрибирую (faster-whisper)…');
-sh(`python3 scripts/transcribe.py /tmp/${id}_audio.wav src/data/transcript.json ${model}`);
+sh(`${PY} scripts/transcribe.py "${audioWav}" src/data/transcript.json ${model}`);
 
 // 3b. (опц.) tighten — рез пауз + слов-паразитов
 let srcVideo = video1;
 if (args.includes('--tighten')) {
   log('уплотняю (паузы + слова-паразиты)…');
-  const tOut = `/tmp/${id}_tight.mp4`;
-  console.log('  ' + sh(`node scripts/tighten.js "${video1}" src/data/transcript.json ${tOut} src/data/transcript.json`).split('\n').filter(Boolean).slice(-2).join(' | '));
+  const tOut = tmp(`${id}_tight.mp4`);
+  console.log('  ' + sh(`node scripts/tighten.js "${video1}" src/data/transcript.json "${tOut}" src/data/transcript.json`).split('\n').filter(Boolean).slice(-2).join(' | '));
   srcVideo = tOut;
   // пересчитать длительность/кадры по уплотнённому видео
   const dur2 = parseFloat(sh(`ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 "${tOut}"`));
@@ -97,8 +100,9 @@ if (args.includes('--autopos')) {
   const slots = acc.map((b) => b.start).join(',');
   if (slots) {
     try {
-      sh(`python3 scripts/analyze-frames.py "${srcVideo}" --slots "${slots}" --out /tmp/${id}_place.json`);
-      const place = JSON.parse(fs.readFileSync(`/tmp/${id}_place.json`, 'utf8'));
+      const placeJson = tmp(`${id}_place.json`);
+      sh(`${PY} scripts/analyze-frames.py "${srcVideo}" --slots "${slots}" --out "${placeJson}"`);
+      const place = JSON.parse(fs.readFileSync(placeJson, 'utf8'));
       acc.forEach((b, i) => { if (place[i] && place[i].pos) b.pos = place[i].pos; });
       log(`autopos: позиции плашек расставлены по кадру (${acc.length})`);
     } catch (e) { log('⚠️ autopos не сработал: ' + e.message.split('\n')[0]); }
@@ -118,7 +122,7 @@ if (args.includes('--autotheme')) {
 
 // 6. исходник в public (пропустить, если это уже он)
 const destSrc = path.join(ROOT, 'public/source.mp4');
-if (path.resolve(srcVideo) !== destSrc) sh(`cp "${srcVideo}" public/source.mp4`);
+if (path.resolve(srcVideo) !== destSrc) fs.copyFileSync(path.resolve(srcVideo), destSrc);
 
 // 7. props
 const props = { source: 'source.mp4', theme: themeVal, blocks, width: W, height: H, fps: FPS, durationInFrames: durF, beatZoom, beatSec };
@@ -160,7 +164,7 @@ if (durF > 540) {
   log('длинный ролик — рендерю порциями (resume при сбое)');
   execSync(`node scripts/render-chunks.js Dynamic ${propsPath} ${rawMp4} ${durF} --chunk 300 --audio public/source.mp4`, { cwd: ROOT, stdio: 'inherit' });
 } else {
-  execSync(`npx remotion render src/index.js Dynamic ${rawMp4} --props=./${propsPath} --codec=h264 --log=error`,
+  execSync(`${remotionBin()} render src/index.js Dynamic ${rawMp4} --props=./${propsPath} --codec=h264 --log=error`,
     { cwd: ROOT, stdio: 'inherit' });
 }
 
@@ -183,14 +187,22 @@ if (props.audio && props.audio.music && props.audio.music.file) {
       d.attack_ms != null ? `--attack ${d.attack_ms}` : '',
       d.release_ms != null ? `--release ${d.release_ms}` : '',
     ].filter(Boolean).join(' ');
-    console.log('  ' + sh(`node scripts/mix-music.js ${outMp4} "${musPath}" /tmp/${id}_mus.mp4 ${flags}`).split('\n').filter(Boolean).slice(-1)[0]);
-    sh(`mv /tmp/${id}_mus.mp4 ${outMp4}`);
+    const musTmp = tmp(`${id}_mus.mp4`);
+    console.log('  ' + sh(`node scripts/mix-music.js ${outMp4} "${musPath}" "${musTmp}" ${flags}`).split('\n').filter(Boolean).slice(-1)[0]);
+    fs.copyFileSync(musTmp, path.join(ROOT, outMp4)); fs.unlinkSync(musTmp);   // кросс-платформенно (без unix mv)
   } else {
     log(`⚠️ музыка не найдена: ${musPath} — пропускаю`);
   }
 }
 
-console.log(`\n✅ готово: ${path.join(ROOT, outMp4)}  (${W}x${H}, аспект исходника сохранён)`);
+let finalPath = path.join(ROOT, outMp4);
+if (outDir) {   // глобальный запуск: положить результат рядом с пользователем
+  const dest = path.resolve(process.cwd(), outDir, `${id}.mp4`);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(finalPath, dest);
+  finalPath = dest;
+}
+console.log(`\n✅ готово: ${finalPath}  (${W}x${H}, аспект исходника сохранён)`);
 console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] — иначе Telegram сплющит вертикаль.');
 
 // --- helpers ---

@@ -48,7 +48,7 @@ const newDur = (endN - start0) - totalCut;
 
 if (!merged.length || newDur < MIN_DUR) {
   console.log(`ℹ нечего резать. Копирую исходник.`);
-  execSync(`cp "${video}" "${outMp4}" && cp "${trIn}" "${trOut}"`);
+  fs.copyFileSync(video, outMp4); fs.copyFileSync(trIn, trOut);
   process.exit(0);
 }
 
@@ -71,8 +71,10 @@ keep.forEach(([s, e], i) => {
   v += `[v${i}]`; au += `[a${i}]`;
 });
 f += `${v}concat=n=${keep.length}:v=1:a=0[vout];${au}concat=n=${keep.length}:v=0:a=1[aout]`;
-fs.writeFileSync('/tmp/tighten_filter.txt', f);
-execSync(`ffmpeg -y -i "${video}" -filter_complex_script /tmp/tighten_filter.txt -map "[vout]" -map "[aout]" -c:v libx264 -preset veryfast -crf 20 -c:a aac "${outMp4}"`, { stdio: 'pipe' });
+const filterFile = require('path').join(require('os').tmpdir(), `tighten_filter_${process.pid}.txt`);
+fs.writeFileSync(filterFile, f);
+execSync(`ffmpeg -y -i "${video}" -filter_complex_script "${filterFile}" -map "[vout]" -map "[aout]" -c:v libx264 -preset veryfast -crf 20 -c:a aac "${outMp4}"`, { stdio: 'pipe' });
+fs.unlinkSync(filterFile);
 
 // 4) пересчёт таймкодов: removedBefore(t) = сумма перекрытий cuts с [0,t]
 const removedBefore = (t) => merged.reduce((acc, [cs, ce]) => acc + (ce <= t ? ce - cs : (cs < t ? t - cs : 0)), 0);
