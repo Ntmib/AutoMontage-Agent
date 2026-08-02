@@ -5,6 +5,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { remotionBin } = require('./env');
 
 const ROOT = path.join(__dirname, '..');
 const a = process.argv.slice(2);
@@ -28,7 +29,7 @@ for (let from = 0; from < total; from += chunk) {
   }
   console.log(`· рендер порции ${from}-${to} …`);
   execSync(
-    `npx remotion render src/index.js ${comp} "${part}" --props=./${path.relative(ROOT, propsPath)} --frames=${from}-${to} --codec=h264 --log=error`,
+    `${remotionBin()} render src/index.js ${comp} "${part}" --props=./${path.relative(ROOT, propsPath)} --frames=${from}-${to} --codec=h264 --log=error`,
     { cwd: ROOT, stdio: 'inherit' }
   );
 }
@@ -38,7 +39,8 @@ console.log(`порций: ${parts.length} (переиспользовано ${d
 // ЦЕЛЬНЫМ из исходника (--audio), а из порций только видео.
 const audioSrc = a.indexOf('--audio') >= 0 ? a[a.indexOf('--audio') + 1] : null;
 const listFile = path.join(dir, `${id}_list.txt`);
-fs.writeFileSync(listFile, parts.map((p) => `file '${p}'`).join('\n'));
+// ffmpeg concat принимает прямые слэши на всех ОС (обратные слэши Windows ломают демуксер)
+fs.writeFileSync(listFile, parts.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'));
 if (audioSrc && fs.existsSync(path.resolve(ROOT, audioSrc))) {
   const glued = path.join(dir, `${id}_v.mp4`);
   execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${glued}"`, { cwd: ROOT, stdio: 'pipe' });

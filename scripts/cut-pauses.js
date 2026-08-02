@@ -36,10 +36,12 @@ keep.forEach(([s, e], i) => {
 });
 f += `${v}concat=n=${keep.length}:v=1:a=0[vout];${a}concat=n=${keep.length}:v=0:a=1[aout]`;
 
-fs.writeFileSync('/tmp/cutfilter.txt', f);
+const cutFilter = require('path').join(require('os').tmpdir(), `cutfilter_${process.pid}.txt`);
+fs.writeFileSync(cutFilter, f);
 execSync(
-  `ffmpeg -y -i "${video}" -filter_complex_script /tmp/cutfilter.txt -map "[vout]" -map "[aout]" ` +
+  `ffmpeg -y -i "${video}" -filter_complex_script "${cutFilter}" -map "[vout]" -map "[aout]" ` +
   `-c:v libx264 -preset veryfast -crf 20 -c:a aac "${out}"`,
   { stdio: 'pipe' }
 );
+fs.unlinkSync(cutFilter);
 console.log(`✅ ${out}`);
