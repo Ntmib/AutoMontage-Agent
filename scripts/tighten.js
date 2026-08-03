@@ -26,8 +26,17 @@ const isFiller = (w) => USE_FILLERS && FILLER.test(w.w);
 const start0 = words[0].s, endN = words[words.length - 1].e;
 
 // 1) собираем cut-интервалы: филлеры + тихие паузы
+// филлер режем НЕ по своим границам [w.s,w.e], а расширяем до соседних слов
+// (с PAD) — иначе естественные микропаузы ДО и ПОСЛЕ филлера (обычно там и
+// есть пауза — люди чаще всего мнутся перед "вот"/"ну") остаются нетронутыми
+// и складываются в заметную секундную тишину на месте одного короткого слова.
 let cuts = [];
-for (const w of words) if (isFiller(w)) cuts.push([w.s, w.e]);
+for (let i = 0; i < words.length; i++) {
+  if (!isFiller(words[i])) continue;
+  const prevEnd = i > 0 ? words[i - 1].e : start0;
+  const nextStart = i < words.length - 1 ? words[i + 1].s : endN;
+  cuts.push([prevEnd + PAD, nextStart - PAD]);
+}
 for (let i = 1; i < words.length; i++) {
   const gap = words[i].s - words[i - 1].e;
   if (gap > MAX_GAP) cuts.push([words[i - 1].e + PAD, words[i].s - PAD]);
@@ -62,7 +71,7 @@ console.log(`вырезано: интервалов ${merged.length} (филле
 
 // 3) ffmpeg trim+concat keep-сегментов
 let f = '', v = '', au = '';
-const XF = 0.008; // 8мс микро-фейд на стыках — убирает щелчки
+const XF = 0.04; // 40мс аудио-фейд на стыках — убирает щелчки и смягчает слышимость хард-катов
 keep.forEach(([s, e], i) => {
   const len = e - s;
   const fo = Math.max(0, len - XF).toFixed(3);

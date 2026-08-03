@@ -18,14 +18,19 @@ const POSES = [
 ];
 const smooth = (p) => p * p * (3 - 2 * p); // smoothstep
 
-export const Timeline = ({ source = 'source.mp4', theme = 'craft', blocks = [], beatZoom = false, beatSec = 3 }) => {
+export const Timeline = ({ source = 'source.mp4', theme = 'craft', blocks = [], beatZoom = false, beatSec = 3, stillWindows = [] }) => {
   const { fps, durationInFrames } = useVideoConfig();
   const t = getTheme(theme);
   const frame = useCurrentFrame();
+  const tSec = frame / fps;
+  const inStill = stillWindows.some(([s, e]) => tSec >= s && tSec < e);
 
   // зум-ритм: каждые beatSec секунд плавный переход к новому ракурсу
   let bg;
-  if (beatZoom) {
+  if (inStill) {
+    // презентация/слайд в кадре — камера неподвижна, не обрезаем содержимое экрана
+    bg = 'scale(1)';
+  } else if (beatZoom) {
     const P = beatSec * fps;
     const idx = Math.floor(frame / P);
     const a = POSES[idx % POSES.length];
@@ -36,7 +41,10 @@ export const Timeline = ({ source = 'source.mp4', theme = 'craft', blocks = [], 
     const y = a.y + (b.y - a.y) * p;
     bg = `scale(${s.toFixed(4)}) translate(${x.toFixed(2)}%, ${y.toFixed(2)}%)`;
   } else {
-    bg = `scale(${interpolate(frame, [0, durationInFrames], [1.0, 1.08]).toFixed(4)})`;
+    // лёгкое "дыхание" камеры на говорящей голове (без презентации): медленный синус вместо монотонного зума
+    const period = 9; // сек на цикл
+    const s = 1.035 + 0.025 * Math.sin((2 * Math.PI * tSec) / period);
+    bg = `scale(${s.toFixed(4)})`;
   }
 
   return (

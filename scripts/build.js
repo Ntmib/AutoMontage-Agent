@@ -76,12 +76,13 @@ log(`субтитров: ${CAPTIONS.length} групп`);
 
 // 5. монтажный лист (+ зум-ритм beatZoom)
 // приоритет: флаг --beat → из scenario-файла → выкл по умолчанию
-let blocks, beatZoom = false, beatSec = parseFloat(opt('beatSec', '3'));
+let blocks, beatZoom = false, beatSec = parseFloat(opt('beatSec', '3')), stillWindows = [];
 if (scenarioFile) {
   const sc = JSON.parse(fs.readFileSync(scenarioFile, 'utf8'));
   blocks = sc.blocks;
   if (sc.beatZoom != null) beatZoom = !!sc.beatZoom;
   if (sc.beatSec != null) beatSec = sc.beatSec;
+  if (sc.stillWindows != null) stillWindows = sc.stillWindows;
   log(`лист из файла: ${blocks.length} блоков`);
 } else {
   blocks = draftScenario(CAPTIONS);
@@ -125,7 +126,7 @@ const destSrc = path.join(ROOT, 'public/source.mp4');
 if (path.resolve(srcVideo) !== destSrc) fs.copyFileSync(path.resolve(srcVideo), destSrc);
 
 // 7. props
-const props = { source: 'source.mp4', theme: themeVal, blocks, width: W, height: H, fps: FPS, durationInFrames: durF, beatZoom, beatSec };
+const props = { source: 'source.mp4', theme: themeVal, blocks, width: W, height: H, fps: FPS, durationInFrames: durF, beatZoom, beatSec, stillWindows };
 
 // 7b. валидация листа ДО рендера (Фаза 2.1)
 const { validate } = require('./validate');

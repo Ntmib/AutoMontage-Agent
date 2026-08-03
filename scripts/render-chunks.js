@@ -35,19 +35,25 @@ for (let from = 0; from < total; from += chunk) {
 }
 console.log(`порций: ${parts.length} (переиспользовано ${done})`);
 
-// склейка порций concat. Аудио на стыках порций щёлкает → берём аудио
-// ЦЕЛЬНЫМ из исходника (--audio), а из порций только видео.
+// склейка порций: concat ФИЛЬТРОМ (покадрово), а не concat-демуксером с -c copy.
+// -c copy на стыках независимо отрендеренных h264-файлов теряет/дублирует кадры
+// (нет общего таймбейса), за 15-20 стыков набегает до секунды — отсюда рассинхрон
+// звука и картинки на длинных роликах. Фильтр решает задачу на уровне кадров:
+// итоговое число кадров = ТОЧНО сумма кадров порций, без потерь.
+// Аудио — цельное из исходника (--audio), чтобы избежать щелчков на стыках порций.
 const audioSrc = a.indexOf('--audio') >= 0 ? a[a.indexOf('--audio') + 1] : null;
-const listFile = path.join(dir, `${id}_list.txt`);
-// ffmpeg concat принимает прямые слэши на всех ОС (обратные слэши Windows ломают демуксер)
-fs.writeFileSync(listFile, parts.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'));
+const glued = path.join(dir, `${id}_v.mp4`);
+const inputs = parts.map((p) => `-i "${p}"`).join(' ');
+const filterIn = parts.map((_, i) => `[${i}:v]`).join('');
+execSync(
+  `ffmpeg -y ${inputs} -filter_complex "${filterIn}concat=n=${parts.length}:v=1:a=0[vout]" -map "[vout]" -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "${glued}"`,
+  { cwd: ROOT, stdio: 'pipe' }
+);
 if (audioSrc && fs.existsSync(path.resolve(ROOT, audioSrc))) {
-  const glued = path.join(dir, `${id}_v.mp4`);
-  execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${glued}"`, { cwd: ROOT, stdio: 'pipe' });
   // видео из склейки + цельное аудио из исходника (без стыков)
   execSync(`ffmpeg -y -i "${glued}" -i "${path.resolve(ROOT, audioSrc)}" -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart "${outMp4}"`, { cwd: ROOT, stdio: 'pipe' });
   console.log(`✅ склеено (аудио цельное из ${audioSrc}) → ${outMp4}`);
 } else {
-  execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy -movflags +faststart "${outMp4}"`, { cwd: ROOT, stdio: 'pipe' });
+  fs.copyFileSync(glued, outMp4);
   console.log(`✅ склеено → ${outMp4}`);
 }
