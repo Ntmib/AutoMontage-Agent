@@ -6,6 +6,13 @@ import { safeFor } from './scenes/safezone';
 
 const src = (s) => (s && s.startsWith('http') ? s : staticFile(s));
 
+export const getSceneTiming = (scene, fps) => {
+  const start = scene.start || 0;
+  const from = Math.round(start * fps);
+  const durationInFrames = Math.max(1, Math.round(((scene.end ?? start + 3) - start) * fps));
+  return { from, durationInFrames, sourceStartFrame: from };
+};
+
 // Мягкое появление сцены (кроссфейд-cut)
 const FadeIn = ({ children, dur }) => {
   const frame = useCurrentFrame();
@@ -29,13 +36,12 @@ export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc =
         <FontStyle />
         {audioSrc && <Audio src={src(audioSrc)} />}
         {scenes.map((sc, i) => {
-          const from = Math.round((sc.start || 0) * fps);
-          const dur = Math.max(1, Math.round(((sc.end ?? (sc.start || 0) + 3) - (sc.start || 0)) * fps));
+          const { from, durationInFrames, sourceStartFrame } = getSceneTiming(sc, fps);
           const Comp = SCENES[sc.scene] || SCENES.fullscreen;
           return (
-            <Sequence key={i} from={from} durationInFrames={dur} layout="none">
-              <FadeIn dur={dur}>
-                <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} videoTitle={sc.videoTitle || videoTitle} />
+            <Sequence key={i} from={from} durationInFrames={durationInFrames} layout="none">
+              <FadeIn dur={durationInFrames}>
+                <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} sourceStartFrame={sourceStartFrame} videoTitle={sc.videoTitle || videoTitle} />
               </FadeIn>
             </Sequence>
           );
