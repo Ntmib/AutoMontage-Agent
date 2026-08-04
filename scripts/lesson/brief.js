@@ -61,7 +61,7 @@ function ensureApproved(brief) {
   if (!result.ok) throw new Error(result.errors.join('\n'));
 }
 
-function buildReelScenesProps({ brief, theme, sourceFile = 'source.mp4' }) {
+function buildReelScenesProps({ brief, theme, sourceFile = 'source.mp4', includeMusic = true }) {
   ensureApproved(brief);
   const props = {
     theme: theme ?? brief.theme,
@@ -76,7 +76,7 @@ function buildReelScenesProps({ brief, theme, sourceFile = 'source.mp4' }) {
   };
   if (brief.facePos) props.facePos = brief.facePos;
   if (brief.faceZoom) props.faceZoom = brief.faceZoom;
-  if (brief.music) {
+  if (brief.music && includeMusic) {
     const extension = path.extname(brief.music.file).toLowerCase() || '.mp3';
     props.musicSrc = `source-music${extension}`;
     props.musicGainDb = brief.music.gainDb;

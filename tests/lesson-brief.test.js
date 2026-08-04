@@ -138,6 +138,12 @@ test('approved lesson music is validated and becomes render props', () => {
       fadeOutSec: 0.8,
       startSec: 22,
       playbackRate: 1.06,
+      ducking: {
+        thresholdDb: -28,
+        ratio: 8,
+        attackMs: 5,
+        releaseMs: 300,
+      },
     },
   });
 

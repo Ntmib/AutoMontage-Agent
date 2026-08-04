@@ -1,6 +1,29 @@
 const path = require('path');
 const { buildReelScenesProps } = require('./brief');
 
+const DEFAULT_DUCKING = {
+  thresholdDb: -28,
+  ratio: 8,
+  attackMs: 5,
+  releaseMs: 300,
+};
+
+function buildLessonMusicMixArgs(music, durationSec) {
+  const ducking = { ...DEFAULT_DUCKING, ...(music.ducking || {}) };
+  return [
+    '--gain', String(music.gainDb),
+    '--start', String(music.startSec ?? 0),
+    '--rate', String(music.playbackRate ?? 1),
+    '--fade-in', String(music.fadeInSec ?? 0),
+    '--fade-out', String(music.fadeOutSec ?? 0),
+    '--duration', String(durationSec),
+    '--threshold', (10 ** (ducking.thresholdDb / 20)).toFixed(4),
+    '--ratio', String(ducking.ratio),
+    '--attack', String(ducking.attackMs),
+    '--release', String(ducking.releaseMs),
+  ];
+}
+
 function getLessonAction({ isLesson, briefFile }) {
   if (!isLesson) return null;
   return briefFile ? 'render' : 'plan';
@@ -63,7 +86,7 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
     );
   }
 
-  const props = buildReelScenesProps({ brief, theme });
+  const props = buildReelScenesProps({ brief, theme, includeMusic: false });
   const requestedFrames = Number(framesOverride);
   if (Number.isFinite(requestedFrames) && requestedFrames > 0) {
     props.durationInFrames = Math.min(
@@ -72,9 +95,10 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
     );
   }
 
+  const durationSec = props.durationInFrames / props.fps;
   const music = brief.music ? {
     sourcePath: path.resolve(brief.music.file),
-    publicFile: props.musicSrc,
+    mixArgs: buildLessonMusicMixArgs(brief.music, durationSec),
   } : null;
 
   return { composition: 'ReelScenes', props, music };
@@ -82,6 +106,7 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
 
 module.exports = {
   assertLessonOptions,
+  buildLessonMusicMixArgs,
   buildGenBriefArgs,
   getLessonAction,
   prepareLessonRender,

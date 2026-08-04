@@ -244,10 +244,6 @@ if (lessonAction === 'render') {
       console.error(`❌ музыка из утверждённого ТЗ не найдена: ${prepared.music.sourcePath}`);
       process.exit(1);
     }
-    const destMusic = path.join(ROOT, 'public', prepared.music.publicFile);
-    if (prepared.music.sourcePath !== destMusic) {
-      fs.copyFileSync(prepared.music.sourcePath, destMusic);
-    }
   }
 
   const lessonPropsPath = `out/${id}.lesson.props.json`;
@@ -262,6 +258,20 @@ if (lessonAction === 'render') {
   const outMp4L = `out/${id}.mp4`;
   log('финиш (громкость + картинка)…');
   console.log('  ' + sh(`node scripts/finish.js ${rawMp4L} ${outMp4L} --hdrfix auto --audio-advance-ms ${REMOTION_AUDIO_ADVANCE_MS}`).split('\n').filter(Boolean).slice(-2).join(' | '));
+
+  if (prepared.music) {
+    log('подмешиваю слышимую музыку с ducking…');
+    const mixedMp4L = tmp(`${id}_lesson_music.mp4`);
+    execFileSync(process.execPath, [
+      path.join(ROOT, 'scripts/mix-music.js'),
+      path.join(ROOT, outMp4L),
+      prepared.music.sourcePath,
+      mixedMp4L,
+      ...prepared.music.mixArgs,
+    ], { cwd: ROOT, stdio: 'inherit' });
+    fs.copyFileSync(mixedMp4L, path.join(ROOT, outMp4L));
+    fs.unlinkSync(mixedMp4L);
+  }
 
   let finalL = path.join(ROOT, outMp4L);
   if (outDir) {

@@ -75,13 +75,21 @@ test('approved brief prepares ReelScenes with frozen geometry', () => {
   assert.equal(prepared.props.audioSrc, 'source.mp4');
 });
 
-test('approved lesson prepares a local music copy without exposing its path to Remotion', () => {
+test('approved lesson keeps music out of Remotion and prepares post-render ducking', () => {
   const brief = makeBrief();
   brief.music = {
     file: '/Users/editor/Music/track.mp3',
-    gainDb: -17,
-    fadeInSec: 0.4,
+    gainDb: -22,
+    fadeInSec: 0.15,
     fadeOutSec: 0.8,
+    startSec: 24,
+    playbackRate: 1,
+    ducking: {
+      thresholdDb: -28,
+      ratio: 8,
+      attackMs: 5,
+      releaseMs: 300,
+    },
   };
 
   const prepared = prepareLessonRender({
@@ -92,9 +100,20 @@ test('approved lesson prepares a local music copy without exposing its path to R
 
   assert.deepEqual(prepared.music, {
     sourcePath: '/Users/editor/Music/track.mp3',
-    publicFile: 'source-music.mp3',
+    mixArgs: [
+      '--gain', '-22',
+      '--start', '24',
+      '--rate', '1',
+      '--fade-in', '0.15',
+      '--fade-out', '0.8',
+      '--duration', '10',
+      '--threshold', '0.0398',
+      '--ratio', '8',
+      '--attack', '5',
+      '--release', '300',
+    ],
   });
-  assert.equal(prepared.props.musicSrc, 'source-music.mp3');
+  assert.equal(prepared.props.musicSrc, undefined);
 });
 
 test('frames override only shortens a local test render', () => {
