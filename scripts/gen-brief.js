@@ -205,6 +205,7 @@ function normalizeGeneratedBrief(generated, context) {
     scenes,
   };
   if (context.facePos) brief.facePos = context.facePos;
+  if (context.faceZoom) brief.faceZoom = context.faceZoom;
 
   const validation = validateLessonBrief(brief);
   if (!validation.ok) throw new Error(`gen-brief создал невалидный черновик:\n${validation.errors.join('\n')}`);
@@ -308,6 +309,9 @@ async function main() {
   const maxScenes = Math.max(1, Number.parseInt(option(args, 'max', '12'), 10) || 12);
   const fps = Number(option(args, 'fps', '30')) || 30;
   const duration = Number(option(args, 'duration', '0')) || 0;
+  const faceX = option(args, 'face-x', null);
+  const faceY = option(args, 'face-y', null);
+  const faceZoom = option(args, 'face-zoom', null);
   const lines = proofread.segments
     .map((segment) => `[${segment.start}-${segment.end}] ${segment.text}`)
     .join('\n');
@@ -331,6 +335,10 @@ async function main() {
     dictionaryCorrections: proofread.corrections,
     availableBroll,
     maxScenes,
+    facePos: faceX != null || faceY != null
+      ? { x: Number(faceX ?? 0.5), y: Number(faceY ?? 0.5) }
+      : null,
+    faceZoom: faceZoom == null ? null : Number(faceZoom),
   });
 
   fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });

@@ -20,6 +20,7 @@
     "theme": { "type": ["string", "object"] },
     "title": { "type": "string" },
     "facePos": { "$ref": "#/definitions/facePos" },
+    "faceZoom": { "type": "number", "minimum": 1, "maximum": 2 },
     "output": {
       "type": "object",
       "additionalProperties": false,

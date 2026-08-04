@@ -35,10 +35,10 @@ export const SceneBg = ({ chrome = true }) => {
 };
 
 // Полноэкранное медиа (спикер/картинка), можно за сейф-зону. blur/dark для оверлея.
-export const FaceLayer = ({ faceSrc, facePos, blur = 0, dark = 1, image = false }) => {
+export const FaceLayer = ({ faceSrc, facePos, faceZoom = 1, blur = 0, dark = 1, image = false }) => {
   if (!faceSrc) return <AbsoluteFill style={{ background: '#0d0a07' }} />;
   const pos = facePos ? `${Math.round((facePos.x ?? 0.5) * 100)}% ${Math.round((facePos.y ?? 0.5) * 100)}%` : '50% 50%';
-  const style = { width: '100%', height: '100%', objectFit: 'cover', objectPosition: pos, filter: `blur(${blur}px) brightness(${dark})` };
+  const style = { width: '100%', height: '100%', objectFit: 'cover', objectPosition: pos, filter: `blur(${blur}px) brightness(${dark})`, transform: `scale(${faceZoom})` };
   return <AbsoluteFill>{image ? <Img src={src(faceSrc)} style={style} /> : <OffthreadVideo src={src(faceSrc)} style={style} muted />}</AbsoluteFill>;
 };
 

@@ -134,3 +134,19 @@ test('scene limit is enforced after the LLM response', () => {
 
   assert.equal(brief.scenes.length, 2);
 });
+
+test('speaker position from intake is stored in the draft', () => {
+  const brief = normalizeGeneratedBrief({
+    scenes: [{ scene: 'fullscreen', start: 0, end: 2, caption: 'В КАДРЕ' }],
+  }, { ...context, facePos: { x: 0.25, y: 0.45 } });
+
+  assert.deepEqual(brief.facePos, { x: 0.25, y: 0.45 });
+});
+
+test('speaker zoom from intake is stored in the draft', () => {
+  const brief = normalizeGeneratedBrief({
+    scenes: [{ scene: 'fullscreen', start: 0, end: 2, caption: 'В КАДРЕ' }],
+  }, { ...context, faceZoom: 1.08 });
+
+  assert.equal(brief.faceZoom, 1.08);
+});

@@ -27,6 +27,8 @@ function buildGenBriefArgs({
   source,
   maxScenes,
   availableBroll = [],
+  facePos = null,
+  faceZoom = null,
 }) {
   const args = [
     transcriptPath,
@@ -45,6 +47,10 @@ function buildGenBriefArgs({
   if (availableBroll.length) {
     args.push('--available-broll', availableBroll.join(','));
   }
+  if (facePos) {
+    args.push('--face-x', String(facePos.x), '--face-y', String(facePos.y));
+  }
+  if (faceZoom) args.push('--face-zoom', String(faceZoom));
   return args;
 }
 

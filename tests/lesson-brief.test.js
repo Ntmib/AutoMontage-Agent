@@ -115,6 +115,19 @@ test('approved brief becomes ReelScenes props with one audio source', () => {
   });
 });
 
+test('approved speaker crop is preserved in render props', () => {
+  const brief = makeBrief({
+    status: 'approved',
+    facePos: { x: 0.25, y: 0.4 },
+    faceZoom: 1.08,
+  });
+
+  const props = buildReelScenesProps({ brief, theme: 'dima-grunge' });
+
+  assert.deepEqual(props.facePos, { x: 0.25, y: 0.4 });
+  assert.equal(props.faceZoom, 1.08);
+});
+
 test('markdown brief shows scenes and proofread corrections', () => {
   const markdown = formatBriefMarkdown(makeBrief());
 

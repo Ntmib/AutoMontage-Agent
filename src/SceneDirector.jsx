@@ -20,7 +20,7 @@ const SafeGuide = () => {
 };
 
 // Режиссёр сцен: рендерит список сцен по таймкодам с переходами.
-export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc = null, facePos = null, audioSrc = null, videoTitle = 'ВИДЕО', debug = false }) => {
+export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc = null, facePos = null, faceZoom = 1, audioSrc = null, videoTitle = 'ВИДЕО', debug = false }) => {
   const t = getTheme(theme);
   const { fps } = useVideoConfig();
   return (
@@ -35,7 +35,7 @@ export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc =
           return (
             <Sequence key={i} from={from} durationInFrames={dur} layout="none">
               <FadeIn dur={dur}>
-                <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} videoTitle={sc.videoTitle || videoTitle} />
+                <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} videoTitle={sc.videoTitle || videoTitle} />
               </FadeIn>
             </Sequence>
           );

@@ -39,6 +39,21 @@ const lessonAction = getLessonAction({ isLesson, briefFile: lessonBriefFile });
 const noTranscribe = args.includes('--no-transcribe');
 const title = opt('title', 'ВИДЕО');
 const aspect = opt('aspect', 'source');
+const faceX = opt('face-x', null);
+const faceY = opt('face-y', null);
+const facePos = faceX != null || faceY != null
+  ? { x: Number(faceX ?? 0.5), y: Number(faceY ?? 0.5) }
+  : null;
+const faceZoom = opt('face-zoom', null) == null ? null : Number(opt('face-zoom', null));
+if (facePos && (![facePos.x, facePos.y].every(Number.isFinite)
+  || facePos.x < 0 || facePos.x > 1 || facePos.y < 0 || facePos.y > 1)) {
+  console.error('❌ --face-x и --face-y должны быть числами от 0 до 1');
+  process.exit(1);
+}
+if (faceZoom != null && (!Number.isFinite(faceZoom) || faceZoom < 1 || faceZoom > 2)) {
+  console.error('❌ --face-zoom должен быть числом от 1 до 2');
+  process.exit(1);
+}
 try {
   assertLessonOptions({ isLesson, args });
 } catch (error) {
@@ -161,6 +176,8 @@ if (lessonAction === 'plan') {
     source: path.resolve(srcVideo),
     maxScenes: Number.parseInt(opt('max', '12'), 10) || 12,
     availableBroll,
+    facePos,
+    faceZoom,
   });
   fs.mkdirSync(path.join(ROOT, 'out'), { recursive: true });
   log(`собираю черновик ТЗ из 7 готовых сцен (${geometry.width}x${geometry.height})…`);

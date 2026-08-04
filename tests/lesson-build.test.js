@@ -119,6 +119,40 @@ test('gen-brief arguments preserve paths and titles with spaces', () => {
   ]);
 });
 
+test('gen-brief arguments freeze an optional speaker position', () => {
+  const args = buildGenBriefArgs({
+    transcriptPath: 'transcript.json',
+    briefPath: 'brief.json',
+    markdownPath: 'brief.md',
+    theme: 'dima-grunge',
+    title: 'УРОК',
+    geometry: { aspect: 'vertical', width: 1080, height: 1920, fps: 25 },
+    duration: 10,
+    source: '/videos/source.mp4',
+    maxScenes: 7,
+    facePos: { x: 0.25, y: 0.45 },
+  });
+
+  assert.deepEqual(args.slice(-4), ['--face-x', '0.25', '--face-y', '0.45']);
+});
+
+test('gen-brief arguments freeze an optional speaker zoom', () => {
+  const args = buildGenBriefArgs({
+    transcriptPath: 'transcript.json',
+    briefPath: 'brief.json',
+    markdownPath: 'brief.md',
+    theme: 'dima-grunge',
+    title: 'УРОК',
+    geometry: { aspect: 'vertical', width: 1080, height: 1920, fps: 25 },
+    duration: 10,
+    source: '/videos/source.mp4',
+    maxScenes: 7,
+    faceZoom: 1.08,
+  });
+
+  assert.deepEqual(args.slice(-2), ['--face-zoom', '1.08']);
+});
+
 test('lesson rejects source-changing flags that invalidate approved timings', () => {
   assert.throws(
     () => assertLessonOptions({ isLesson: true, args: ['--tighten'] }),

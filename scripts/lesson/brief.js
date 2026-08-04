@@ -75,6 +75,7 @@ function buildReelScenesProps({ brief, theme, sourceFile = 'source.mp4' }) {
     durationInFrames: brief.output.durationInFrames,
   };
   if (brief.facePos) props.facePos = brief.facePos;
+  if (brief.faceZoom) props.faceZoom = brief.faceZoom;
   return props;
 }
 
