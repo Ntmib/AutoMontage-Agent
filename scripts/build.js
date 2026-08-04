@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const { ROOT, tmp, python, remotionBin, execSync } = require('./env');
+const { loadExtTheme } = require('./load-ext-theme');
 
 const args = process.argv.slice(2);
 let video = args[0];
@@ -110,8 +111,14 @@ if (args.includes('--autopos')) {
   }
 }
 
-// 5d. (опц.) autotheme — тема из палитры видео (Фаза 4.4-4.6)
+// 5c. (опц.) внешний бренд-пак – тема из THEMES_EXT/<id>/theme.json (приватный стиль)
 let themeVal = theme;
+try {
+  const ext = loadExtTheme(theme);
+  if (ext) { themeVal = ext; log(`внешняя тема "${theme}" загружена из THEMES_EXT (${process.env.THEMES_EXT})`); }
+} catch (e) { console.error('❌ ' + e.message); process.exit(1); }
+
+// 5d. (опц.) autotheme – тема из палитры видео (Фаза 4.4-4.6)
 if (args.includes('--autotheme')) {
   try {
     const bl = opt('brandLock', '1.0');
