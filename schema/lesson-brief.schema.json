@@ -84,6 +84,8 @@
           "videoTitle": { "type": "string" },
           "faceSrc": { "type": "string" },
           "facePos": { "$ref": "#/definitions/facePos" },
+          "variant": { "enum": ["speaker-circle", "funnel"] },
+          "handle": { "type": "string" },
           "caption": { "type": "string" },
           "num": { "type": "string" },
           "headCream": { "type": "string" },

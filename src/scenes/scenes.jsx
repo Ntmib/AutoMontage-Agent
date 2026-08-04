@@ -14,6 +14,94 @@ const Bullets = ({ items = [], k, delay = 30, size = 38 }) => (
   </div>
 );
 
+const clip01 = (value) => Math.min(1, Math.max(0, value));
+
+export const getFunnelPeople = (frame, fps) => Array.from({ length: 12 }, (_, index) => {
+  const delay = index * fps * 0.06;
+  const progress = clip01((frame - delay) / (fps * 2.45));
+  const survives = index === 1 || index === 5 || index === 9;
+  const startX = -310 + index * (620 / 11);
+  const targetX = (index - 5) * 12;
+  const opacity = survives ? 1 : 1 - clip01((progress - 0.54) / 0.22);
+  return {
+    index,
+    survives,
+    progress,
+    opacity,
+    x: startX + (targetX - startX) * progress,
+    y: -20 + progress * 700,
+  };
+});
+
+const PersonGlyph = ({ color, size = 34 }) => (
+  <div style={{ position: 'relative', width: size, height: size * 1.55 }}>
+    <div style={{ position: 'absolute', left: size * 0.25, top: 0, width: size * 0.5, height: size * 0.5, borderRadius: '50%', background: color }} />
+    <div style={{ position: 'absolute', left: size * 0.13, top: size * 0.52, width: size * 0.74, height: size * 0.86, borderRadius: `${size * 0.36}px ${size * 0.36}px ${size * 0.12}px ${size * 0.12}px`, background: color }} />
+  </div>
+);
+
+const SpeakerCircleDiagram = ({ p, k, s, width, height, frame, fps }) => {
+  const land = width > height;
+  const size = land ? 360 : 520;
+  const top = land ? s.top + 150 : s.top + 370;
+  const enter = clip01(frame / (fps * 0.55));
+  const ring = clip01((frame - fps * 0.45) / (fps * 0.65));
+  const handle = p.handle || '@MCDENIL';
+  return (
+    <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+      <SceneBg />
+      <Chip text={p.videoTitle || 'ВИДЕО'} />
+      <div style={{ position: 'absolute', left: s.left, right: s.right, top: s.top + 70, textAlign: 'center' }}>
+        <FitHeading cream={p.headCream} orange={p.headOrange} width={width - s.left - s.right} maxSize={land ? 86 : 94} />
+      </div>
+      <div style={{ position: 'absolute', left: '50%', top, width: size, height: size, transform: `translateX(-50%) scale(${0.82 + enter * 0.18})`, opacity: enter }}>
+        <div style={{ position: 'absolute', inset: -24, borderRadius: '50%', border: `3px dashed ${k.orange}`, opacity: ring, transform: `rotate(${frame * 1.6}deg)` }} />
+        <div style={{ position: 'absolute', inset: -9, borderRadius: '50%', border: `5px solid ${k.orange}`, boxShadow: `0 0 60px ${k.orange}55` }} />
+        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', overflow: 'hidden', background: k.panel }}>
+          <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} />
+        </div>
+        <div style={{ position: 'absolute', left: '50%', bottom: -78, transform: `translateX(-50%) translateY(${(1 - ring) * 30}px)`, opacity: ring, background: k.orange, color: k.bg, borderRadius: 12, padding: '14px 30px', fontFamily: k.fonts.mono, fontSize: land ? 26 : 32, fontWeight: 700, letterSpacing: 3, whiteSpace: 'nowrap' }}>{handle}</div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const SalesFunnelDiagram = ({ p, k, s, width, height, frame, fps }) => {
+  const land = width > height;
+  const funnelWidth = land ? 800 : 760;
+  const funnelHeight = land ? 620 : 780;
+  const top = land ? s.top + 170 : s.top + 300;
+  const people = getFunnelPeople(frame, fps);
+  const tiers = [
+    { top: 120, width: funnelWidth, height: 190, color: `${k.orange}DD` },
+    { top: 300, width: funnelWidth * 0.72, height: 180, color: `${k.orange}A8` },
+    { top: 470, width: funnelWidth * 0.44, height: 165, color: `${k.orange}72` },
+  ];
+  return (
+    <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+      <SceneBg />
+      <Chip text={p.videoTitle || 'ВИДЕО'} />
+      <div style={{ position: 'absolute', left: s.left, right: s.right, top: s.top + 60, textAlign: 'center' }}>
+        <FitHeading cream={p.headCream} orange={p.headOrange} width={width - s.left - s.right} maxSize={land ? 86 : 94} />
+      </div>
+      <div style={{ position: 'absolute', left: '50%', top, width: funnelWidth, height: funnelHeight, transform: 'translateX(-50%)' }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, top: 72, height: 2, background: k.line }} />
+        <div style={{ position: 'absolute', top: 12, left: 0, color: k.muted, fontFamily: k.fonts.mono, fontSize: 24, fontWeight: 700, letterSpacing: 2 }}>МНОГО ЛЮДЕЙ</div>
+        {tiers.map((tier, index) => {
+          const reveal = clip01((frame - index * fps * 0.16) / (fps * 0.55));
+          return <div key={index} style={{ position: 'absolute', left: '50%', top: tier.top, width: tier.width, height: tier.height, transform: `translateX(-50%) scaleY(${reveal})`, transformOrigin: 'top center', opacity: reveal, background: tier.color, clipPath: 'polygon(0 0, 100% 0, 76% 100%, 24% 100%)', borderTop: `2px solid ${k.cream}70`, boxShadow: `0 18px 50px ${k.orange}1F` }} />;
+        })}
+        {people.map((person) => (
+          <div key={person.index} style={{ position: 'absolute', zIndex: 3, left: '50%', top: 82, opacity: person.opacity, transform: `translate(${person.x - 17}px, ${person.y}px) scale(${0.82 + person.progress * 0.18})` }}>
+            <PersonGlyph color={person.survives ? k.cream : k.bg} />
+          </div>
+        ))}
+        <div style={{ position: 'absolute', left: '50%', bottom: 0, transform: 'translateX(-50%)', color: k.cream, fontFamily: k.fonts.mono, fontSize: land ? 24 : 28, fontWeight: 700, letterSpacing: 3, whiteSpace: 'nowrap' }}>НЕСКОЛЬКО ЛИДОВ</div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 // 1. FULLSCREEN: спикер на весь экран, чип сверху, караоке-строка снизу (в сейф-зоне)
 export const SceneFullscreen = (p) => {
   const t = useTheme(); const k = tk(t); const { width, height } = useVideoConfig(); const s = safeFor(width, height);
@@ -80,7 +168,7 @@ export const SceneSplit = (p) => {
 
 // 3. BOTTOM-DIAGRAM: спикер снизу, схема сверху (в сейф-зоне)
 export const SceneBottomDiagram = (p) => {
-  const t = useTheme(); const k = tk(t); const { width, height } = useVideoConfig(); const s = safeFor(width, height);
+  const t = useTheme(); const k = tk(t); const frame = useCurrentFrame(); const { width, height, fps } = useVideoConfig(); const s = safeFor(width, height);
   const land = width > height; const cardEnter = useRise(0, 30);
   const steps = (p.steps || []).slice(0, 4);
   const badge = <div style={{ position: 'absolute', top: 24, left: 24, zIndex: 2, background: k.orange, color: k.bg, fontFamily: k.fonts.mono, fontWeight: 700, fontSize: 22, letterSpacing: 2, padding: '8px 14px', borderRadius: 8 }}>{k.L.badge || 'ЭФИР'}</div>;
@@ -91,6 +179,13 @@ export const SceneBottomDiagram = (p) => {
       {i < steps.length - 1 ? <div style={{ textAlign: 'center', color: k.orange, fontSize: 36, marginTop: 4, lineHeight: 1 }}>↓</div> : null}
     </div>;
   };
+
+  if (p.variant === 'speaker-circle') {
+    return <SpeakerCircleDiagram p={p} k={k} s={s} width={width} height={height} frame={frame} fps={fps} />;
+  }
+  if (p.variant === 'funnel') {
+    return <SalesFunnelDiagram p={p} k={k} s={s} width={width} height={height} frame={frame} fps={fps} />;
+  }
 
   if (land) {
     // ГОРИЗОНТ: спикер-карточка слева, заголовок + схема справа

@@ -148,6 +148,34 @@ test('approved lesson music is validated and becomes render props', () => {
   assert.equal(props.musicFadeOutSec, 0.8);
 });
 
+test('bottom diagram accepts approved speaker circle and funnel variants', () => {
+  const brief = makeBrief({
+    scenes: [
+      {
+        scene: 'bottom-diagram',
+        start: 0,
+        end: 2,
+        variant: 'speaker-circle',
+        handle: '@MCDENIL',
+        headCream: 'СПИКЕР',
+        headOrange: 'В КРУЖКЕ',
+        steps: ['Кружок', 'Ободок', 'Ник'],
+      },
+      {
+        scene: 'bottom-diagram',
+        start: 2,
+        end: 5,
+        variant: 'funnel',
+        headCream: 'ВОРОНКА',
+        headOrange: 'ПРОДАЖ',
+        steps: ['Много людей', 'Три уровня', 'Несколько лидов'],
+      },
+    ],
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+});
+
 test('markdown brief shows scenes and proofread corrections', () => {
   const markdown = formatBriefMarkdown(makeBrief());
 
