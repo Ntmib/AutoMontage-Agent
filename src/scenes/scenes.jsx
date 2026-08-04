@@ -42,13 +42,14 @@ export const SceneSplit = (p) => {
     const cardW = Math.round((width - s.left - s.right - gap) * 0.44);
     const textLeft = s.left + cardW + gap;
     const textW = width - textLeft - s.right;
+    const facePos = { x: p.facePos?.x ?? 0.34, y: p.facePos?.y ?? 0.5 };
     return (
       <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
         <SceneBg />
         <Chip text={p.videoTitle || 'ВИДЕО'} />
         <div style={{ position: 'absolute', left: s.left, top: s.top + 40, bottom: s.bottom + 40, width: cardW, borderRadius: 30, overflow: 'hidden', border: `1px solid ${k.orange}70`, boxShadow: k.cardShadow, ...cardEnter }}>
           {badge}
-          <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} />
+          <FaceLayer faceSrc={p.faceSrc} facePos={facePos} />
         </div>
         <div style={{ position: 'absolute', left: textLeft, width: textW, top: s.top, bottom: s.bottom, display: 'flex', flexDirection: 'column', justifyContent: 'center', overflow: 'hidden' }}>
           {p.num ? <div style={{ ...numR, fontFamily: k.fonts.display, fontWeight: 700, fontSize: 96, lineHeight: 0.8, color: 'transparent', WebkitTextStroke: `3px ${k.orange}` }}>{p.num}</div> : null}
