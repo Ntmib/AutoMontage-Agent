@@ -8,6 +8,7 @@
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
+const { ensureOutputDestination } = require('./project/cli-options');
 
 const ROOT = path.join(__dirname, '..');
 const argv = process.argv.slice(2);
@@ -32,6 +33,9 @@ function help() {
   --face-y 0.5          вертикальный центр лица в исходнике, от 0 до 1
   --face-zoom 1.05      дополнительное приближение спикера, от 1 до 2
   --title "ТЕМА"        заголовок для lesson
+  --project "Тема"      создать локальную папку ролика с историей версий
+  --project-dir <путь>   продолжить работу в существующей папке ролика
+  --version-label <имя>  подпись новой версии рендера, например ducking
   --scenario file.json  готовый монтажный лист
   --no-transcribe       не транскрибировать (для монтажа по готовому --scenario)
   --model turbo|small   модель распознавания речи
@@ -71,8 +75,8 @@ if (argv[0] === 'demo') {
   forward = argv.slice();
 }
 
-// результат – в текущую папку пользователя, если явно не задан --outdir
-if (!forward.includes('--outdir')) forward.push('--outdir', process.cwd());
+// В project-режиме папка ролика владеет финалом. Legacy-режим копирует его пользователю.
+forward = ensureOutputDestination(forward, process.cwd());
 
 try {
   // build.js резолвит видео от своего process.cwd() → запускаем с cwd пользователя

@@ -1,5 +1,5 @@
 // Кросс-платформенные помощники (Windows / macOS / Linux).
-// Убирает жёсткие /tmp и python3 — движок ставится и работает на любой ОС.
+// Убирает жёсткие /tmp и python3 – движок ставится и работает на любой ОС.
 const os = require('os');
 const path = require('path');
 const fs = require('fs');

@@ -9,6 +9,7 @@
 
 Статус: draft
 Исходник: <имя файла, без публикации личного пути>
+Проект: projects/YYYY.MM.DD_<latin-slug>
 Формат: <source|vertical|horizontal>, <width>x<height>, <fps> FPS
 Тема: <lesson-neutral|внешняя>
 Длительность: <seconds>
@@ -41,14 +42,14 @@ CTA: <точная формулировка>
 Старт трека: <seconds>, с ритмичного участка
 Баланс: <целевая разница под речью>, ducking <подъём в паузах>
 
-- [Аудиопроба A](</абсолютный/путь/к/a.mp4>)
-- [Аудиопроба B](</абсолютный/путь/к/b.mp4>)
+- [Аудиопроба A](</абсолютный/путь/к/project/previews/audio-a.mp4>)
+- [Аудиопроба B](</абсолютный/путь/к/project/previews/audio-b.mp4>)
 
 ## Превью
 
-- [Контакт-лист](</абсолютный/путь/к/contact-sheet.jpg>)
-- [Черновик ТЗ](</абсолютный/путь/к/brief.md>)
-- [JSON-черновик](</абсолютный/путь/к/brief.json>)
+- [Контакт-лист](</абсолютный/путь/к/project/previews/contact-sheet.jpg>)
+- [Черновик ТЗ](</абсолютный/путь/к/project/brief/vNN-draft.lesson.md>)
+- [JSON-черновик](</абсолютный/путь/к/project/brief/vNN-draft.lesson.json>)
 
 ## Что утверждается
 

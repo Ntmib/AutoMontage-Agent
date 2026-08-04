@@ -64,6 +64,7 @@ compatibility: AutoMontage-Agent, Node.js 20+, ffmpeg/ffprobe, Python с faster-
 - обязательные формулировки;
 - тему и музыкальное настроение;
 - логотипы, b-roll и другие обязательные активы.
+- короткое название проекта; если пользователь его не дал, выведи из главной темы ролика.
 
 Дефолты:
 
@@ -96,19 +97,24 @@ compatibility: AutoMontage-Agent, Node.js 20+, ffmpeg/ffprobe, Python с faster-
 
 ```bash
 node scripts/build.js <video> --template lesson \
+  --project "<название ролика>" \
   --aspect <source|vertical|horizontal> \
   --theme lesson-neutral \
   --title "<тема>" \
-  --id <slug> \
   --face-x <0..1> --face-y <0..1> --face-zoom <1..2> \
   --max <лимит-сцен>
 ```
 
 Для внешней темы замени `lesson-neutral` на её id. Команда должна создать:
 
-- `out/<slug>.lesson.json` со статусом `draft`;
-- `out/<slug>.lesson.md` для чтения и утверждения;
-- `src/data/transcript.json` с таймингами.
+- `projects/YYYY.MM.DD_<latin-slug>/project.json` с историей работы;
+- `brief/vNN-draft.lesson.json` со статусом `draft`;
+- `brief/vNN-draft.lesson.md` для чтения и утверждения;
+- `transcript/words.json` с таймингами;
+- отдельные `assets/`, `previews/`, `renders/` и `final/` внутри той же папки.
+
+Сохрани абсолютный путь созданной project-папки. Все следующие команды этого ролика выполняй
+с `--project-dir <этот-путь>`. Не возвращайся к общему `out/`.
 
 После генерации:
 
@@ -129,6 +135,7 @@ node scripts/build.js <video> --template lesson \
 3. Если трек не понравился, замени его. Не пытайся исправить выбор многократным изменением gain.
 4. Сделай две 10–12-секундные аудиопробы на реальном голосе: рекомендуемый трек и один запасной.
 5. Покажи источник и лицензию в пакете согласования.
+6. Музыку и лицензию храни в `assets/music/`, аудиопробы в `previews/` текущего проекта.
 
 Для разговорного Reels используй как стартовую точку, а не как неизменный рецепт:
 
@@ -170,16 +177,24 @@ node scripts/build.js <video> --template lesson \
 1. Убедись, что после показа ТЗ не было новых правок.
 2. Поменяй статус этого brief с `draft` на `approved`.
 3. Не меняй утверждённые тексты, музыку, тему, формат и исходник.
-4. Запусти:
+4. Заморозь утверждённую копию и обнови `project.json`:
 
 ```bash
-node scripts/build.js <тот-же-video> --template lesson \
-  --brief out/<slug>.lesson.json \
-  --id <slug>
+node scripts/project/approve-brief.js <project-dir> brief/vNN-draft.lesson.json
+```
+
+5. Запусти:
+
+```bash
+node scripts/build.js <project-dir>/input/source.mp4 --template lesson \
+  --project-dir <project-dir> \
+  --brief brief/vNN-approved.lesson.json \
+  --version-label first-render
 ```
 
 `build.js` должен рендерить `ReelScenes`, сохранять единый таймкод видео, нормализовать голос, компенсировать
-задержку финального AAC и после этого подмешивать музыку с ducking.
+задержку финального AAC и после этого подмешивать музыку с ducking. Каждая правка получает новый
+`--version-label`, например `new-music`, `quieter-music` или `ducking`. Не перезаписывай старую версию.
 
 ## Шаг 7. Проверь готовый файл
 
@@ -208,6 +223,7 @@ node scripts/build.js <тот-же-video> --template lesson \
 4. Как музыка приглушается под голосом и возвращается в паузах.
 5. Ссылку на контакт-лист, если он полезен для приёмки.
 6. Подтверждение, что приватные медиа и тема не попали в Git.
+7. Ссылку на project-папку, где лежат ТЗ, превью и все версии рендера.
 
 Для Telegram советуй отправлять ролик как файл, чтобы мессенджер не сжимал вертикаль.
 
