@@ -25,12 +25,20 @@ const {
   getLessonAction,
   prepareLessonRender,
 } = require('./lesson/workflow');
+const { createBuildContext } = require('./project/build-context');
+const {
+  publishFinal,
+  recordBrief,
+  recordRender,
+} = require('./project/workspace');
 
 const args = process.argv.slice(2);
-let video = args[0];
-if (!video || !fs.existsSync(path.resolve(process.cwd(), video))) { console.error('❌ укажи существующий видеофайл'); process.exit(1); }
-video = path.resolve(process.cwd(), video);   // абсолютный путь – работает из любой папки (глобальный запуск)
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
+const inputVideo = args[0];
+if (!inputVideo || !fs.existsSync(path.resolve(process.cwd(), inputVideo))) {
+  console.error('❌ укажи существующий видеофайл');
+  process.exit(1);
+}
 
 // шаблон вывода: 'dynamic' (reel по умолчанию) или 'lesson' (урок-презентация)
 const template = opt('template', 'dynamic');
@@ -66,6 +74,31 @@ try {
 const theme = opt('theme', isLesson ? 'dima-grunge' : 'craft');
 const id = opt('id', 'out');
 const outDir = opt('outdir', null);           // куда положить финал (по умолчанию out/ внутри пакета)
+const projectName = opt('project', null);
+const projectDir = opt('project-dir', null);
+const versionLabel = opt('version-label', 'render');
+if (projectName && projectDir) {
+  console.error('❌ используй только один флаг: --project или --project-dir');
+  process.exit(1);
+}
+let buildContext;
+try {
+  buildContext = createBuildContext({
+    root: ROOT,
+    cwd: process.cwd(),
+    video: inputVideo,
+    projectName,
+    projectDir,
+    versionLabel,
+    action: lessonAction === 'plan' ? 'plan' : 'render',
+    kind: isLesson ? 'lesson' : 'scenario',
+    id,
+  });
+} catch (error) {
+  console.error(`❌ проект не подготовлен: ${error.message}`);
+  process.exit(1);
+}
+let video = buildContext.video;
 const PY = lessonAction === 'render' ? null : python();
 const audioWav = tmp(`${id}_audio.wav`);
 const model = opt('model', 'large-v3-turbo');
@@ -74,6 +107,11 @@ const scenarioFile = opt('scenario', null);
 
 const sh = (c) => execSync(c, { cwd: ROOT, stdio: 'pipe' }).toString().trim();
 const log = (m) => console.log('· ' + m);
+const runNodeCapture = (script, scriptArgs) => execFileSync(
+  process.execPath,
+  [path.join(ROOT, 'scripts', script), ...scriptArgs.map(String)],
+  { cwd: ROOT, stdio: 'pipe' },
+).toString().trim();
 
 // ── ранние проверки (до тяжёлых шагов: транскрипции, рендера) ──
 // Ключ нужен только для нового ТЗ. Утверждённый brief рендерится без LLM.
@@ -158,8 +196,8 @@ if (lessonAction === 'plan') {
     sourceFps: FPS,
     aspect,
   });
-  const briefPath = `out/${id}.lesson.json`;
-  const markdownPath = `out/${id}.lesson.md`;
+  const briefPath = buildContext.paths.briefJson;
+  const markdownPath = buildContext.paths.briefMarkdown;
   const publicBrollDir = path.join(ROOT, 'public/broll');
   const availableBroll = fs.existsSync(publicBrollDir)
     ? fs.readdirSync(publicBrollDir)
@@ -180,7 +218,7 @@ if (lessonAction === 'plan') {
     facePos,
     faceZoom,
   });
-  fs.mkdirSync(path.join(ROOT, 'out'), { recursive: true });
+  fs.mkdirSync(path.dirname(briefPath), { recursive: true });
   log(`собираю черновик ТЗ из 7 готовых сцен (${geometry.width}x${geometry.height})…`);
   try {
     execFileSync(
@@ -192,16 +230,26 @@ if (lessonAction === 'plan') {
     console.error(`❌ gen-brief не собрал ТЗ: ${error.message}`);
     process.exit(1);
   }
+  if (buildContext.project) {
+    recordBrief(buildContext.project, {
+      revision: buildContext.paths.briefRevision,
+      jsonPath: briefPath,
+      markdownPath,
+      status: 'draft',
+      theme,
+      aspect: geometry.aspect,
+    });
+  }
   console.log('\n⏸ Черновик готов. Покажи Markdown-ТЗ Дмитрию и дождись явного «утверждаю».');
-  console.log(`   ТЗ: ${path.join(ROOT, markdownPath)}`);
-  console.log(`   JSON: ${path.join(ROOT, briefPath)}`);
+  console.log(`   ТЗ: ${markdownPath}`);
+  console.log(`   JSON: ${briefPath}`);
   console.log('   После утверждения смени status на approved и перезапусти с --brief <JSON>.');
   process.exit(0);
 }
 
 // ШАБЛОН lesson, шаг 2: рендер только утверждённого JSON через ReelScenes.
 if (lessonAction === 'render') {
-  const briefPath = path.resolve(process.cwd(), lessonBriefFile);
+  const briefPath = buildContext.resolveBrief(lessonBriefFile);
   if (!fs.existsSync(briefPath)) {
     console.error(`❌ утверждённый brief не найден: ${briefPath}`);
     process.exit(1);
@@ -246,36 +294,70 @@ if (lessonAction === 'render') {
     }
   }
 
-  const lessonPropsPath = `out/${id}.lesson.props.json`;
-  fs.mkdirSync(path.join(ROOT, 'out'), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, lessonPropsPath), JSON.stringify(prepared.props, null, 2));
+  const lessonPropsPath = buildContext.paths.props;
+  const rawMp4L = buildContext.paths.raw;
+  const outMp4L = buildContext.paths.final;
+  fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
+  fs.writeFileSync(lessonPropsPath, JSON.stringify(prepared.props, null, 2));
+  if (buildContext.project) {
+    recordRender(buildContext.project, {
+      version: buildContext.paths.render.version,
+      label: buildContext.paths.render.label,
+      dir: buildContext.paths.render.dir,
+      briefPath,
+      status: 'started',
+    });
+  }
 
-  const rawMp4L = `out/${id}.raw.mp4`;
   log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
-  execSync(`${remotionBin()} render src/index.js ${prepared.composition} ${rawMp4L} --props=./${lessonPropsPath} --codec=h264 --log=error`,
-    { cwd: ROOT, stdio: 'inherit' });
+  execFileSync(remotionBin(), [
+    'render',
+    'src/index.js',
+    prepared.composition,
+    rawMp4L,
+    `--props=${lessonPropsPath}`,
+    '--codec=h264',
+    '--log=error',
+  ], { cwd: ROOT, stdio: 'inherit' });
 
-  const outMp4L = `out/${id}.mp4`;
   log('финиш (громкость + картинка)…');
-  console.log('  ' + sh(`node scripts/finish.js ${rawMp4L} ${outMp4L} --hdrfix auto --audio-advance-ms ${REMOTION_AUDIO_ADVANCE_MS}`).split('\n').filter(Boolean).slice(-2).join(' | '));
+  console.log('  ' + runNodeCapture('finish.js', [
+    rawMp4L,
+    outMp4L,
+    '--hdrfix',
+    'auto',
+    '--audio-advance-ms',
+    REMOTION_AUDIO_ADVANCE_MS,
+  ]).split('\n').filter(Boolean).slice(-2).join(' | '));
 
   if (prepared.music) {
     log('подмешиваю слышимую музыку с ducking…');
     const mixedMp4L = tmp(`${id}_lesson_music.mp4`);
     execFileSync(process.execPath, [
       path.join(ROOT, 'scripts/mix-music.js'),
-      path.join(ROOT, outMp4L),
+      outMp4L,
       prepared.music.sourcePath,
       mixedMp4L,
       ...prepared.music.mixArgs,
     ], { cwd: ROOT, stdio: 'inherit' });
-    fs.copyFileSync(mixedMp4L, path.join(ROOT, outMp4L));
+    fs.copyFileSync(mixedMp4L, outMp4L);
     fs.unlinkSync(mixedMp4L);
   }
 
-  let finalL = path.join(ROOT, outMp4L);
+  let finalL = outMp4L;
+  if (buildContext.project) {
+    finalL = publishFinal(buildContext.project, outMp4L);
+    recordRender(buildContext.project, {
+      version: buildContext.paths.render.version,
+      label: buildContext.paths.render.label,
+      dir: buildContext.paths.render.dir,
+      briefPath,
+      status: 'complete',
+    });
+  }
   if (outDir) {
-    const dest = path.resolve(process.cwd(), outDir, `${id}.mp4`);
+    const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
+    const dest = path.resolve(process.cwd(), outDir, `${outputName}.mp4`);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(finalL, dest);
     finalL = dest;
@@ -293,8 +375,10 @@ log(`субтитров: ${CAPTIONS.length} групп`);
 // 5. монтажный лист (+ зум-ритм beatZoom)
 // приоритет: флаг --beat → из scenario-файла → выкл по умолчанию
 let blocks, beatZoom = false, beatSec = parseFloat(opt('beatSec', '3')), stillWindows = [];
+let activeScenarioPath = null;
 if (scenarioFile) {
-  const sc = JSON.parse(fs.readFileSync(scenarioFile, 'utf8'));
+  activeScenarioPath = buildContext.resolveBrief(scenarioFile);
+  const sc = JSON.parse(fs.readFileSync(activeScenarioPath, 'utf8'));
   blocks = sc.blocks;
   if (sc.beatZoom != null) beatZoom = !!sc.beatZoom;
   if (sc.beatSec != null) beatSec = sc.beatSec;
@@ -302,9 +386,19 @@ if (scenarioFile) {
   log(`лист из файла: ${blocks.length} блоков`);
 } else {
   blocks = draftScenario(CAPTIONS);
-  const draftPath = `out/${id}.scenario.json`;
-  fs.mkdirSync(path.join(ROOT, 'out'), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, draftPath), JSON.stringify({ source: 'source.mp4', theme, beatZoom, beatSec, blocks }, null, 2));
+  const draftPath = buildContext.paths.scenarioJson;
+  activeScenarioPath = draftPath;
+  fs.mkdirSync(path.dirname(draftPath), { recursive: true });
+  fs.writeFileSync(draftPath, JSON.stringify({ source: 'source.mp4', theme, beatZoom, beatSec, blocks }, null, 2));
+  if (buildContext.project) {
+    recordBrief(buildContext.project, {
+      revision: buildContext.paths.briefRevision,
+      jsonPath: draftPath,
+      status: 'draft',
+      theme,
+      aspect: 'source',
+    });
+  }
   log(`черновой лист → ${draftPath} (${blocks.length} блоков, поправь и перезапусти с --scenario)`);
 }
 if (args.includes('--beat')) beatZoom = true;   // «ритмичный зум / режь динамику»
@@ -360,12 +454,13 @@ if (!vr.ok) {
 }
 log('монтажный лист валиден ✓');
 
-const propsPath = `out/${id}.props.json`;
-fs.writeFileSync(path.join(ROOT, propsPath), JSON.stringify(props));
+const propsPath = buildContext.paths.props;
+fs.mkdirSync(path.dirname(propsPath), { recursive: true });
+fs.writeFileSync(propsPath, JSON.stringify(props));
 
 // 7c. гейт качества листа (Фаза 3.2) – предупреждение, не блокер
 try {
-  const g = execSync(`node scripts/quality-gate.js ${propsPath}`, { cwd: ROOT }).toString().trim();
+  const g = runNodeCapture('quality-gate.js', [propsPath]);
   const warn = g.split('\n').filter((l) => l.includes('⚠'));
   if (warn.length) { log('гейт качества – замечания:'); warn.forEach((w) => console.log('  ' + w.trim())); }
   else log('гейт качества: чисто ✓');
@@ -373,7 +468,7 @@ try {
 
 // 7d. гейт динамики: «динамика или слайд-шоу» (docs/editing-rules.md)
 try {
-  const g = execSync(`node scripts/dynamic-gate.js ${propsPath} src/data/transcript.json`, { cwd: ROOT }).toString().trim();
+  const g = runNodeCapture('dynamic-gate.js', [propsPath, 'src/data/transcript.json']);
   const verdict = g.split('\n').find((l) => l.includes('Динамика листа')) || '';
   const warn = g.split('\n').filter((l) => l.includes('⚠'));
   if (verdict) log(verdict.trim());
@@ -381,20 +476,51 @@ try {
 } catch (e) { if (e.stdout) { log('⚠️ динамика: похоже на слайд-шоу – стоит добавить событий'); console.log(e.stdout.toString().split('\n').filter((l) => l.includes('⚠')).join('\n')); } }
 
 // 8. рендер (порциями для длинных – Фаза 3.3)
-const rawMp4 = `out/${id}.raw.mp4`;
+const rawMp4 = buildContext.paths.raw;
+const outMp4 = buildContext.paths.final;
+if (buildContext.project) {
+  recordRender(buildContext.project, {
+    version: buildContext.paths.render.version,
+    label: buildContext.paths.render.label,
+    dir: buildContext.paths.render.dir,
+    briefPath: activeScenarioPath,
+    status: 'started',
+  });
+}
 log(`рендер → ${rawMp4} …`);
 if (durF > 540) {
   log('длинный ролик – рендерю порциями (resume при сбое)');
-  execSync(`node scripts/render-chunks.js Dynamic ${propsPath} ${rawMp4} ${durF} --chunk 300 --audio public/source.mp4`, { cwd: ROOT, stdio: 'inherit' });
+  execFileSync(process.execPath, [
+    path.join(ROOT, 'scripts/render-chunks.js'),
+    'Dynamic',
+    propsPath,
+    rawMp4,
+    String(durF),
+    '--chunk',
+    '300',
+    '--audio',
+    'public/source.mp4',
+  ], { cwd: ROOT, stdio: 'inherit' });
 } else {
-  execSync(`${remotionBin()} render src/index.js Dynamic ${rawMp4} --props=./${propsPath} --codec=h264 --log=error`,
-    { cwd: ROOT, stdio: 'inherit' });
+  execFileSync(remotionBin(), [
+    'render',
+    'src/index.js',
+    'Dynamic',
+    rawMp4,
+    `--props=${propsPath}`,
+    '--codec=h264',
+    '--log=error',
+  ], { cwd: ROOT, stdio: 'inherit' });
 }
 
 // 9. финиш-проход: громкость -14 LUFS (+ авто HDR→SDR)
-const outMp4 = `out/${id}.mp4`;
 log('финиш (громкость + картинка)…');
-console.log('  ' + sh(`node scripts/finish.js ${rawMp4} ${outMp4} --hdrfix auto`).split('\n').filter(Boolean).slice(-2).join(' | '));
+console.log('  ' + runNodeCapture('finish.js', [
+  rawMp4,
+  outMp4,
+  '--hdrfix',
+  'auto',
+]).split('\n').filter(Boolean).slice(-2).join(' | '));
 
 // 10. (опц.) фоновая музыка с ducking (Фаза 2.2)
 if (props.audio && props.audio.music && props.audio.music.file) {
@@ -403,24 +529,43 @@ if (props.audio && props.audio.music && props.audio.music.file) {
   const musPath = path.isAbsolute(m.file) ? m.file : path.join(ROOT, m.file);
   if (fs.existsSync(musPath)) {
     log('подмешиваю музыку (ducking)…');
-    const flags = [
-      m.gain_db != null ? `--gain ${m.gain_db}` : '',
-      d.threshold_db != null ? `--threshold ${Math.pow(10, d.threshold_db / 20).toFixed(4)}` : '',
-      d.reduction_db != null ? `--ratio ${Math.max(2, Math.min(20, Math.abs(d.reduction_db)))}` : '',
-      d.attack_ms != null ? `--attack ${d.attack_ms}` : '',
-      d.release_ms != null ? `--release ${d.release_ms}` : '',
-    ].filter(Boolean).join(' ');
+    const flags = [];
+    if (m.gain_db != null) flags.push('--gain', String(m.gain_db));
+    if (d.threshold_db != null) {
+      flags.push('--threshold', Math.pow(10, d.threshold_db / 20).toFixed(4));
+    }
+    if (d.reduction_db != null) {
+      flags.push('--ratio', String(Math.max(2, Math.min(20, Math.abs(d.reduction_db)))));
+    }
+    if (d.attack_ms != null) flags.push('--attack', String(d.attack_ms));
+    if (d.release_ms != null) flags.push('--release', String(d.release_ms));
     const musTmp = tmp(`${id}_mus.mp4`);
-    console.log('  ' + sh(`node scripts/mix-music.js ${outMp4} "${musPath}" "${musTmp}" ${flags}`).split('\n').filter(Boolean).slice(-1)[0]);
-    fs.copyFileSync(musTmp, path.join(ROOT, outMp4)); fs.unlinkSync(musTmp);   // кросс-платформенно (без unix mv)
+    console.log('  ' + runNodeCapture('mix-music.js', [
+      outMp4,
+      musPath,
+      musTmp,
+      ...flags,
+    ]).split('\n').filter(Boolean).slice(-1)[0]);
+    fs.copyFileSync(musTmp, outMp4); fs.unlinkSync(musTmp);   // кросс-платформенно (без unix mv)
   } else {
     log(`⚠️ музыка не найдена: ${musPath} – пропускаю`);
   }
 }
 
-let finalPath = path.join(ROOT, outMp4);
+let finalPath = outMp4;
+if (buildContext.project) {
+  finalPath = publishFinal(buildContext.project, outMp4);
+  recordRender(buildContext.project, {
+    version: buildContext.paths.render.version,
+    label: buildContext.paths.render.label,
+    dir: buildContext.paths.render.dir,
+    briefPath: activeScenarioPath,
+    status: 'complete',
+  });
+}
 if (outDir) {   // глобальный запуск: положить результат рядом с пользователем
-  const dest = path.resolve(process.cwd(), outDir, `${id}.mp4`);
+  const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
+  const dest = path.resolve(process.cwd(), outDir, `${outputName}.mp4`);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(finalPath, dest);
   finalPath = dest;

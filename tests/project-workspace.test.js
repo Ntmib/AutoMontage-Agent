@@ -148,3 +148,31 @@ test('render versions keep history and publish one canonical final', (t) => {
   assert.equal(manifest.latestRender, 'renders/v01-novaya-muzyka');
   assert.equal(manifest.final, 'final/versioned-render.mp4');
 });
+
+test('render status updates one manifest entry instead of duplicating a version', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Render lifecycle',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const render = nextRenderPaths(workspace, 'Ducking');
+
+  recordRender(workspace, {
+    version: render.version,
+    label: render.label,
+    dir: render.dir,
+    status: 'started',
+  });
+  recordRender(workspace, {
+    version: render.version,
+    label: render.label,
+    dir: render.dir,
+    status: 'complete',
+  });
+
+  const manifest = readProjectManifest(workspace.dir);
+  assert.equal(manifest.renders.length, 1);
+  assert.equal(manifest.renders[0].status, 'complete');
+});

@@ -223,8 +223,18 @@ function recordRender(workspace, {
     briefPath: briefPath ? relativeProjectPath(workspace, briefPath) : null,
     status,
   };
-  workspace.manifest.renders.push(entry);
-  workspace.manifest.latestRender = entry.dir;
+  const existingIndex = workspace.manifest.renders.findIndex(
+    (render) => Number(render.version) === Number(version),
+  );
+  if (existingIndex >= 0) {
+    workspace.manifest.renders[existingIndex] = {
+      ...workspace.manifest.renders[existingIndex],
+      ...entry,
+    };
+  } else {
+    workspace.manifest.renders.push(entry);
+  }
+  if (status === 'complete') workspace.manifest.latestRender = entry.dir;
   workspace.manifest.updatedAt = new Date().toISOString();
   writeProjectManifest(workspace.dir, workspace.manifest);
   return workspace;
