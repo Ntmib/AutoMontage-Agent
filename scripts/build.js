@@ -18,6 +18,7 @@ const { execFileSync } = require('child_process');
 const { ROOT, tmp, python, remotionBin, execSync } = require('./env');
 const { loadExtTheme } = require('./load-ext-theme');
 const { resolveOutputGeometry } = require('./lesson/aspect');
+const { REMOTION_AUDIO_ADVANCE_MS } = require('./finish-audio');
 const {
   assertLessonOptions,
   buildGenBriefArgs,
@@ -260,7 +261,7 @@ if (lessonAction === 'render') {
 
   const outMp4L = `out/${id}.mp4`;
   log('финиш (громкость + картинка)…');
-  console.log('  ' + sh(`node scripts/finish.js ${rawMp4L} ${outMp4L} --hdrfix auto`).split('\n').filter(Boolean).slice(-2).join(' | '));
+  console.log('  ' + sh(`node scripts/finish.js ${rawMp4L} ${outMp4L} --hdrfix auto --audio-advance-ms ${REMOTION_AUDIO_ADVANCE_MS}`).split('\n').filter(Boolean).slice(-2).join(' | '));
 
   let finalL = path.join(ROOT, outMp4L);
   if (outDir) {

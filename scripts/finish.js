@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Фаза 1.2 — финиш-проход: громкость под соцсети + (опц.) HDR→SDR + резкость.
+// Фаза 1.2 – финиш-проход: громкость под соцсети + (опц.) HDR→SDR + резкость.
 //   node finish.js <in.mp4> <out.mp4> [--hdrfix auto|on|off] [--sharpen] [--lanczos WxH]
 const { execSync } = require('child_process');
+const { buildFinishAudioFilter } = require('./finish-audio');
 
 const a = process.argv.slice(2);
 const [inp, out] = a;
@@ -9,6 +10,7 @@ const opt = (k, d) => { const i = a.indexOf('--' + k); return i >= 0 ? a[i + 1] 
 const hdrMode = opt('hdrfix', 'auto');
 const sharpen = a.includes('--sharpen');
 const lanczos = opt('lanczos', null);
+const audioAdvanceMs = Number(opt('audio-advance-ms', '0'));
 
 // автодетект HDR по color_transfer
 let isHDR = false;
@@ -23,10 +25,11 @@ if (doHDR) vf.push('zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt70
 if (lanczos) vf.push(`scale=${lanczos.replace('x', ':')}:flags=lanczos`);
 if (sharpen) vf.push('unsharp=5:5:0.8:5:5:0.0');
 
-const AUDIO = '-af loudnorm=I=-14:TP=-1.5:LRA=11 -c:a aac -b:a 160k';
+const audioFilter = buildFinishAudioFilter(audioAdvanceMs);
+const AUDIO = `-af "${audioFilter}" -c:a aac -b:a 160k`;
 const video = vf.length ? `-vf "${vf.join(',')}" -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p` : '-c:v copy';
 
-console.log(`финиш: loudnorm=-14LUFS${doHDR ? ' + HDR→SDR' : ''}${sharpen ? ' + sharpen' : ''}${lanczos ? ' + lanczos' : ''}`);
+console.log(`финиш: loudnorm=-14LUFS${audioAdvanceMs ? ` + звук вперёд ${audioAdvanceMs}мс` : ''}${doHDR ? ' + HDR→SDR' : ''}${sharpen ? ' + sharpen' : ''}${lanczos ? ' + lanczos' : ''}`);
 execSync(`ffmpeg -y -i "${inp}" ${video} ${AUDIO} -movflags +faststart "${out}"`, { stdio: 'pipe' });
 
 // печать реальной громкости после нормализации (для проверки)
