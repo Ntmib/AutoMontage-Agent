@@ -176,6 +176,34 @@ test('bottom diagram accepts approved speaker circle and funnel variants', () =>
   assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
 });
 
+test('blur overlay accepts staged official social logos', () => {
+  const brief = makeBrief({
+    scenes: [
+      {
+        scene: 'blur-overlay',
+        start: 0,
+        end: 1.5,
+        variant: 'blur-only',
+        big: '4',
+        headCream: 'ФОН',
+        headOrange: 'РАЗМЫВАЕТСЯ',
+      },
+      {
+        scene: 'blur-overlay',
+        start: 1.5,
+        end: 5,
+        variant: 'social-logos',
+        logos: ['telegram', 'instagram', 'youtube', 'zoom'],
+        big: '4',
+        headCream: 'ОФИЦИАЛЬНЫЕ',
+        headOrange: 'ЛОГОТИПЫ',
+      },
+    ],
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+});
+
 test('markdown brief shows scenes and proofread corrections', () => {
   const markdown = formatBriefMarkdown(makeBrief());
 

@@ -84,8 +84,14 @@
           "videoTitle": { "type": "string" },
           "faceSrc": { "type": "string" },
           "facePos": { "$ref": "#/definitions/facePos" },
-          "variant": { "enum": ["speaker-circle", "funnel"] },
+          "variant": { "enum": ["speaker-circle", "funnel", "blur-only", "social-logos"] },
           "handle": { "type": "string" },
+          "logos": {
+            "type": "array",
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": { "enum": ["telegram", "instagram", "youtube", "zoom"] }
+          },
           "caption": { "type": "string" },
           "num": { "type": "string" },
           "headCream": { "type": "string" },

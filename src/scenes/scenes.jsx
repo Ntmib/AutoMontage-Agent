@@ -1,4 +1,4 @@
-import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, Img, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 import { useTheme } from '../theme';
 import { tk, safeFor, safeWidth } from './safezone';
 import { SceneBg, FaceLayer, Chip, FitHeading, useRise } from './parts';
@@ -32,6 +32,24 @@ export const getFunnelPeople = (frame, fps) => Array.from({ length: 12 }, (_, in
     y: -20 + progress * 700,
   };
 });
+
+export const getLogoEntrance = (frame, index, fps) => {
+  const delays = [0.12, 0.38, 1.28, 1.55];
+  const progress = clip01((frame - (delays[index] || 0) * fps) / (fps * 0.42));
+  const eased = 1 - ((1 - progress) ** 3);
+  return {
+    opacity: eased,
+    scale: 0.78 + eased * 0.22,
+    y: (1 - eased) * 42,
+  };
+};
+
+const SOCIAL_LOGOS = {
+  telegram: { label: 'TELEGRAM', file: 'brand-logos/telegram.svg', width: 128, height: 128 },
+  instagram: { label: 'INSTAGRAM', file: 'brand-logos/instagram.png', width: 128, height: 128 },
+  youtube: { label: 'YOUTUBE', file: 'brand-logos/youtube.png', width: 150, height: 106 },
+  zoom: { label: 'ZOOM', file: 'brand-logos/zoom.png', width: 220, height: 72 },
+};
 
 const PersonGlyph = ({ color, size = 34 }) => (
   <div style={{ position: 'relative', width: size, height: size * 1.55 }}>
@@ -233,8 +251,48 @@ export const SceneBottomDiagram = (p) => {
 
 // 4. BLUR-OVERLAY: спикер весь экран блюр+затемн, поверх крупная графика
 export const SceneBlurOverlay = (p) => {
-  const t = useTheme(); const k = tk(t); const { width, height } = useVideoConfig(); const s = safeFor(width, height);
+  const t = useTheme(); const k = tk(t); const frame = useCurrentFrame(); const { width, height, fps } = useVideoConfig(); const s = safeFor(width, height);
   const land = width > height; const sw = safeWidth(width, height); const bigR = useRise(2, 30);
+
+  if (p.variant === 'blur-only') {
+    const blurProgress = clip01(frame / (fps * 1.35));
+    return (
+      <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+        <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} blur={16 * blurProgress} dark={1 - blurProgress * 0.66} />
+        <SceneBg chrome={false} />
+        <Chip text={p.label || 'ВИЗУАЛ'} />
+      </AbsoluteFill>
+    );
+  }
+
+  if (p.variant === 'social-logos') {
+    const logos = (p.logos || ['telegram', 'instagram', 'youtube', 'zoom'])
+      .map((id) => ({ id, ...SOCIAL_LOGOS[id] }))
+      .filter((logo) => logo.file);
+    const cardWidth = land ? 320 : 390;
+    const cardHeight = land ? 210 : 280;
+    const gap = land ? 28 : 30;
+    return (
+      <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+        <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} blur={16} dark={0.3} />
+        <SceneBg />
+        <Chip text={p.label || 'ВИЗУАЛ'} />
+        <div style={{ position: 'absolute', left: s.left, right: s.right, top: s.top + 70, textAlign: 'center' }}>
+          <FitHeading cream={p.headCream} orange={p.headOrange} width={sw} maxSize={land ? 76 : 88} />
+        </div>
+        <div style={{ position: 'absolute', left: '50%', top: land ? s.top + 190 : s.top + 300, width: cardWidth * 2 + gap, display: 'grid', gridTemplateColumns: `repeat(2, ${cardWidth}px)`, gap, transform: 'translateX(-50%)' }}>
+          {logos.map((logo, index) => {
+            const enter = getLogoEntrance(frame, index, fps);
+            return <div key={logo.id} style={{ height: cardHeight, borderRadius: 28, border: `1px solid ${k.cream}30`, background: 'rgba(18,14,11,.78)', boxShadow: k.cardShadow, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, opacity: enter.opacity, transform: `translateY(${enter.y}px) scale(${enter.scale})` }}>
+              <Img src={staticFile(logo.file)} style={{ width: logo.width, height: logo.height, objectFit: 'contain' }} />
+              <div style={{ fontFamily: k.fonts.mono, fontSize: land ? 22 : 26, fontWeight: 700, letterSpacing: 3, color: k.cream }}>{logo.label}</div>
+            </div>;
+          })}
+        </div>
+      </AbsoluteFill>
+    );
+  }
+
   return (
     <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
       <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} blur={16} dark={0.34} />
