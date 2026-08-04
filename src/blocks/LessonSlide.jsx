@@ -41,26 +41,31 @@ export const LessonBackground = () => {
   );
 };
 
-// ── Верхняя панель: чип-лейбл + пунктир + счётчик ──
-export const LessonTopBar = ({ num = '01', total = '08', badgeTop }) => {
+// ── Верхняя панель: СТАТИЧНЫЙ заголовок видео + пунктир + счётчик слайдов ──
+// title = тема всего ролика (неизменна на все слайды). num/total = прогресс слайдов
+// (можно скрыть showCounter=false, если счётчик не нужен).
+export const LessonTopBar = ({ num = '01', total = '08', title = 'ВИДЕО', showCounter = true, animate = false }) => {
   const t = useTheme(); const k = tokens(t);
   const frame = useCurrentFrame();
-  const s = springIn(frame, 30, 0, { damping: 16, mass: 0.8 });
+  // шапка статична (появляется 1 раз в начале ролика, не на каждом слайде)
+  const s = animate ? springIn(frame, 30, 0, { damping: 16, mass: 0.8 }) : 1;
   return (
     <div style={{ position: 'absolute', top: 78, left: 96, right: 96, display: 'flex', alignItems: 'center', gap: 26, opacity: clamp(s, 0, 1, 0, 1), transform: `translateY(${clamp(s, 0, 1, -20, 0)}px)` }}>
       <div style={{ background: k.orange, color: k.bg, fontFamily: k.fonts.mono, fontWeight: 700, fontSize: 26, letterSpacing: 3, padding: '13px 24px', borderRadius: 9 }}>
-        {'▸_ ' + (badgeTop || k.L.badgeTop || 'УРОК ' + num)}
+        {'▸_ ' + title}
       </div>
       <div style={{ flex: 1, borderTop: `2px dotted ${k.line}`, height: 1 }} />
-      <div style={{ fontFamily: k.fonts.mono, fontWeight: 700, fontSize: 34, letterSpacing: 2 }}>
-        <span style={{ color: k.orange }}>{num}</span><span style={{ color: k.muted }}>/{total}</span>
-      </div>
+      {showCounter && (
+        <div style={{ fontFamily: k.fonts.mono, fontWeight: 700, fontSize: 34, letterSpacing: 2 }}>
+          <span style={{ color: k.orange }}>{num}</span><span style={{ color: k.muted }}>/{total}</span>
+        </div>
+      )}
     </div>
   );
 };
 
 // ── Карточка спикера (персистентная, с «дыханием») ──
-export const SpeakerCard = ({ name = 'Имя Спикера', role = 'профессия', faceSrc = null }) => {
+export const SpeakerCard = ({ name = 'Имя Спикера', role = 'профессия', faceSrc = null, facePos = null }) => {
   const t = useTheme(); const k = tokens(t);
   const frame = useCurrentFrame(); const { fps } = useVideoConfig();
   const enter = springIn(frame, fps, 0, { damping: 18, mass: 1 });
@@ -78,7 +83,10 @@ export const SpeakerCard = ({ name = 'Имя Спикера', role = 'профе
       </div>
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', background: `radial-gradient(60% 60% at 50% 42%, ${k.panel}, ${k.bg})` }}>
         {faceSrc ? (
-          <OffthreadVideo src={faceSrc.startsWith('http') ? faceSrc : staticFile(faceSrc)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} muted />
+          <OffthreadVideo src={faceSrc.startsWith('http') ? faceSrc : staticFile(faceSrc)}
+            style={{ width: '100%', height: '100%', objectFit: 'cover',
+              objectPosition: facePos ? `${Math.round((facePos.x ?? 0.5) * 100)}% ${Math.round((facePos.y ?? 0.5) * 100)}%` : '50% 42%' }}
+            muted />
         ) : (
           <>
             <svg width="220" height="220" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.5 }}>
