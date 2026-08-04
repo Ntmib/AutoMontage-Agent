@@ -199,13 +199,16 @@ export const SceneBroll = (p) => {
   // кружок спикера в правом верхнем углу сейф-зоны (адаптивно, не вылезает)
   const circleTop = land ? s.top + 10 : 940;
   const textW = land ? Math.round((width - s.left - s.right) * 0.62) : safeWidth(width, height);
+  const speakerPos = land
+    ? { x: p.facePos?.x ?? 0.34, y: p.facePos?.y ?? 0.32 }
+    : { x: 0.5, y: 0.32 };
   return (
     <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
       {p.brollSrc ? <FaceLayer faceSrc={p.brollSrc} image facePos={{ x: 0.5, y: 0.4 }} dark={0.85} />
         : <AbsoluteFill style={{ background: 'repeating-linear-gradient(135deg,#241a12,#241a12 40px,#1d1610 40px,#1d1610 80px)' }}><AbsoluteFill style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6f5e49', fontFamily: k.fonts.mono, fontSize: 38 }}>[ B-ROLL ]</AbsoluteFill></AbsoluteFill>}
       <AbsoluteFill style={{ background: 'linear-gradient(180deg, transparent 45%, rgba(0,0,0,.8))' }} />
       <Chip text={p.videoTitle || 'ВИДЕО'} />
-      {p.faceSrc ? <div style={{ position: 'absolute', right: s.right, top: circleTop, width: circle, height: circle, borderRadius: 26, overflow: 'hidden', border: `1px solid ${k.orange}70`, ...cardEnter }}><FaceLayer faceSrc={p.faceSrc} facePos={{ x: 0.5, y: 0.32 }} /></div> : null}
+      {p.faceSrc ? <div style={{ position: 'absolute', right: s.right, top: circleTop, width: circle, height: circle, borderRadius: 26, overflow: 'hidden', border: `1px solid ${k.orange}70`, ...cardEnter }}><FaceLayer faceSrc={p.faceSrc} facePos={speakerPos} /></div> : null}
       <div style={{ position: 'absolute', left: s.left, width: textW, bottom: s.bottom }}>
         <FitHeading cream={p.headCream} orange={p.headOrange} width={textW} maxSize={92} />
         {p.sub ? <div style={{ marginTop: 20, fontSize: 34, opacity: 0.92 }}>{p.sub}</div> : null}
