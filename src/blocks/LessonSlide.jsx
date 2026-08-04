@@ -65,14 +65,14 @@ export const LessonTopBar = ({ num = '01', total = '08', title = 'ВИДЕО', s
 };
 
 // ── Карточка спикера (персистентная, с «дыханием») ──
-export const SpeakerCard = ({ name = 'Имя Спикера', role = 'профессия', faceSrc = null, facePos = null }) => {
+export const SpeakerCard = ({ name = 'Имя Спикера', role = 'профессия', faceSrc = null, facePos = null, fullWidth = false }) => {
   const t = useTheme(); const k = tokens(t);
   const frame = useCurrentFrame(); const { fps } = useVideoConfig();
   const enter = springIn(frame, fps, 0, { damping: 18, mass: 1 });
   const breathe = 1 + 0.006 * Math.sin((2 * Math.PI * frame) / (fps * 7));
   return (
     <div style={{
-      width: 700, flexShrink: 0, position: 'relative', borderRadius: k.radius + 4,
+      width: fullWidth ? '100%' : 700, height: fullWidth ? '100%' : undefined, flexShrink: 0, position: 'relative', borderRadius: k.radius + 4,
       background: `linear-gradient(160deg, ${k.panel}, ${k.bg})`,
       border: `1px solid ${k.orange}70`, boxShadow: k.cardShadow, overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
