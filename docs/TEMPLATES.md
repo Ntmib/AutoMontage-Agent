@@ -19,9 +19,9 @@
 ![lesson-presentation](previews/lesson-presentation.png)
 
 Пример стиля выше. Монтаж идёт в два обязательных этапа: сначала ТЗ, затем рендер
-только после явного утверждения Дмитрием.
+только после явного утверждения пользователем.
 
-- Композиция: `ReelScenes` · Тема по умолчанию: `dima-grunge`
+- Композиция: `ReelScenes` · Публичная тема: `lesson-neutral`
 - По умолчанию `--aspect source`: ширина, высота и FPS равны исходнику.
 - `--aspect vertical`: 1080x1920 с FPS исходника.
 - `--aspect horizontal`: 1920x1080 с FPS исходника.
@@ -32,25 +32,38 @@
 
 ```bash
 node scripts/build.js <видео> --template lesson \
-  --aspect source --theme dima-grunge --title "ТЕМА"
+  --project "ТЕМА РОЛИКА" \
+  --aspect source --theme lesson-neutral --title "ТЕМА"
 ```
 
-Команда создаёт `out/out.lesson.md` и `out/out.lesson.json` со статусом `draft`,
-показывает список исправлений распознавания и останавливается до Remotion. Для этого
-этапа нужен `ANTHROPIC_API_KEY` или `OPENAI_API_KEY`.
+Команда создаёт `projects/YYYY.MM.DD_<slug>/`, копирует туда исходник, пишет транскрипт и
+`brief/v01-draft.lesson.md` + `.json`, затем останавливается до Remotion. Для этого этапа
+нужен `ANTHROPIC_API_KEY` или `OPENAI_API_KEY`.
 
-После правок и явного «утверждаю» статус JSON меняется на `approved`.
+После правок и явного «утверждаю» заморозь отдельную approved-копию:
+
+```bash
+node scripts/project/approve-brief.js \
+  projects/2026.08.05_tema-rolika \
+  brief/v01-draft.lesson.json
+```
 
 Этап 2. Рендер утверждённого листа:
 
 ```bash
-node scripts/build.js <то-же-видео> --template lesson \
-  --brief out/out.lesson.json
+node scripts/build.js \
+  projects/2026.08.05_tema-rolika/input/source.mp4 \
+  --template lesson \
+  --project-dir projects/2026.08.05_tema-rolika \
+  --brief brief/v01-approved.lesson.json \
+  --version-label first-render
 ```
 
 На втором этапе LLM-ключ и повторная транскрибация не нужны. Движок проверяет статус,
 тот же исходник, утверждённые тему и аспект, затем передаёт `faceSrc` и `audioSrc` в
 `ReelScenes`. Draft, другой исходник, другая тема или другой аспект блокируются до рендера.
+Каждая следующая правка получает свой `renders/vNN-<version-label>/`, а принятый файл лежит
+в `final/<slug>.mp4`.
 
 ### 2. reel-captions :: Вертикаль: говорящая голова + субтитры (9:16)
 Спикер на весь экран + караоке-субтитры по словам + плашки/счётчики/врезки.

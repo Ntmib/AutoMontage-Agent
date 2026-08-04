@@ -4,7 +4,7 @@
 
 ## 1. Назначение и границы
 
-AutoMontage-Agent — локальный конвейер «видео + монтажное решение → MP4». Он объединяет:
+AutoMontage-Agent – локальный конвейер «видео + монтажное решение → MP4». Он объединяет:
 
 - Node.js-оркестратор и CLI;
 - faster-whisper для локальной транскрибации;
@@ -27,7 +27,7 @@ AutoMontage-Agent — локальный конвейер «видео + мон�
 
 ## 3. Потоки данных
 
-### 3.1 Dynamic — общий монтаж
+### 3.1 Dynamic – общий монтаж
 
 ```mermaid
 flowchart LR
@@ -39,13 +39,13 @@ flowchart LR
   F --> G["JSON Schema + quality gates"]
   G --> H["Remotion: Dynamic"]
   H --> I["ffmpeg finish / music"]
-  I --> J["MP4 в out/"]
+  I --> J["MP4 в projects/ или legacy out/"]
 ```
 
-Точка оркестрации — `scripts/build.js`. Без `--scenario` он создаёт черновой монтажный
+Точка оркестрации – `scripts/build.js`. Без `--scenario` он создаёт черновой монтажный
 лист; смысловую расстановку блоков агент затем правит и запускает повторно с готовым JSON.
 
-### 3.2 Lesson — ТЗ до рендера
+### 3.2 Lesson – ТЗ до рендера
 
 ```mermaid
 flowchart LR
@@ -73,9 +73,9 @@ Brief замораживает исходник, тему, аспект, раз�
 
 `src/index.js` регистрирует композиции через `src/Root.jsx`.
 
-- `Dynamic` — блоки из scenario: карточки, счётчики, b-roll, CTA и субтитры.
-- `ReelScenes` — официальная библиотека lesson-сцен через `SceneDirector`.
-- `LessonSeq` и связанные lesson-композиции — ранний слайдовый путь, сохранённый в коде.
+- `Dynamic` – блоки из scenario: карточки, счётчики, b-roll, CTA и субтитры.
+- `ReelScenes` – официальная библиотека lesson-сцен через `SceneDirector`.
+- `LessonSeq` и связанные lesson-композиции – ранний слайдовый путь, сохранённый в коде.
 - Демо-композиции используют готовые данные из `src/scenario-*.js` и `examples/`.
 
 `SceneDirector.jsx` раскладывает сцены по глобальным таймкодам. Видео внутри каждой сцены
@@ -101,6 +101,7 @@ Brief замораживает исходник, тему, аспект, раз�
 |---|---|
 | Пользовательский CLI | `scripts/cli.js`, `scripts/doctor.js` |
 | Оркестрация | `scripts/build.js`, `scripts/env.js` |
+| Папки и версии роликов | `scripts/project/workspace.js`, `scripts/project/build-context.js` |
 | Транскрипция и субтитры | `scripts/transcribe.py`, `scripts/build-captions.js` |
 | Lesson brief | `scripts/gen-brief.js`, `scripts/lesson/*` |
 | Валидация и качество | `scripts/validate.js`, `scripts/quality-gate.js`, `scripts/dynamic-gate.js` |
@@ -111,18 +112,21 @@ Brief замораживает исходник, тему, аспект, раз�
 
 ## 6. Данные и артефакты
 
-- `src/data/transcript.json` и `src/data/captions.js` — рабочие данные текущего монтажа;
-  они могут иметь пользовательские изменения, поэтому агент не перезаписывает их без нужды.
-- `props/` — входные props и сценарии для воспроизводимых рендеров.
-- `public/` — ресурсы, доступные Remotion. Личные `public/source*.mp4`, музыка и `public/efir/`
+- `projects/YYYY.MM.DD_<slug>/` – основной локальный workspace одного ролика. В нём лежат
+  `project.json`, один исходник, транскрипт, ревизии brief, активы, превью, версии рендера и финал.
+- `project.json` – журнал относительных project-путей, статусов brief и рендеров. Только
+  `source.originalPath` хранит исторический абсолютный путь исходника.
+- `src/data/transcript.json` и `src/data/captions.js` – legacy-пути для запуска без project-режима.
+- `props/` – входные props и сценарии для воспроизводимых рендеров.
+- `public/` – ресурсы, доступные Remotion. Личные `public/source*.mp4`, музыка и `public/efir/`
   игнорируются.
-- `out/` — итоговые видео, brief, диагностические кадры и другие локальные результаты.
-- `tmp/` — промежуточные файлы.
-- `examples/` — небольшие публичные входы для проверки установки.
+- `out/` – legacy/cache-путь для запуска без `--project` и `--project-dir`.
+- `tmp/` – промежуточные файлы.
+- `examples/` – небольшие публичные входы для проверки установки.
 
 ## 7. Переменные окружения
 
-Источник списка — обращения к `process.env` в коде; значения хранятся только локально.
+Источник списка – обращения к `process.env` в коде; значения хранятся только локально.
 
 | Переменная | Обязательность | Назначение |
 |---|---|---|
@@ -134,10 +138,10 @@ Brief замораживает исходник, тему, аспект, раз�
 
 ## 8. Внешние зависимости
 
-- Node.js 20+ и npm — CLI, тесты, Remotion.
-- Python 3 + пакеты из `requirements.txt` — Whisper/OpenCV-сценарии.
-- ffmpeg/ffprobe — анализ, аудио, сборка и контроль результата.
-- Chromium для Playwright — только если пересобирать PNG-моки скриптами `shot-*`.
+- Node.js 20+ и npm – CLI, тесты, Remotion.
+- Python 3 + пакеты из `requirements.txt` – Whisper/OpenCV-сценарии.
+- ffmpeg/ffprobe – анализ, аудио, сборка и контроль результата.
+- Chromium для Playwright – только если пересобирать PNG-моки скриптами `shot-*`.
 
 ## 9. Инварианты безопасности и качества
 

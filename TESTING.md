@@ -18,6 +18,9 @@ npm test
 - нормализация и валидация lesson brief;
 - глобальный таймкод видео между сценами;
 - музыкальный gain, fade, стартовый фрагмент и скорость;
+- создание project-папки, транслитерация, локальный транскрипт и повторное открытие;
+- версии draft/approved brief, render history и канонический final;
+- CLI-правила `--project`, `--project-dir` и `--version-label`;
 - safe-zone длинных денежных подписей;
 - анимации CTA, воронки, градиента и логотипов.
 
@@ -48,7 +51,7 @@ Whisper-модель. Проверить, что созданный MP4 откр
 ```bash
 node scripts/validate.js path/to/scenario.json
 node scripts/quality-gate.js path/to/scenario.json
-node scripts/dynamic-gate.js path/to/scenario.json src/data/transcript.json
+node scripts/dynamic-gate.js path/to/scenario.json path/to/transcript.json
 ```
 
 В обычном `scripts/build.js` эти гейты вызываются автоматически. Ошибку схемы или
@@ -56,14 +59,18 @@ node scripts/dynamic-gate.js path/to/scenario.json src/data/transcript.json
 
 ## 5. Проверка lesson-процесса
 
-1. Запустить `--template lesson` без `--brief`.
-2. Убедиться, что созданы Markdown и JSON со статусом `draft`, а Remotion не стартовал.
+1. Запустить `--template lesson --project "Test lesson"` без `--brief`.
+2. Убедиться, что созданы project-папка, локальный транскрипт, Markdown и JSON со статусом
+   `draft`, а Remotion не стартовал.
 3. Проверить исправления распознавания, сцены, тексты, таймкоды и кадрирование.
-4. Только после явного утверждения поменять статус на `approved`.
-5. Рендерить тем же исходником через `--brief`.
+4. Только после явного утверждения создать approved-копию через
+   `scripts/project/approve-brief.js`.
+5. Рендерить локальным исходником через `--project-dir`, `--brief` и `--version-label`.
 6. Отдельно проверить, что draft, другой source, тема или аспект блокируются.
+7. Убедиться, что повторный рендер создаёт новый `renders/vNN-<label>/`, не стирая прошлый.
+8. Убедиться, что `final/<slug>.mp4` совпадает с последним успешным рендером.
 
-Полные команды — в `docs/TEMPLATES.md`.
+Полные команды – в `docs/TEMPLATES.md`.
 
 ## 6. Визуальная и медиапроверка финала
 
@@ -79,6 +86,10 @@ node scripts/dynamic-gate.js path/to/scenario.json src/data/transcript.json
 
 Готовность означает не только зелёные тесты: итоговый MP4 должен открываться, полностью
 декодироваться и визуально соответствовать утверждённому монтажному листу.
+
+Для локальной миграции существующего ролика C0027 дополнительно проверяется наличие исходника,
+brief-истории, версий v1-v9, превью и принятого v9 в одной игнорируемой project-папке. Старые
+артефакты в `out/` при миграции не удаляются.
 
 ## 7. CI
 

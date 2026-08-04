@@ -9,12 +9,22 @@
 
 - Каноническая документация проекта: `AGENTS.md`, `ARCHITECTURE.md`, `TESTING.md`,
   `DECISIONS.md`, `.env.example` и CI.
+- Локальные workspace-папки `projects/YYYY.MM.DD_<slug>/` с одним исходником, отдельным
+  транскриптом, версиями brief/рендеров и каноническим final.
+- Флаги `--project`, `--project-dir`, `--version-label` и команда фиксации approved brief.
+- Project-режим для `lesson/ReelScenes` и `Dynamic` без изменения legacy-вывода в `out/`.
 - Локальная трёхуровневая память для продолжения работы между сессиями.
 - Двухслойная защита секретов: локальный pre-commit Gitleaks и полный Gitleaks-скан
   истории в GitHub Actions.
 - GitHub Actions закреплены по commit SHA; Dependabot следит за npm и actions, а CI
   блокирует high/critical уязвимости зависимостей.
 - В GitHub включены встроенные Secret Scanning, Push Protection и Dependabot Security Updates.
+
+### Исправлено
+
+- Транскрипты разных роликов больше не перезаписывают общий `src/data/transcript.json` в
+  project-режиме.
+- CLI не добавляет лишний `--outdir`, когда финалом владеет project-папка.
 
 ## 2026-08-05
 

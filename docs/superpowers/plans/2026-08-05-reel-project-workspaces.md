@@ -34,6 +34,9 @@ projects/
     ├── project.json
     ├── input/
     │   └── source.mp4
+    ├── transcript/
+    │   ├── words.json
+    │   └── captions.js
     ├── brief/
     │   ├── v01-draft.lesson.json
     │   ├── v01-draft.lesson.md
@@ -67,6 +70,10 @@ projects/
   "source": {
     "originalPath": "/absolute/input/C0027.MP4",
     "localPath": "input/source.mp4"
+  },
+  "transcript": {
+    "words": "transcript/words.json",
+    "captions": "transcript/captions.js"
   },
   "briefs": [],
   "renders": [],
@@ -182,7 +189,7 @@ Expected: FAIL because project creation and manifest functions are missing.
 
 - [ ] **Step 7: Implement project creation and manifest persistence**
 
-Create exactly these directories: `input`, `brief`, `assets/music`, `assets/broll`, `previews`, `renders`, `final`. Copy the source to `input/source<original-extension>`. Store all project-owned paths in the manifest relative to the project root and reject a source mismatch on resume.
+Create exactly these directories: `input`, `transcript`, `brief`, `assets/music`, `assets/broll`, `previews`, `renders`, `final`. Copy the source to `input/source<original-extension>`. Store all project-owned paths in the manifest relative to the project root and reject a source mismatch on resume.
 
 - [ ] **Step 8: Verify GREEN and refactor**
 
@@ -328,6 +335,7 @@ const versionLabel = opt('version-label', 'render');
 When project mode is active:
 
 - use copied project source before ffprobe and brief generation;
+- write word timings and generated captions to `transcript/` instead of shared `src/data/`;
 - create `brief/vNN-draft.lesson.json` and Markdown;
 - resolve a relative `--brief` from the project root;
 - render props/raw/final into `renders/vNN-<label>/`;
@@ -392,7 +400,7 @@ Expected: tests pass and help documents all three project flags.
 
 - [ ] **Step 5: Update reel-turnkey**
 
-At intake, derive one Latin project name, run the plan command with `--project "<name>"`, keep music/b-roll/previews inside the returned project directory, approve by copying the reviewed draft to `vNN-approved.lesson.json`, and render with `--project-dir` plus a meaningful `--version-label` such as `first-render`, `new-music` or `ducking`.
+At intake, derive one Latin project name, run the plan command with `--project "<name>"`, keep music/b-roll/previews inside the returned project directory, approve through `scripts/project/approve-brief.js`, and render with `--project-dir` plus a meaningful `--version-label` such as `first-render`, `new-music` or `ducking`.
 
 - [ ] **Step 6: Validate all skill entry points**
 
@@ -480,7 +488,7 @@ git commit -m "docs: document isolated reel projects"
 
 - [ ] **Step 1: Initialize the project with the original C0027 source**
 
-Create `projects/2026.08.04_claude-code-montage` using the workspace module and copy the source once to `input/source.MP4`.
+Create `projects/2026.08.04_claude-code-montage` using the workspace module and copy the source once to `input/source.mp4`.
 
 - [ ] **Step 2: Preserve brief history**
 
