@@ -1,7 +1,8 @@
-import { AbsoluteFill, useVideoConfig } from 'remotion';
+import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
 import { useTheme } from '../theme';
 import { tk, safeFor, safeWidth } from './safezone';
 import { SceneBg, FaceLayer, Chip, FitHeading, useRise } from './parts';
+import { clamp, countUp, fmt } from '../anim';
 
 const Bullets = ({ items = [], k, delay = 30, size = 38 }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -152,8 +153,50 @@ export const SceneBroll = (p) => {
   );
 };
 
+// 8. CHART: анимированная инфографика экономии (столбцы растут + счётчик ₽)
+export const SceneChart = (p) => {
+  const t = useTheme(); const k = tk(t); const frame = useCurrentFrame();
+  const { width, height, fps } = useVideoConfig(); const s = safeFor(width, height);
+  const sw = safeWidth(width, height);
+  const months = p.months || 12;
+  const perMonth = p.perMonth || 20000;
+  const total = perMonth * months;
+  const barMax = 620; // высота области столбцов
+  const gap = 12;
+  const barW = (sw - gap * (months - 1)) / months;
+  const counter = countUp(frame, 10, 10 + fps * 1.6, total); // счётчик 0 -> 240000
+  return (
+    <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+      <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} blur={22} dark={0.2} />
+      <SceneBg chrome={false} />
+      <Chip text={p.label || 'ЭКОНОМИЯ ЗА ГОД'} />
+      <div style={{ position: 'absolute', left: s.left, right: s.right, top: s.top + 40, textAlign: 'center' }}>
+        <div style={{ fontFamily: k.fonts.display, fontWeight: 700, fontSize: 150, lineHeight: 0.9 }}>
+          <span style={{ color: k.orange }}>{fmt(counter)}</span><span style={{ color: k.cream }}> ₽</span>
+        </div>
+        <div style={{ fontFamily: k.fonts.mono, fontWeight: 700, fontSize: 30, letterSpacing: 2, color: k.muted, marginTop: 6 }}>
+          {fmt(perMonth)} ₽/мес × {months} мес
+        </div>
+      </div>
+      {/* столбцы по месяцам, растут снизу вверх со сдвигом */}
+      <div style={{ position: 'absolute', left: s.left, right: s.right, bottom: s.bottom, height: barMax, display: 'flex', alignItems: 'flex-end', gap }}>
+        {Array.from({ length: months }).map((_, i) => {
+          const targetH = barMax * ((i + 1) / months);
+          const g = clamp(frame, 12 + i * 3, 12 + i * 3 + 16, 0, 1);
+          const h = targetH * g;
+          const last = i === months - 1;
+          return <div key={i} style={{ width: barW, height: h, borderRadius: '8px 8px 0 0', background: last ? k.orange : `${k.orange}66`, boxShadow: last ? `inset 0 2px 0 ${k.orange}` : 'none' }} />;
+        })}
+      </div>
+      {/* базовая линия */}
+      <div style={{ position: 'absolute', left: s.left, right: s.right, bottom: s.bottom, height: 2, background: k.line }} />
+    </AbsoluteFill>
+  );
+};
+
 export const SCENES = {
   fullscreen: SceneFullscreen,
+  chart: SceneChart,
   split: SceneSplit,
   'bottom-diagram': SceneBottomDiagram,
   'blur-overlay': SceneBlurOverlay,
