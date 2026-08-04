@@ -68,7 +68,7 @@ projects/
   "createdAt": "2026-08-05T00:00:00.000Z",
   "updatedAt": "2026-08-05T00:00:00.000Z",
   "source": {
-    "originalPath": "/absolute/input/C0027.MP4",
+    "originalPath": "/absolute/input/source.mp4",
     "localPath": "input/source.mp4"
   },
   "transcript": {
@@ -455,14 +455,14 @@ Add a decision stating: `out/` is a legacy/cache path; `projects/` is the user-o
 
 - [ ] **Step 4: Document testing and changelog evidence**
 
-Add project workspace unit tests, manifest/path checks, skill validation and a manual local C0027 migration check to `TESTING.md` and `CHANGELOG.md`.
+Add project workspace unit tests, manifest/path checks, skill validation and a manual local nine-version migration check to `TESTING.md` and `CHANGELOG.md`.
 
 - [ ] **Step 5: Check public files for privacy and punctuation**
 
 Run:
 
 ```bash
-rg -n $'\u2014|/Users/|macbook|automontage-dima-brand|OPENAI_API_KEY=' .gitignore README.md docs/TEMPLATES.md ARCHITECTURE.md TESTING.md DECISIONS.md CHANGELOG.md skills scripts/project tests/project-*.test.js
+rg -n $'\u2014|Users/|macbook|private-brand-pack|OPENAI_API_KEY=' .gitignore README.md docs/TEMPLATES.md ARCHITECTURE.md TESTING.md DECISIONS.md CHANGELOG.md skills scripts/project tests/project-*.test.js
 ```
 
 Expected: no U+2014, personal paths, private repo names or secret values.
@@ -476,19 +476,19 @@ git add .gitignore README.md docs/TEMPLATES.md ARCHITECTURE.md TESTING.md DECISI
 git commit -m "docs: document isolated reel projects"
 ```
 
-### Task 6: Organize the Existing C0027 Reel Locally
+### Task 6: Organize the Existing Nine-Version Reel Locally
 
 **Files:**
 - Create locally, ignored: `projects/2026.08.04_claude-code-montage/**`
 - Do not modify or delete existing `out/c0027-*` artifacts.
 
 **Interfaces:**
-- Consumes: the existing C0027 source, briefs, contact sheets and v1-v9 MP4 files.
+- Consumes: the existing source, briefs, contact sheets and v1-v9 MP4 files.
 - Produces: a resumable project folder and manifest that a new chat can inspect.
 
-- [ ] **Step 1: Initialize the project with the original C0027 source**
+- [ ] **Step 1: Initialize the project with the original source**
 
-Create `projects/2026.08.04_claude-code-montage` using the workspace module and copy the source once to `input/source.mp4`.
+Create a dated local project using the workspace module and copy the source once to `input/source.mp4`.
 
 - [ ] **Step 2: Preserve brief history**
 
@@ -545,9 +545,9 @@ Run:
 ```bash
 npm test
 npm run doctor
-python3 /Users/macbookledovskih/.agents/skills/skill-creator/scripts/quick_validate.py skills/reel-turnkey
-python3 /Users/macbookledovskih/.agents/skills/skill-creator/scripts/quick_validate.py .claude/skills/reel-turnkey
-python3 /Users/macbookledovskih/.agents/skills/skill-creator/scripts/quick_validate.py .codex/skills/reel-turnkey
+python3 ~/.agents/skills/skill-creator/scripts/quick_validate.py skills/reel-turnkey
+python3 ~/.agents/skills/skill-creator/scripts/quick_validate.py .claude/skills/reel-turnkey
+python3 ~/.agents/skills/skill-creator/scripts/quick_validate.py .codex/skills/reel-turnkey
 ```
 
 Expected: all tests pass, doctor has no required dependency failures, all skill entries are valid.
@@ -576,7 +576,7 @@ Verify that README, CLI help, `docs/TEMPLATES.md`, architecture, decisions, test
 
 - [ ] **Step 5: Update local progress and memory**
 
-Record the project folder contract, current C0027 location, commit ids, test count and the fact that push has not occurred.
+Record the project folder contract, current local reel location, commit ids, test count and the fact that push has not occurred.
 
 - [ ] **Step 6: Stop before push**
 

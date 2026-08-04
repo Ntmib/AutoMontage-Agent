@@ -78,7 +78,7 @@ test('approved brief prepares ReelScenes with frozen geometry', () => {
 test('approved lesson keeps music out of Remotion and prepares post-render ducking', () => {
   const brief = makeBrief();
   brief.music = {
-    file: '/Users/editor/Music/track.mp3',
+    file: '/videos/music/track.mp3',
     gainDb: -22,
     fadeInSec: 0.15,
     fadeOutSec: 0.8,
@@ -99,7 +99,7 @@ test('approved lesson keeps music out of Remotion and prepares post-render ducki
   });
 
   assert.deepEqual(prepared.music, {
-    sourcePath: '/Users/editor/Music/track.mp3',
+    sourcePath: '/videos/music/track.mp3',
     mixArgs: [
       '--gain', '-22',
       '--start', '24',
