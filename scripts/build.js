@@ -5,34 +5,52 @@
 //                                 [--id name] [--frames N] [--model base]
 //                                 [--template lesson] [--no-transcribe] [--title "..."]
 // Опции шаблона/транскрипции:
-//   --template lesson : собрать урок-презентацию (композиция LessonSeq) вместо Dynamic;
-//                       слайды генерятся из речи через gen-slides (нужен ANTHROPIC_API_KEY
-//                       или OPENAI_API_KEY). Тема по умолчанию: lesson-neutral.
+//   --template lesson : сначала собрать ТЗ из 7 готовых сцен, после утверждения
+//                       отрендерить его через ReelScenes. Тема по умолчанию: dima-grunge.
+//   --aspect source|vertical|horizontal : формат lesson; по умолчанию как у исходника.
+//   --brief file.json : отрендерить утверждённый монтажный лист lesson.
 //   --no-transcribe   : пропустить whisper (не качать модель); транскрипт = пустой.
 //                       Осмысленно только с --scenario (блоки берутся из готового листа).
 //   --title "текст"   : заголовок видео для шаблона lesson (плашка сверху).
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { ROOT, tmp, python, remotionBin, execSync } = require('./env');
 const { loadExtTheme } = require('./load-ext-theme');
+const { resolveOutputGeometry } = require('./lesson/aspect');
+const {
+  assertLessonOptions,
+  buildGenBriefArgs,
+  getLessonAction,
+  prepareLessonRender,
+} = require('./lesson/workflow');
 
 const args = process.argv.slice(2);
 let video = args[0];
 if (!video || !fs.existsSync(path.resolve(process.cwd(), video))) { console.error('❌ укажи существующий видеофайл'); process.exit(1); }
-video = path.resolve(process.cwd(), video);   // абсолютный путь — работает из любой папки (глобальный запуск)
+video = path.resolve(process.cwd(), video);   // абсолютный путь – работает из любой папки (глобальный запуск)
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 
 // шаблон вывода: 'dynamic' (reel по умолчанию) или 'lesson' (урок-презентация)
 const template = opt('template', 'dynamic');
 const isLesson = template === 'lesson';
+const lessonBriefFile = opt('brief', null);
+const lessonAction = getLessonAction({ isLesson, briefFile: lessonBriefFile });
 const noTranscribe = args.includes('--no-transcribe');
 const title = opt('title', 'ВИДЕО');
+const aspect = opt('aspect', 'source');
+try {
+  assertLessonOptions({ isLesson, args });
+} catch (error) {
+  console.error(`❌ ${error.message}`);
+  process.exit(1);
+}
 
-// тема по умолчанию зависит от шаблона: lesson → lesson-neutral, иначе craft
-const theme = opt('theme', isLesson ? 'lesson-neutral' : 'craft');
+// тема по умолчанию зависит от шаблона: lesson → dima-grunge, иначе craft
+const theme = opt('theme', isLesson ? 'dima-grunge' : 'craft');
 const id = opt('id', 'out');
 const outDir = opt('outdir', null);           // куда положить финал (по умолчанию out/ внутри пакета)
-const PY = python();                           // python3 / python — что есть в системе
+const PY = lessonAction === 'render' ? null : python();
 const audioWav = tmp(`${id}_audio.wav`);
 const model = opt('model', 'large-v3-turbo');
 const framesOverride = opt('frames', null);
@@ -42,10 +60,10 @@ const sh = (c) => execSync(c, { cwd: ROOT, stdio: 'pipe' }).toString().trim();
 const log = (m) => console.log('· ' + m);
 
 // ── ранние проверки (до тяжёлых шагов: транскрипции, рендера) ──
-// шаблон lesson генерит слайды из речи через gen-slides – нужен LLM-ключ.
-if (isLesson && !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+// Ключ нужен только для нового ТЗ. Утверждённый brief рендерится без LLM.
+if (lessonAction === 'plan' && !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
   console.error('❌ для шаблона lesson нужен ANTHROPIC_API_KEY или OPENAI_API_KEY: '
-    + 'gen-slides генерирует слайды из речи. Задай ключ в окружении и повтори.');
+    + 'gen-brief собирает черновик ТЗ из речи. Задай ключ в окружении и повтори.');
   process.exit(1);
 }
 // --no-transcribe без готового листа даст пустой ролик (блоки берутся из субтитров).
@@ -74,17 +92,20 @@ if (args.includes('--reframe')) {
 }
 const W = info.streams[0].width, H = info.streams[0].height;
 
-// 2. аудио
-log('извлекаю аудио…');
-sh(`ffmpeg -y -i "${video1}" -vn -ar 16000 -ac 1 "${audioWav}"`);
-
-// 3. транскрипция (или пустой транскрипт при --no-transcribe, без whisper-модели)
-if (noTranscribe) {
-  log('транскрипцию пропускаю (--no-transcribe): пишу пустой транскрипт');
-  fs.writeFileSync(path.join(ROOT, 'src/data/transcript.json'), '[]');
+// 2-3. Для утверждённого lesson brief повторная транскрипция не нужна.
+if (lessonAction === 'render') {
+  log('использую утверждённый brief: транскрипцию пропускаю');
 } else {
-  log('транскрибирую (faster-whisper)…');
-  sh(`${PY} scripts/transcribe.py "${audioWav}" src/data/transcript.json ${model}`);
+  log('извлекаю аудио…');
+  sh(`ffmpeg -y -i "${video1}" -vn -ar 16000 -ac 1 "${audioWav}"`);
+
+  if (noTranscribe) {
+    log('транскрипцию пропускаю (--no-transcribe): пишу пустой транскрипт');
+    fs.writeFileSync(path.join(ROOT, 'src/data/transcript.json'), '[]');
+  } else {
+    log('транскрибирую (faster-whisper)…');
+    sh(`${PY} scripts/transcribe.py "${audioWav}" src/data/transcript.json ${model}`);
+  }
 }
 
 // 3b. (опц.) tighten: рез пауз + слов-паразитов
@@ -113,50 +134,101 @@ function resolveTheme(name) {
   return name;
 }
 
-// ── ШАБЛОН lesson: урок-презентация (композиция LessonSeq) вместо Dynamic ──
-// Флоу: транскрипт (уже готов выше), gen-slides (речь в слайды), props, render.
-if (isLesson) {
-  const themeValL = resolveTheme(theme);
-
-  // gen-slides: из транскрипта собираем монтажный лист слайдов.
-  // тему передаём строкой (для внешней темы gen-slides её не использует, но props получит объект).
-  const slidesOut = `out/${id}.slides.json`;
+// ШАБЛОН lesson, шаг 1: собрать ТЗ и остановиться до утверждения.
+if (lessonAction === 'plan') {
+  const geometry = resolveOutputGeometry({
+    sourceWidth: W,
+    sourceHeight: H,
+    sourceFps: FPS,
+    aspect,
+  });
+  const briefPath = `out/${id}.lesson.json`;
+  const markdownPath = `out/${id}.lesson.md`;
+  const publicBrollDir = path.join(ROOT, 'public/broll');
+  const availableBroll = fs.existsSync(publicBrollDir)
+    ? fs.readdirSync(publicBrollDir)
+      .filter((file) => /\.(avif|gif|jpe?g|mov|mp4|png|webp)$/i.test(file))
+      .map((file) => `broll/${file}`)
+    : [];
+  const genArgs = buildGenBriefArgs({
+    transcriptPath: 'src/data/transcript.json',
+    briefPath,
+    markdownPath,
+    theme,
+    title,
+    geometry,
+    duration: DUR2,
+    source: path.resolve(srcVideo),
+    maxScenes: Number.parseInt(opt('max', '12'), 10) || 12,
+    availableBroll,
+  });
   fs.mkdirSync(path.join(ROOT, 'out'), { recursive: true });
-  const maxSl = opt('max', null);
-  log('генерирую слайды из речи (gen-slides)…');
+  log(`собираю черновик ТЗ из 7 готовых сцен (${geometry.width}x${geometry.height})…`);
   try {
-    console.log('  ' + sh(`node scripts/gen-slides.js src/data/transcript.json ${slidesOut} --theme ${typeof theme === 'string' ? theme : 'lesson-neutral'}${maxSl ? ` --max ${maxSl}` : ''}`).split('\n').filter(Boolean).slice(-1)[0]);
-  } catch (e) {
-    const msg = (e.stderr ? e.stderr.toString() : '') + (e.stdout ? e.stdout.toString() : '') || e.message;
-    console.error('❌ gen-slides не собрал слайды: ' + msg.split('\n').filter(Boolean).slice(-1)[0]);
+    execFileSync(
+      process.execPath,
+      [path.join(ROOT, 'scripts/gen-brief.js'), ...genArgs],
+      { cwd: ROOT, stdio: 'inherit', env: process.env },
+    );
+  } catch (error) {
+    console.error(`❌ gen-brief не собрал ТЗ: ${error.message}`);
     process.exit(1);
   }
-  const sc = JSON.parse(fs.readFileSync(path.join(ROOT, slidesOut), 'utf8'));
-  const slides = sc.slides || [];
-  const lastEnd = slides.reduce((m, s) => Math.max(m, s.end ?? 0), 0);
-  const lessonFrames = framesOverride ? +framesOverride : Math.max(60, Math.round((lastEnd || DUR2 || 8) * FPS));
+  console.log('\n⏸ Черновик готов. Покажи Markdown-ТЗ Дмитрию и дождись явного «утверждаю».');
+  console.log(`   ТЗ: ${path.join(ROOT, markdownPath)}`);
+  console.log(`   JSON: ${path.join(ROOT, briefPath)}`);
+  console.log('   После утверждения смени status на approved и перезапусти с --brief <JSON>.');
+  process.exit(0);
+}
 
-  // исходник (лицо спикера) в public/source.mp4, карточка спикера тянет его как faceSrc.
+// ШАБЛОН lesson, шаг 2: рендер только утверждённого JSON через ReelScenes.
+if (lessonAction === 'render') {
+  const briefPath = path.resolve(process.cwd(), lessonBriefFile);
+  if (!fs.existsSync(briefPath)) {
+    console.error(`❌ утверждённый brief не найден: ${briefPath}`);
+    process.exit(1);
+  }
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  if (args.includes('--aspect')) {
+    const requested = resolveOutputGeometry({
+      sourceWidth: W,
+      sourceHeight: H,
+      sourceFps: FPS,
+      aspect,
+    }).aspect;
+    if (requested !== brief.output?.aspect) {
+      console.error('❌ aspect отличается от утверждённого ТЗ. Собери и утверди новый brief.');
+      process.exit(1);
+    }
+  }
+  if (args.includes('--theme') && theme !== brief.theme) {
+    console.error('❌ тема отличается от утверждённого ТЗ. Собери и утверди новый brief.');
+    process.exit(1);
+  }
+
+  let prepared;
+  try {
+    prepared = prepareLessonRender({
+      brief,
+      theme: resolveTheme(brief.theme),
+      sourceVideo: srcVideo,
+      framesOverride,
+    });
+  } catch (error) {
+    console.error(`❌ рендер lesson отменён: ${error.message}`);
+    process.exit(1);
+  }
+
   const destSrcL = path.join(ROOT, 'public/source.mp4');
   if (path.resolve(srcVideo) !== destSrcL) fs.copyFileSync(path.resolve(srcVideo), destSrcL);
 
-  // props для LessonSeq (см. src/LessonSequence.jsx / data/lesson-seq-demo.js)
-  const lessonProps = {
-    theme: themeValL,
-    slides,
-    faceSrc: 'source.mp4',
-    name: sc.name || '',
-    role: sc.role || '',
-    videoTitle: title,
-    width: W, height: H, fps: FPS,
-    durationInFrames: lessonFrames,
-  };
   const lessonPropsPath = `out/${id}.lesson.props.json`;
-  fs.writeFileSync(path.join(ROOT, lessonPropsPath), JSON.stringify(lessonProps));
+  fs.mkdirSync(path.join(ROOT, 'out'), { recursive: true });
+  fs.writeFileSync(path.join(ROOT, lessonPropsPath), JSON.stringify(prepared.props, null, 2));
 
   const rawMp4L = `out/${id}.raw.mp4`;
-  log(`рендер урока (LessonSeq) → ${rawMp4L} …`);
-  execSync(`${remotionBin()} render src/index.js LessonSeq ${rawMp4L} --props=./${lessonPropsPath} --codec=h264 --log=error`,
+  log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
+  execSync(`${remotionBin()} render src/index.js ${prepared.composition} ${rawMp4L} --props=./${lessonPropsPath} --codec=h264 --log=error`,
     { cwd: ROOT, stdio: 'inherit' });
 
   const outMp4L = `out/${id}.mp4`;
@@ -170,7 +242,7 @@ if (isLesson) {
     fs.copyFileSync(finalL, dest);
     finalL = dest;
   }
-  console.log(`\n✅ готово (урок-презентация): ${finalL}  (${W}x${H})`);
+  console.log(`\n✅ готово по утверждённому ТЗ: ${finalL}  (${prepared.props.width}x${prepared.props.height})`);
   console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] иначе Telegram сплющит вертикаль.');
   process.exit(0);
 }
@@ -200,7 +272,7 @@ if (scenarioFile) {
 if (args.includes('--beat')) beatZoom = true;   // «ритмичный зум / режь динамику»
 if (beatZoom) log(`зум-ритм ВКЛ (каждые ${beatSec}с)`);
 
-// 5c. (опц.) autopos — адаптивные позиции акцентных плашек по кадру (Фаза 4.1)
+// 5c. (опц.) autopos – адаптивные позиции акцентных плашек по кадру (Фаза 4.1)
 if (args.includes('--autopos')) {
   const ACC = ['InfoCard', 'CounterCard', 'SubtitleCard', 'CTACard'];
   const acc = blocks.filter((b) => ACC.includes(b.type));
@@ -244,7 +316,7 @@ const props = { source: 'source.mp4', theme: themeVal, blocks, width: W, height:
 const { validate } = require('./validate');
 const vr = validate(props);
 if (!vr.ok) {
-  console.error('❌ монтажный лист невалиден — рендер отменён:');
+  console.error('❌ монтажный лист невалиден – рендер отменён:');
   vr.errors.forEach((e) => console.error('  · ' + e));
   process.exit(1);
 }
@@ -253,11 +325,11 @@ log('монтажный лист валиден ✓');
 const propsPath = `out/${id}.props.json`;
 fs.writeFileSync(path.join(ROOT, propsPath), JSON.stringify(props));
 
-// 7c. гейт качества листа (Фаза 3.2) — предупреждение, не блокер
+// 7c. гейт качества листа (Фаза 3.2) – предупреждение, не блокер
 try {
   const g = execSync(`node scripts/quality-gate.js ${propsPath}`, { cwd: ROOT }).toString().trim();
   const warn = g.split('\n').filter((l) => l.includes('⚠'));
-  if (warn.length) { log('гейт качества — замечания:'); warn.forEach((w) => console.log('  ' + w.trim())); }
+  if (warn.length) { log('гейт качества – замечания:'); warn.forEach((w) => console.log('  ' + w.trim())); }
   else log('гейт качества: чисто ✓');
 } catch (e) { /* FAIL не блокирует, но покажем */ if (e.stdout) console.log(e.stdout.toString()); }
 
@@ -268,13 +340,13 @@ try {
   const warn = g.split('\n').filter((l) => l.includes('⚠'));
   if (verdict) log(verdict.trim());
   warn.forEach((w) => console.log('  ' + w.trim()));
-} catch (e) { if (e.stdout) { log('⚠️ динамика: похоже на слайд-шоу — стоит добавить событий'); console.log(e.stdout.toString().split('\n').filter((l) => l.includes('⚠')).join('\n')); } }
+} catch (e) { if (e.stdout) { log('⚠️ динамика: похоже на слайд-шоу – стоит добавить событий'); console.log(e.stdout.toString().split('\n').filter((l) => l.includes('⚠')).join('\n')); } }
 
-// 8. рендер (порциями для длинных — Фаза 3.3)
+// 8. рендер (порциями для длинных – Фаза 3.3)
 const rawMp4 = `out/${id}.raw.mp4`;
 log(`рендер → ${rawMp4} …`);
 if (durF > 540) {
-  log('длинный ролик — рендерю порциями (resume при сбое)');
+  log('длинный ролик – рендерю порциями (resume при сбое)');
   execSync(`node scripts/render-chunks.js Dynamic ${propsPath} ${rawMp4} ${durF} --chunk 300 --audio public/source.mp4`, { cwd: ROOT, stdio: 'inherit' });
 } else {
   execSync(`${remotionBin()} render src/index.js Dynamic ${rawMp4} --props=./${propsPath} --codec=h264 --log=error`,
@@ -304,7 +376,7 @@ if (props.audio && props.audio.music && props.audio.music.file) {
     console.log('  ' + sh(`node scripts/mix-music.js ${outMp4} "${musPath}" "${musTmp}" ${flags}`).split('\n').filter(Boolean).slice(-1)[0]);
     fs.copyFileSync(musTmp, path.join(ROOT, outMp4)); fs.unlinkSync(musTmp);   // кросс-платформенно (без unix mv)
   } else {
-    log(`⚠️ музыка не найдена: ${musPath} — пропускаю`);
+    log(`⚠️ музыка не найдена: ${musPath} – пропускаю`);
   }
 }
 
@@ -316,7 +388,7 @@ if (outDir) {   // глобальный запуск: положить резу�
   finalPath = dest;
 }
 console.log(`\n✅ готово: ${finalPath}  (${W}x${H}, аспект исходника сохранён)`);
-console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] — иначе Telegram сплющит вертикаль.');
+console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] – иначе Telegram сплющит вертикаль.');
 
 // --- helpers ---
 function requireFresh(p) { const abs = require.resolve(p); delete require.cache[abs]; return require(abs); }

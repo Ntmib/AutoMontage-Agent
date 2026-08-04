@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Глобальная команда `automontage` — работает из любой папки на Windows/macOS/Linux.
+// Глобальная команда `automontage` – работает из любой папки на Windows/macOS/Linux.
 // Движок сам находит свой корень (__dirname), результат кладёт в папку пользователя.
 //
-//   automontage <видео> [опции build.js]   — смонтировать ролик
-//   automontage demo                        — собрать демо из примера в репозитории
-//   automontage --help                      — помощь
+//   automontage <видео> [опции build.js]   – смонтировать ролик
+//   automontage demo                        – собрать демо из примера в репозитории
+//   automontage --help                      – помощь
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
@@ -13,7 +13,7 @@ const ROOT = path.join(__dirname, '..');
 const argv = process.argv.slice(2);
 
 function help() {
-  console.log(`AutoMontage-Agent — автомонтаж видео.
+  console.log(`AutoMontage-Agent – автомонтаж видео.
 
 Использование:
   automontage <видео.mp4> [опции]     смонтировать (результат в текущей папке)
@@ -23,15 +23,19 @@ function help() {
 
 Частые опции:
   --theme craft|cyber   стиль оформления (по умолчанию craft)
-  --template lesson     собрать урок-презентацию (нужен ANTHROPIC/OPENAI ключ)
-  --title "ТЕМА"        заголовок для урока (--template lesson)
+  --template lesson     создать черновик ТЗ из 7 готовых сцен и остановиться
+  --aspect source       формат как у исходника (дефолт для lesson)
+  --aspect vertical     вертикальный результат 1080x1920
+  --aspect horizontal   горизонтальный результат 1920x1080
+  --brief file.json     рендер утверждённого lesson-ТЗ через ReelScenes
+  --title "ТЕМА"        заголовок для lesson
   --scenario file.json  готовый монтажный лист
   --no-transcribe       не транскрибировать (для монтажа по готовому --scenario)
   --model turbo|small   модель распознавания речи
-  --tighten             срезать паузы и слова-паразиты
+  --tighten             срезать паузы и слова-паразиты (не вместе с lesson)
   --beat                ритмичный зум под музыку
   --autopos             плашки автоматически мимо лица
-  --reframe             перекадрировать в вертикаль по лицу
+  --reframe             перекадрировать Dynamic в вертикаль по лицу
   --outdir <путь>       куда положить результат (по умолчанию текущая папка)
 
 Сначала проверь окружение: automontage doctor
@@ -64,7 +68,7 @@ if (argv[0] === 'demo') {
   forward = argv.slice();
 }
 
-// результат — в текущую папку пользователя, если явно не задан --outdir
+// результат – в текущую папку пользователя, если явно не задан --outdir
 if (!forward.includes('--outdir')) forward.push('--outdir', process.cwd());
 
 try {
