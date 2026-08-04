@@ -7,7 +7,12 @@ const path = require('node:path');
 const {
   createOrOpenProject,
   formatProjectId,
+  nextBriefPaths,
+  nextRenderPaths,
+  publishFinal,
   readProjectManifest,
+  recordBrief,
+  recordRender,
   slugifyProjectName,
 } = require('../scripts/project/workspace');
 
@@ -83,4 +88,63 @@ test('existing project rejects a different source', (t) => {
     () => createOrOpenProject({ projectDir: workspace.dir, sourcePath: otherSource }),
     /другой исходник/,
   );
+});
+
+test('brief revisions advance from manifest history', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Versioned brief',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+
+  const first = nextBriefPaths(workspace);
+  assert.equal(path.basename(first.jsonPath), 'v01-draft.lesson.json');
+  assert.equal(path.basename(first.markdownPath), 'v01-draft.lesson.md');
+
+  recordBrief(workspace, {
+    revision: first.revision,
+    jsonPath: first.jsonPath,
+    markdownPath: first.markdownPath,
+    status: 'draft',
+    theme: 'lesson-neutral',
+    aspect: 'source',
+  });
+
+  assert.equal(path.basename(nextBriefPaths(workspace).jsonPath), 'v02-draft.lesson.json');
+  const manifest = readProjectManifest(workspace.dir);
+  assert.equal(manifest.currentBrief, 'brief/v01-draft.lesson.json');
+  assert.equal(manifest.briefs[0].theme, 'lesson-neutral');
+});
+
+test('render versions keep history and publish one canonical final', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Versioned render',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+
+  const first = nextRenderPaths(workspace, 'Новая музыка');
+  assert.equal(path.basename(first.dir), 'v01-novaya-muzyka');
+  assert.equal(path.basename(first.propsPath), 'props.json');
+  assert.equal(path.basename(first.rawPath), 'raw.mp4');
+  assert.equal(path.basename(first.finalPath), 'final.mp4');
+  fs.writeFileSync(first.finalPath, 'render');
+
+  recordRender(workspace, {
+    version: first.version,
+    label: first.label,
+    dir: first.dir,
+    status: 'complete',
+  });
+
+  assert.equal(path.basename(nextRenderPaths(workspace, 'Ducking').dir), 'v02-ducking');
+  const canonicalFinal = publishFinal(workspace, first.finalPath);
+  assert.equal(fs.readFileSync(canonicalFinal, 'utf8'), 'render');
+  const manifest = readProjectManifest(workspace.dir);
+  assert.equal(manifest.latestRender, 'renders/v01-novaya-muzyka');
+  assert.equal(manifest.final, 'final/versioned-render.mp4');
 });

@@ -137,10 +137,122 @@ function createOrOpenProject({
   return asWorkspace(resolvedProjectDir, manifest);
 }
 
+function formatVersion(number) {
+  return `v${String(number).padStart(2, '0')}`;
+}
+
+function relativeProjectPath(workspace, filePath) {
+  const relative = path.relative(workspace.dir, path.resolve(filePath));
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('путь должен находиться внутри проекта');
+  }
+  return relative.split(path.sep).join('/');
+}
+
+function nextBriefPaths(workspace, kind = 'lesson') {
+  const highestRevision = workspace.manifest.briefs.reduce(
+    (highest, brief) => Math.max(highest, Number(brief.revision) || 0),
+    0,
+  );
+  const revision = highestRevision + 1;
+  const prefix = `${formatVersion(revision)}-draft.${kind}`;
+  return {
+    revision,
+    jsonPath: path.join(workspace.dir, 'brief', `${prefix}.json`),
+    markdownPath: path.join(workspace.dir, 'brief', `${prefix}.md`),
+  };
+}
+
+function recordBrief(workspace, {
+  revision,
+  jsonPath,
+  markdownPath,
+  status,
+  theme = null,
+  aspect = null,
+}) {
+  const entry = {
+    revision,
+    jsonPath: relativeProjectPath(workspace, jsonPath),
+    markdownPath: markdownPath ? relativeProjectPath(workspace, markdownPath) : null,
+    status,
+    theme,
+    aspect,
+  };
+  workspace.manifest.briefs.push(entry);
+  workspace.manifest.currentBrief = entry.jsonPath;
+  workspace.manifest.updatedAt = new Date().toISOString();
+  writeProjectManifest(workspace.dir, workspace.manifest);
+  return workspace;
+}
+
+function nextRenderPaths(workspace, label = 'render') {
+  const highestVersion = workspace.manifest.renders.reduce(
+    (highest, render) => Math.max(highest, Number(render.version) || 0),
+    0,
+  );
+  const version = highestVersion + 1;
+  const safeLabel = slugifyProjectName(label);
+  const dir = path.join(
+    workspace.dir,
+    'renders',
+    `${formatVersion(version)}-${safeLabel}`,
+  );
+  fs.mkdirSync(dir, { recursive: true });
+  return {
+    version,
+    label: safeLabel,
+    dir,
+    propsPath: path.join(dir, 'props.json'),
+    rawPath: path.join(dir, 'raw.mp4'),
+    finalPath: path.join(dir, 'final.mp4'),
+  };
+}
+
+function recordRender(workspace, {
+  version,
+  label,
+  dir,
+  briefPath = null,
+  status,
+}) {
+  const entry = {
+    version,
+    label,
+    dir: relativeProjectPath(workspace, dir),
+    briefPath: briefPath ? relativeProjectPath(workspace, briefPath) : null,
+    status,
+  };
+  workspace.manifest.renders.push(entry);
+  workspace.manifest.latestRender = entry.dir;
+  workspace.manifest.updatedAt = new Date().toISOString();
+  writeProjectManifest(workspace.dir, workspace.manifest);
+  return workspace;
+}
+
+function publishFinal(workspace, renderFinalPath) {
+  const sourcePath = path.resolve(renderFinalPath);
+  if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+    throw new Error(`финальный рендер не найден: ${sourcePath}`);
+  }
+  relativeProjectPath(workspace, sourcePath);
+  const destination = path.join(workspace.dir, workspace.manifest.final);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(sourcePath, destination);
+  workspace.manifest.updatedAt = new Date().toISOString();
+  writeProjectManifest(workspace.dir, workspace.manifest);
+  return destination;
+}
+
 module.exports = {
   createOrOpenProject,
   formatProjectId,
+  nextBriefPaths,
+  nextRenderPaths,
+  publishFinal,
   readProjectManifest,
+  recordBrief,
+  recordRender,
   slugifyProjectName,
   writeProjectManifest,
 };
