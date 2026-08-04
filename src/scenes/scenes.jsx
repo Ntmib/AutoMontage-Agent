@@ -4,10 +4,10 @@ import { tk, safeFor, safeWidth } from './safezone';
 import { SceneBg, FaceLayer, Chip, FitHeading, useRise } from './parts';
 import { clamp, countUp, fmt } from '../anim';
 
-const Bullets = ({ items = [], k, delay = 30, size = 38 }) => (
+const Bullets = ({ items = [], k, delay = 30, stagger = 7, delayForIndex = null, size = 38 }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
     {items.slice(0, 4).map((b, i) => {
-      const r = useRise(delay + i * 7, 22);
+      const r = useRise(delayForIndex ? delayForIndex(i) : delay + i * stagger, 22);
       return <div key={i} style={{ ...r, display: 'flex', alignItems: 'center', gap: 18, fontSize: size, color: k.cream }}>
         <span style={{ width: 18, height: 18, background: k.orange, flexShrink: 0 }} />{b}</div>;
     })}
@@ -42,6 +42,32 @@ export const getLogoEntrance = (frame, index, fps) => {
     scale: 0.78 + eased * 0.22,
     y: (1 - eased) * 42,
   };
+};
+
+export const getSplitGradient = (frame, fps) => {
+  const progress = (frame % (fps * 8)) / (fps * 8);
+  return {
+    x: 20 + progress * 60,
+    y: 72 - progress * 44,
+    angle: 115 - progress * 30,
+  };
+};
+
+export const getSplitBulletDelay = (index, fps, variant) => (
+  variant === 'animated-gradient'
+    ? Math.round((0.45 + index * 1.45) * fps)
+    : 30 + index * 7
+);
+
+const AnimatedSplitGradient = ({ k, frame, fps }) => {
+  const motion = getSplitGradient(frame, fps);
+  return (
+    <>
+      <AbsoluteFill style={{ background: `linear-gradient(${motion.angle}deg, ${k.bg} 4%, #24140B 48%, #100C09 96%)` }} />
+      <AbsoluteFill style={{ background: `radial-gradient(65% 50% at ${motion.x}% ${motion.y}%, ${k.orange}66, transparent 68%), radial-gradient(55% 45% at ${100 - motion.x}% ${100 - motion.y}%, ${k.orange}30, transparent 72%)`, opacity: 0.86 }} />
+      <div style={{ position: 'absolute', left: `${motion.x}%`, top: `${motion.y}%`, width: 360, height: 360, borderRadius: '50%', border: `2px solid ${k.orange}45`, boxShadow: `0 0 100px ${k.orange}35`, transform: `translate(-50%, -50%) rotate(${frame * 0.45}deg)` }} />
+    </>
+  );
 };
 
 const SOCIAL_LOGOS = {
@@ -137,7 +163,7 @@ export const SceneFullscreen = (p) => {
 
 // 2. SPLIT-TOP: спикер в окне сверху, текст снизу в сейф-зоне
 export const SceneSplit = (p) => {
-  const t = useTheme(); const k = tk(t); const { width, height } = useVideoConfig(); const s = safeFor(width, height);
+  const t = useTheme(); const k = tk(t); const frame = useCurrentFrame(); const { width, height, fps } = useVideoConfig(); const s = safeFor(width, height);
   const land = width > height;
   const cardEnter = useRise(0, 30); const numR = useRise(4, 26);
   const badge = <div style={{ position: 'absolute', top: 26, left: 26, zIndex: 2, background: k.orange, color: k.bg, fontFamily: k.fonts.mono, fontWeight: 700, fontSize: 22, letterSpacing: 2, padding: '8px 15px', borderRadius: 8 }}>{k.L.badge || 'ЭФИР'}</div>;
@@ -151,6 +177,7 @@ export const SceneSplit = (p) => {
     const facePos = { x: p.facePos?.x ?? 0.34, y: p.facePos?.y ?? 0.5 };
     return (
       <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+        {p.variant === 'animated-gradient' ? <AnimatedSplitGradient k={k} frame={frame} fps={fps} /> : null}
         <SceneBg />
         <Chip text={p.videoTitle || 'ВИДЕО'} />
         <div style={{ position: 'absolute', left: s.left, top: s.top + 40, bottom: s.bottom + 40, width: cardW, borderRadius: 30, overflow: 'hidden', border: `1px solid ${k.orange}70`, boxShadow: k.cardShadow, ...cardEnter }}>
@@ -160,7 +187,7 @@ export const SceneSplit = (p) => {
         <div style={{ position: 'absolute', left: textLeft, width: textW, top: s.top, bottom: s.bottom, display: 'flex', flexDirection: 'column', justifyContent: 'center', overflow: 'hidden' }}>
           {p.num ? <div style={{ ...numR, fontFamily: k.fonts.display, fontWeight: 700, fontSize: 96, lineHeight: 0.8, color: 'transparent', WebkitTextStroke: `3px ${k.orange}` }}>{p.num}</div> : null}
           <FitHeading cream={p.headCream} orange={p.headOrange} width={textW} maxSize={96} style={{ marginTop: 18 }} />
-          {p.bullets ? <div style={{ marginTop: 26 }}><Bullets items={p.bullets.slice(0, 4)} k={k} delay={30} size={36} /></div> : null}
+          {p.bullets ? <div style={{ marginTop: 26 }}><Bullets items={p.bullets.slice(0, 4)} k={k} delayForIndex={(index) => getSplitBulletDelay(index, fps, p.variant)} size={p.variant === 'animated-gradient' ? 32 : 36} /></div> : null}
         </div>
       </AbsoluteFill>
     );
@@ -169,6 +196,7 @@ export const SceneSplit = (p) => {
   const sw = safeWidth(width, height);
   return (
     <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+      {p.variant === 'animated-gradient' ? <AnimatedSplitGradient k={k} frame={frame} fps={fps} /> : null}
       <SceneBg />
       <Chip text={p.videoTitle || 'ВИДЕО'} />
       <div style={{ position: 'absolute', left: s.left, right: s.right, top: s.top + 50, height: 660, borderRadius: 34, overflow: 'hidden', border: `1px solid ${k.orange}70`, boxShadow: k.cardShadow, ...cardEnter }}>
@@ -178,7 +206,7 @@ export const SceneSplit = (p) => {
       <div style={{ position: 'absolute', left: s.left, right: s.right, top: s.top + 760, bottom: s.bottom, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', overflow: 'hidden' }}>
         {p.num ? <div style={{ ...numR, fontFamily: k.fonts.display, fontWeight: 700, fontSize: 84, lineHeight: 0.8, color: 'transparent', WebkitTextStroke: `3px ${k.orange}` }}>{p.num}</div> : null}
         <FitHeading cream={p.headCream} orange={p.headOrange} width={sw} maxSize={82} style={{ marginTop: 20 }} />
-        {p.bullets ? <div style={{ marginTop: 22 }}><Bullets items={p.bullets.slice(0, 3)} k={k} delay={30} size={33} /></div> : null}
+        {p.bullets ? <div style={{ marginTop: 22 }}><Bullets items={p.bullets.slice(0, p.variant === 'animated-gradient' ? 4 : 3)} k={k} delayForIndex={(index) => getSplitBulletDelay(index, fps, p.variant)} size={p.variant === 'animated-gradient' ? 27 : 33} /></div> : null}
       </div>
     </AbsoluteFill>
   );

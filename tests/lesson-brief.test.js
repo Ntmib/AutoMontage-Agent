@@ -204,6 +204,22 @@ test('blur overlay accepts staged official social logos', () => {
   assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
 });
 
+test('split accepts an animated gradient presentation variant', () => {
+  const brief = makeBrief({
+    scenes: [{
+      scene: 'split',
+      start: 0,
+      end: 6,
+      variant: 'animated-gradient',
+      headCream: 'КАК ЭТО',
+      headOrange: 'РАБОТАЕТ',
+      bullets: ['Фото сверху', 'Текст снизу', 'Тёмный градиент', 'Всё двигается'],
+    }],
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+});
+
 test('markdown brief shows scenes and proofread corrections', () => {
   const markdown = formatBriefMarkdown(makeBrief());
 
