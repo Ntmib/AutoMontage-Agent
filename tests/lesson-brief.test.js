@@ -136,6 +136,8 @@ test('approved lesson music is validated and becomes render props', () => {
       gainDb: -17,
       fadeInSec: 0.4,
       fadeOutSec: 0.8,
+      startSec: 22,
+      playbackRate: 1.06,
     },
   });
 
@@ -146,6 +148,8 @@ test('approved lesson music is validated and becomes render props', () => {
   assert.equal(props.musicGainDb, -17);
   assert.equal(props.musicFadeInSec, 0.4);
   assert.equal(props.musicFadeOutSec, 0.8);
+  assert.equal(props.musicTrimBeforeFrames, 660);
+  assert.equal(props.musicPlaybackRate, 1.06);
 });
 
 test('bottom diagram accepts approved speaker circle and funnel variants', () => {

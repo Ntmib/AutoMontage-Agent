@@ -82,6 +82,8 @@ function buildReelScenesProps({ brief, theme, sourceFile = 'source.mp4' }) {
     props.musicGainDb = brief.music.gainDb;
     props.musicFadeInSec = brief.music.fadeInSec ?? 0;
     props.musicFadeOutSec = brief.music.fadeOutSec ?? 0;
+    props.musicTrimBeforeFrames = Math.round((brief.music.startSec ?? 0) * brief.output.fps);
+    props.musicPlaybackRate = brief.music.playbackRate ?? 1;
   }
   return props;
 }

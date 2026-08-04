@@ -41,3 +41,16 @@ test('music gain uses decibels with deterministic edge fades', () => {
   assert.ok(Math.abs(getMusicVolume(79, options) - 0.14125375446227545) < 1e-12);
   assert.equal(getMusicVolume(99, options), 0);
 });
+
+test('music can start from its rhythmic section and play slightly faster', () => {
+  const { getMusicPlaybackProps } = loadDirector();
+
+  assert.deepEqual(getMusicPlaybackProps({
+    fps: 25,
+    trimBeforeFrames: 550,
+    playbackRate: 1.06,
+  }), {
+    trimBefore: 550,
+    playbackRate: 1.06,
+  });
+});

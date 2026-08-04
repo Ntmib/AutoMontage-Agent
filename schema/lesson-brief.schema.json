@@ -29,7 +29,9 @@
         "file": { "type": "string", "minLength": 1 },
         "gainDb": { "type": "number", "minimum": -60, "maximum": 0 },
         "fadeInSec": { "type": "number", "minimum": 0, "maximum": 10 },
-        "fadeOutSec": { "type": "number", "minimum": 0, "maximum": 10 }
+        "fadeOutSec": { "type": "number", "minimum": 0, "maximum": 10 },
+        "startSec": { "type": "number", "minimum": 0, "maximum": 3600 },
+        "playbackRate": { "type": "number", "minimum": 0.5, "maximum": 2 }
       }
     },
     "output": {

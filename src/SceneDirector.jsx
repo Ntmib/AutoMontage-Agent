@@ -31,6 +31,11 @@ export const getMusicVolume = (frame, {
   return base * Math.min(fadeIn, fadeOut);
 };
 
+export const getMusicPlaybackProps = ({ trimBeforeFrames = 0, playbackRate = 1 }) => ({
+  trimBefore: Math.max(0, Math.round(trimBeforeFrames)),
+  playbackRate,
+});
+
 // Мягкое появление сцены (кроссфейд-cut)
 const FadeIn = ({ children, dur }) => {
   const frame = useCurrentFrame();
@@ -45,7 +50,7 @@ const SafeGuide = () => {
 };
 
 // Режиссёр сцен: рендерит список сцен по таймкодам с переходами.
-export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc = null, facePos = null, faceZoom = 1, audioSrc = null, musicSrc = null, musicGainDb = -17, musicFadeInSec = 0, musicFadeOutSec = 0, videoTitle = 'ВИДЕО', debug = false }) => {
+export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc = null, facePos = null, faceZoom = 1, audioSrc = null, musicSrc = null, musicGainDb = -17, musicFadeInSec = 0, musicFadeOutSec = 0, musicTrimBeforeFrames = 0, musicPlaybackRate = 1, videoTitle = 'ВИДЕО', debug = false }) => {
   const t = getTheme(theme);
   const { fps, durationInFrames } = useVideoConfig();
   return (
@@ -55,6 +60,10 @@ export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc =
         {audioSrc && <Audio src={src(audioSrc)} />}
         {musicSrc && <Audio
           src={src(musicSrc)}
+          {...getMusicPlaybackProps({
+            trimBeforeFrames: musicTrimBeforeFrames,
+            playbackRate: musicPlaybackRate,
+          })}
           volume={(frame) => getMusicVolume(frame, {
             durationInFrames,
             fps,
