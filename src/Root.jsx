@@ -7,6 +7,8 @@ import { scenarioJob1 } from './scenario-job1';
 import { scenarioJob1V } from './scenario-job1v';
 import { scenarioPreview } from './scenario-preview';
 import { scenarioPreviewH } from './scenario-preview-h';
+import { LessonComp } from './LessonComp';
+import { lessonSample } from './data/lesson-sample';
 
 export const RemotionRoot = () => {
   return (
@@ -85,6 +87,17 @@ export const RemotionRoot = () => {
         width={1280}
         height={720}
         defaultProps={scenarioPreviewH}
+      />
+      {/* Шаблон lesson-presentation (16:9): карточка спикера + слайд-панель.
+          theme приходит из props (строка или объект-тема из внешнего бренд-пака). */}
+      <Composition
+        id="Lesson"
+        component={LessonComp}
+        durationInFrames={90}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={lessonSample}
       />
       {/* Пайплайн: размеры и длина берутся из props (любой аспект/длительность) */}
       <Composition

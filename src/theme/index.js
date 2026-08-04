@@ -1,8 +1,9 @@
 import { createContext, useContext } from 'react';
 import craft from './craft';
 import cyber from './cyber';
+import lessonNeutral from './lesson-neutral';
 
-const THEMES = { craft, cyber };
+const THEMES = { craft, cyber, 'lesson-neutral': lessonNeutral };
 
 // name может быть: строкой ('craft'/'cyber') или объектом-темой
 // (сгенерированным из палитры видео через scripts/palette.js).
