@@ -111,8 +111,10 @@ export const RemotionRoot = () => {
         height={1080}
         defaultProps={lessonSeqDemo}
         calculateMetadata={({ props }) => {
+          const fps = props.fps || 30;
           const last = (props.slides || []).reduce((m, s) => Math.max(m, s.end ?? 0), 0);
-          return { durationInFrames: Math.max(60, Math.round((last || 8) * (props.fps || 30))) };
+          const dur = props.durationInFrames || Math.max(60, Math.round((last || 8) * fps));
+          return { durationInFrames: dur, fps, width: props.width || 1920, height: props.height || 1080 };
         }}
       />
       {/* Пайплайн: размеры и длина берутся из props (любой аспект/длительность) */}

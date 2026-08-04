@@ -1,4 +1,4 @@
-import { AbsoluteFill, Sequence, useVideoConfig } from 'remotion';
+import { AbsoluteFill, Sequence, Audio, staticFile, useVideoConfig } from 'remotion';
 import { FontStyle } from './fonts';
 import { ThemeContext, getTheme } from './theme';
 import { LessonBackground, LessonTopBar, SpeakerCard, SlidePanel } from './blocks/LessonSlide';
@@ -6,7 +6,7 @@ import { LessonBackground, LessonTopBar, SpeakerCard, SlidePanel } from './block
 // Секвенсор шаблона lesson-presentation.
 // Карточка спикера (видео лица) держится постоянно слева; справа слайды
 // сменяются по таймкодам монтажного листа. Каждый слайд играет свой вход.
-export const LessonSequence = ({ theme = 'lesson-neutral', slides = [], faceSrc = null, name, role }) => {
+export const LessonSequence = ({ theme = 'lesson-neutral', slides = [], faceSrc = null, audioSrc = null, name, role }) => {
   const t = getTheme(theme);
   const { fps } = useVideoConfig();
   const total = String(slides.length).padStart(2, '0');
@@ -17,6 +17,7 @@ export const LessonSequence = ({ theme = 'lesson-neutral', slides = [], faceSrc 
     <ThemeContext.Provider value={t}>
       <AbsoluteFill style={{ background: t.colors.bg, fontFamily: t.fonts.body, color: t.colors.cream || t.colors.text, overflow: 'hidden' }}>
         <FontStyle />
+        {audioSrc && <Audio src={audioSrc.startsWith('http') ? audioSrc : staticFile(audioSrc)} />}
         <LessonBackground />
 
         {/* карточка спикера, постоянная */}
