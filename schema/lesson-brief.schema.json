@@ -87,6 +87,7 @@
           "variant": { "enum": ["speaker-circle", "funnel", "blur-only", "social-logos", "animated-gradient", "keyword-bounce"] },
           "handle": { "type": "string" },
           "animateKeyword": { "type": "string" },
+          "bulletDelaySec": { "type": "number", "minimum": 0, "maximum": 10 },
           "logos": {
             "type": "array",
             "maxItems": 4,

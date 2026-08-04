@@ -36,4 +36,5 @@ test('split gradient moves while bullet events stay evenly staggered', () => {
     [0, 1, 2, 3].map((index) => getSplitBulletDelay(index, 25, 'animated-gradient')),
     [11, 48, 84, 120],
   );
+  assert.equal(getSplitBulletDelay(0, 25, undefined, 0.08), 2);
 });

@@ -220,6 +220,22 @@ test('split accepts an animated gradient presentation variant', () => {
   assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
 });
 
+test('short split cards can approve an earlier bullet entrance', () => {
+  const brief = makeBrief({
+    scenes: [{
+      scene: 'split',
+      start: 0,
+      end: 1.2,
+      bulletDelaySec: 0.08,
+      headCream: 'ЭТО ВИДЕО СМОНТИРОВАЛ',
+      headOrange: 'CLAUDE CODE',
+      bullets: ['Полностью без моего участия и без монтажёра'],
+    }],
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+});
+
 test('text-only accepts one animated CTA keyword', () => {
   const brief = makeBrief({
     scenes: [{

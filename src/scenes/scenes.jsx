@@ -53,11 +53,14 @@ export const getSplitGradient = (frame, fps) => {
   };
 };
 
-export const getSplitBulletDelay = (index, fps, variant) => (
-  variant === 'animated-gradient'
+export const getSplitBulletDelay = (index, fps, variant, bulletDelaySec = null) => {
+  if (Number.isFinite(bulletDelaySec)) {
+    return Math.round((bulletDelaySec + index * 0.35) * fps);
+  }
+  return variant === 'animated-gradient'
     ? Math.round((0.45 + index * 1.45) * fps)
-    : 30 + index * 7
-);
+    : 30 + index * 7;
+};
 
 export const getStatFontSize = (text, width, land) => {
   const base = land ? 240 : 340;
@@ -204,7 +207,7 @@ export const SceneSplit = (p) => {
         <div style={{ position: 'absolute', left: textLeft, width: textW, top: s.top, bottom: s.bottom, display: 'flex', flexDirection: 'column', justifyContent: 'center', overflow: 'hidden' }}>
           {p.num ? <div style={{ ...numR, fontFamily: k.fonts.display, fontWeight: 700, fontSize: 96, lineHeight: 0.8, color: 'transparent', WebkitTextStroke: `3px ${k.orange}` }}>{p.num}</div> : null}
           <FitHeading cream={p.headCream} orange={p.headOrange} width={textW} maxSize={96} style={{ marginTop: 18 }} />
-          {p.bullets ? <div style={{ marginTop: 26 }}><Bullets items={p.bullets.slice(0, 4)} k={k} delayForIndex={(index) => getSplitBulletDelay(index, fps, p.variant)} size={p.variant === 'animated-gradient' ? 32 : 36} /></div> : null}
+          {p.bullets ? <div style={{ marginTop: 26 }}><Bullets items={p.bullets.slice(0, 4)} k={k} delayForIndex={(index) => getSplitBulletDelay(index, fps, p.variant, p.bulletDelaySec)} size={p.variant === 'animated-gradient' ? 32 : 36} /></div> : null}
         </div>
       </AbsoluteFill>
     );
@@ -223,7 +226,7 @@ export const SceneSplit = (p) => {
       <div style={{ position: 'absolute', left: s.left, right: s.right, top: s.top + 760, bottom: s.bottom, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', overflow: 'hidden' }}>
         {p.num ? <div style={{ ...numR, fontFamily: k.fonts.display, fontWeight: 700, fontSize: 84, lineHeight: 0.8, color: 'transparent', WebkitTextStroke: `3px ${k.orange}` }}>{p.num}</div> : null}
         <FitHeading cream={p.headCream} orange={p.headOrange} width={sw} maxSize={82} style={{ marginTop: 20 }} />
-        {p.bullets ? <div style={{ marginTop: 22 }}><Bullets items={p.bullets.slice(0, p.variant === 'animated-gradient' ? 4 : 3)} k={k} delayForIndex={(index) => getSplitBulletDelay(index, fps, p.variant)} size={p.variant === 'animated-gradient' ? 27 : 33} /></div> : null}
+        {p.bullets ? <div style={{ marginTop: 22 }}><Bullets items={p.bullets.slice(0, p.variant === 'animated-gradient' ? 4 : 3)} k={k} delayForIndex={(index) => getSplitBulletDelay(index, fps, p.variant, p.bulletDelaySec)} size={p.variant === 'animated-gradient' ? 27 : 33} /></div> : null}
       </div>
     </AbsoluteFill>
   );
