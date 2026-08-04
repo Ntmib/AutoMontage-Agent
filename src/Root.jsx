@@ -9,6 +9,8 @@ import { scenarioPreview } from './scenario-preview';
 import { scenarioPreviewH } from './scenario-preview-h';
 import { LessonComp } from './LessonComp';
 import { lessonSample } from './data/lesson-sample';
+import { LessonSequence } from './LessonSequence';
+import { lessonSeqDemo } from './data/lesson-seq-demo';
 
 export const RemotionRoot = () => {
   return (
@@ -98,6 +100,20 @@ export const RemotionRoot = () => {
         width={1920}
         height={1080}
         defaultProps={lessonSample}
+      />
+      {/* lesson-presentation: секвенсор слайдов по таймкодам + карточка спикера */}
+      <Composition
+        id="LessonSeq"
+        component={LessonSequence}
+        durationInFrames={240}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={lessonSeqDemo}
+        calculateMetadata={({ props }) => {
+          const last = (props.slides || []).reduce((m, s) => Math.max(m, s.end ?? 0), 0);
+          return { durationInFrames: Math.max(60, Math.round((last || 8) * (props.fps || 30))) };
+        }}
       />
       {/* Пайплайн: размеры и длина берутся из props (любой аспект/длительность) */}
       <Composition
