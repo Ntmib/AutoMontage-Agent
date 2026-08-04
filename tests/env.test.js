@@ -4,7 +4,26 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { resolveRemotionCommand } = require('../scripts/env');
+const {
+  pythonCandidates,
+  resolveRemotionCommand,
+} = require('../scripts/env');
+
+test('Python candidates prefer the project virtual environment', () => {
+  assert.deepEqual(
+    pythonCandidates('/work/automontage', 'darwin'),
+    ['/work/automontage/.venv/bin/python', 'python3', 'python'],
+  );
+  assert.deepEqual(
+    pythonCandidates('C:\\work\\automontage', 'win32'),
+    [
+      path.join('C:\\work\\automontage', '.venv/Scripts/python.exe'),
+      'python',
+      'python3',
+      'py',
+    ],
+  );
+});
 
 test('Remotion command is safe for execFile when the local binary exists', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-env-'));

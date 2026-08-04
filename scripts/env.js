@@ -16,11 +16,18 @@ function tmp(name) {
 // Автоопределение интерпретатора Python 3.
 // Windows: обычно `python`. macOS/Linux: обычно `python3`. Берём тот, что реально Python 3.
 let _py = null;
+function pythonCandidates(root = ROOT, platform = process.platform) {
+  const localPython = platform === 'win32'
+    ? path.join(root, '.venv', 'Scripts', 'python.exe')
+    : path.join(root, '.venv', 'bin', 'python');
+  return platform === 'win32'
+    ? [localPython, 'python', 'python3', 'py']
+    : [localPython, 'python3', 'python'];
+}
+
 function python() {
   if (_py) return _py;
-  const candidates = process.platform === 'win32'
-    ? ['python', 'python3', 'py']
-    : ['python3', 'python'];
+  const candidates = pythonCandidates();
   for (const cmd of candidates) {
     try {
       const r = spawnSync(cmd, ['--version'], { encoding: 'utf8' });
@@ -54,6 +61,7 @@ module.exports = {
   TMPDIR,
   tmp,
   python,
+  pythonCandidates,
   remotionBin,
   resolveRemotionCommand,
   execSync,
