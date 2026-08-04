@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "ОШИБКА: gitleaks не установлен — коммит остановлен, чтобы не пропустить секрет."
+  echo "Установи gitleaks и повтори коммит. Не используй --no-verify."
+  exit 1
+fi
+
+echo "Проверяю staged-файлы на API-ключи, токены и пароли…"
+exec gitleaks git --staged --redact=100 --no-banner --no-color
