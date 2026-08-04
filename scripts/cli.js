@@ -16,13 +16,17 @@ function help() {
   console.log(`AutoMontage-Agent — автомонтаж видео.
 
 Использование:
-  automontage <видео.mp4> [опции]     смонтировать (результат — в текущей папке)
-  automontage demo                    собрать демо-ролик из примера
+  automontage <видео.mp4> [опции]     смонтировать (результат в текущей папке)
+  automontage demo                    собрать демо-ролик из примера (без ключей и whisper)
+  automontage doctor                  проверить окружение (что доустановить)
   automontage --help                  эта справка
 
 Частые опции:
   --theme craft|cyber   стиль оформления (по умолчанию craft)
+  --template lesson     собрать урок-презентацию (нужен ANTHROPIC/OPENAI ключ)
+  --title "ТЕМА"        заголовок для урока (--template lesson)
   --scenario file.json  готовый монтажный лист
+  --no-transcribe       не транскрибировать (для монтажа по готовому --scenario)
   --model turbo|small   модель распознавания речи
   --tighten             срезать паузы и слова-паразиты
   --beat                ритмичный зум под музыку
@@ -30,22 +34,32 @@ function help() {
   --reframe             перекадрировать в вертикаль по лицу
   --outdir <путь>       куда положить результат (по умолчанию текущая папка)
 
-Требуется: Node.js, Python 3, ffmpeg (и Chromium для картинок-плашек).`);
+Сначала проверь окружение: automontage doctor
+Требуется: Node.js (>=20), Python 3, ffmpeg (Chromium только для пересборки картинок).`);
 }
 
 if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { help(); process.exit(0); }
+
+// проверка окружения: automontage doctor
+if (argv[0] === 'doctor') {
+  try { execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'doctor.js')], { stdio: 'inherit', cwd: ROOT }); }
+  catch (e) { process.exit(e.status || 1); }
+  process.exit(0);
+}
 
 const buildJs = path.join(ROOT, 'scripts', 'build.js');
 
 let forward;
 if (argv[0] === 'demo') {
-  const demoSrc = path.join(ROOT, 'public', 'source_h.mp4');
-  if (!fs.existsSync(demoSrc)) {
-    console.error('Демо-исходник не входит в репозиторий (личное видео не публикуется).');
-    console.error('Запусти на своём видео: automontage <видео.mp4> --scenario src/scenario-preview-h.js');
+  // демо из коробки: лёгкое тест-видео + готовый монтажный лист, без whisper и ключей
+  const demoSrc = path.join(ROOT, 'examples', 'demo-source.mp4');
+  const demoList = path.join(ROOT, 'examples', 'scenario-demo.json');
+  if (!fs.existsSync(demoSrc) || !fs.existsSync(demoList)) {
+    console.error('Демо-файлы не найдены (examples/demo-source.mp4 + examples/scenario-demo.json).');
+    console.error('Смонтируй своё: automontage <видео.mp4>');
     process.exit(1);
   }
-  forward = [demoSrc, '--id', 'demo'];
+  forward = [demoSrc, '--scenario', demoList, '--no-transcribe', '--id', 'demo'];
 } else {
   forward = argv.slice();
 }

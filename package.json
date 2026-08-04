@@ -6,10 +6,11 @@
     "automontage": "scripts/cli.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
-    "render": "remotion render",
+    "doctor": "node scripts/doctor.js",
+    "demo": "node scripts/cli.js demo",
     "montage": "node scripts/build.js"
   },
   "dependencies": {
