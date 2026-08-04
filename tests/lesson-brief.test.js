@@ -220,6 +220,22 @@ test('split accepts an animated gradient presentation variant', () => {
   assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
 });
 
+test('text-only accepts one animated CTA keyword', () => {
+  const brief = makeBrief({
+    scenes: [{
+      scene: 'text-only',
+      start: 0,
+      end: 2,
+      variant: 'keyword-bounce',
+      animateKeyword: 'МОНТАЖ',
+      quoteCream: 'НАПИШИ',
+      quoteOrange: 'В КОММЕНТАРИЯХ',
+    }],
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+});
+
 test('markdown brief shows scenes and proofread corrections', () => {
   const markdown = formatBriefMarkdown(makeBrief());
 

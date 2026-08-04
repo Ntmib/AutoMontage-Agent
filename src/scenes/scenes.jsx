@@ -65,6 +65,17 @@ export const getStatFontSize = (text, width, land) => {
   return Math.max(96, Math.min(base, fitted));
 };
 
+export const getKeywordMotion = (frame, fps) => {
+  const period = fps * 1.2;
+  const cycle = (frame % period) / period;
+  const wave = cycle <= 0.5 ? cycle * 2 : (1 - cycle) * 2;
+  return {
+    y: wave === 0 ? 0 : -10 * wave,
+    scale: 1 + wave * 0.05,
+    rotate: -1 + wave * 2,
+  };
+};
+
 const AnimatedSplitGradient = ({ k, frame, fps }) => {
   const motion = getSplitGradient(frame, fps);
   return (
@@ -343,8 +354,24 @@ export const SceneBlurOverlay = (p) => {
 
 // 5. TEXT-ONLY: крупная дословная цитата, без спикера
 export const SceneTextOnly = (p) => {
-  const t = useTheme(); const k = tk(t); const { width, height } = useVideoConfig(); const s = safeFor(width, height);
+  const t = useTheme(); const k = tk(t); const frame = useCurrentFrame(); const { width, height, fps } = useVideoConfig(); const s = safeFor(width, height);
   const land = width > height; const sw = safeWidth(width, height);
+
+  if (p.variant === 'keyword-bounce') {
+    const motion = getKeywordMotion(frame, fps);
+    return (
+      <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+        <SceneBg />
+        <Chip text={p.label || 'ХОЧЕШЬ ТАК ЖЕ?'} />
+        <div style={{ position: 'absolute', left: s.left, right: s.right, top: '50%', transform: 'translateY(-50%)', textAlign: 'center' }}>
+          <FitHeading cream={p.quoteCream} width={sw} maxSize={land ? 112 : 98} />
+          <div style={{ margin: '34px auto 38px', display: 'inline-block', background: k.orange, color: k.bg, borderRadius: 18, padding: land ? '16px 38px' : '22px 42px', fontFamily: k.fonts.display, fontWeight: 700, fontSize: land ? 108 : 124, lineHeight: 0.9, boxShadow: `0 18px 55px ${k.orange}45`, transform: `translateY(${motion.y}px) scale(${motion.scale}) rotate(${motion.rotate}deg)` }}>«{p.animateKeyword || 'МОНТАЖ'}»</div>
+          <FitHeading orange={p.quoteOrange} width={sw} maxSize={land ? 96 : 82} />
+        </div>
+      </AbsoluteFill>
+    );
+  }
+
   return (
     <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
       <SceneBg />

@@ -84,8 +84,9 @@
           "videoTitle": { "type": "string" },
           "faceSrc": { "type": "string" },
           "facePos": { "$ref": "#/definitions/facePos" },
-          "variant": { "enum": ["speaker-circle", "funnel", "blur-only", "social-logos", "animated-gradient"] },
+          "variant": { "enum": ["speaker-circle", "funnel", "blur-only", "social-logos", "animated-gradient", "keyword-bounce"] },
           "handle": { "type": "string" },
+          "animateKeyword": { "type": "string" },
           "logos": {
             "type": "array",
             "maxItems": 4,
