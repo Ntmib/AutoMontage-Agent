@@ -59,6 +59,12 @@ export const getSplitBulletDelay = (index, fps, variant) => (
     : 30 + index * 7
 );
 
+export const getStatFontSize = (text, width, land) => {
+  const base = land ? 240 : 340;
+  const fitted = Math.floor(width / (Math.max(1, text.length) * 0.48));
+  return Math.max(96, Math.min(base, fitted));
+};
+
 const AnimatedSplitGradient = ({ k, frame, fps }) => {
   const motion = getSplitGradient(frame, fps);
   return (
@@ -356,14 +362,16 @@ export const SceneTextOnly = (p) => {
 export const SceneStat = (p) => {
   const t = useTheme(); const k = tk(t); const { width, height } = useVideoConfig(); const s = safeFor(width, height);
   const land = width > height; const sw = safeWidth(width, height); const bigR = useRise(2, 34);
+  const statText = `${p.statCream || ''}${p.statOrange || ''}`;
+  const statSize = getStatFontSize(statText, sw, land);
   return (
     <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
       <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} blur={22} dark={0.22} />
       <SceneBg />
       <Chip text={p.label || 'РЕЗУЛЬТАТ'} />
       <div style={{ position: 'absolute', left: s.left, right: s.right, top: '50%', transform: 'translateY(-50%)', textAlign: 'center' }}>
-        <div style={{ ...bigR, fontFamily: k.fonts.display, fontWeight: 700, fontSize: land ? 240 : 340, lineHeight: 0.85 }}>
-          <span style={{ color: k.cream }}>{p.statCream}</span><span style={{ color: k.orange }}>{p.statOrange}</span>
+        <div style={{ ...bigR, fontFamily: k.fonts.display, fontWeight: 700, fontSize: statSize, lineHeight: 0.85, whiteSpace: 'nowrap', letterSpacing: -2 }}>
+          <span style={{ color: k.cream }}>{p.statCream}</span><span style={{ color: k.orange, marginLeft: 12 }}>{p.statOrange}</span>
         </div>
         <FitHeading cream={p.headCream} orange={p.headOrange} width={sw} maxSize={84} style={{ marginTop: 12 }} />
         {p.sub ? <div style={{ marginTop: 20, fontSize: 34, opacity: 0.9 }}>{p.sub}</div> : null}
