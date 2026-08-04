@@ -23,3 +23,6 @@ props/placement_*.json
 # системное
 .DS_Store
 Thumbs.db
+
+# тестовые исходники эфиров (личные, не в паблик)
+public/efir/
