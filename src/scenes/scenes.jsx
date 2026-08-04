@@ -98,13 +98,14 @@ export const SceneBottomDiagram = (p) => {
     const cardW = Math.round((width - s.left - s.right - gap) * 0.42);
     const textLeft = s.left + cardW + gap;
     const textW = width - textLeft - s.right;
+    const facePos = { x: p.facePos?.x ?? 0.34, y: p.facePos?.y ?? 0.32 };
     return (
       <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
         <SceneBg />
         <Chip text={p.videoTitle || 'ВИДЕО'} />
         <div style={{ position: 'absolute', left: s.left, top: s.top + 40, bottom: s.bottom + 40, width: cardW, borderRadius: 30, overflow: 'hidden', border: `1px solid ${k.orange}70`, boxShadow: k.cardShadow, ...cardEnter }}>
           {badge}
-          <FaceLayer faceSrc={p.faceSrc} facePos={{ x: 0.5, y: 0.32 }} />
+          <FaceLayer faceSrc={p.faceSrc} facePos={facePos} />
         </div>
         <div style={{ position: 'absolute', left: textLeft, width: textW, top: s.top, bottom: s.bottom, display: 'flex', flexDirection: 'column', justifyContent: 'center', overflow: 'hidden' }}>
           <FitHeading cream={p.headCream} orange={p.headOrange} width={textW} maxSize={80} />
