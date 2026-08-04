@@ -48,6 +48,7 @@ function writeProjectManifest(projectDir, manifest) {
 function ensureProjectDirectories(projectDir) {
   const directories = [
     'input',
+    'transcript',
     'brief',
     'assets/music',
     'assets/broll',
@@ -93,6 +94,13 @@ function createOrOpenProject({
 
   if (fs.existsSync(manifestPath)) {
     const manifest = readProjectManifest(resolvedProjectDir);
+    if (!manifest.transcript) {
+      manifest.transcript = {
+        words: 'transcript/words.json',
+        captions: 'transcript/captions.js',
+      };
+      writeProjectManifest(resolvedProjectDir, manifest);
+    }
     assertMatchingSource(resolvedProjectDir, manifest, sourcePath);
     ensureProjectDirectories(resolvedProjectDir);
     if (!fs.existsSync(path.join(resolvedProjectDir, manifest.source.localPath))) {
@@ -123,6 +131,10 @@ function createOrOpenProject({
     source: {
       originalPath,
       localPath,
+    },
+    transcript: {
+      words: 'transcript/words.json',
+      captions: 'transcript/captions.js',
     },
     briefs: [],
     renders: [],
@@ -184,6 +196,48 @@ function recordBrief(workspace, {
   workspace.manifest.updatedAt = new Date().toISOString();
   writeProjectManifest(workspace.dir, workspace.manifest);
   return workspace;
+}
+
+function approveBrief(workspace, draftJsonPath) {
+  const draftPath = path.resolve(draftJsonPath);
+  const draftRelativePath = relativeProjectPath(workspace, draftPath);
+  const draftEntry = workspace.manifest.briefs.find(
+    (brief) => brief.jsonPath === draftRelativePath,
+  );
+  if (!draftEntry) throw new Error('черновик не зарегистрирован в project.json');
+  if (!/-draft\.[^.]+\.json$/i.test(draftPath)) {
+    throw new Error('имя черновика должно содержать -draft');
+  }
+  const draft = JSON.parse(fs.readFileSync(draftPath, 'utf8'));
+  if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
+
+  const approvedJsonPath = draftPath.replace(/-draft(\.[^.]+\.json)$/i, '-approved$1');
+  const approvedMarkdownPath = draftEntry.markdownPath
+    ? path.join(workspace.dir, draftEntry.markdownPath).replace(
+      /-draft(\.[^.]+\.md)$/i,
+      '-approved$1',
+    )
+    : null;
+  fs.writeFileSync(approvedJsonPath, `${JSON.stringify({ ...draft, status: 'approved' }, null, 2)}\n`);
+
+  if (approvedMarkdownPath) {
+    const markdown = fs.readFileSync(path.join(workspace.dir, draftEntry.markdownPath), 'utf8');
+    fs.writeFileSync(approvedMarkdownPath, markdown.replace(/Статус:\s*draft/i, 'Статус: approved'));
+  }
+
+  recordBrief(workspace, {
+    revision: draftEntry.revision,
+    jsonPath: approvedJsonPath,
+    markdownPath: approvedMarkdownPath,
+    status: 'approved',
+    theme: draftEntry.theme,
+    aspect: draftEntry.aspect,
+  });
+  return {
+    revision: draftEntry.revision,
+    jsonPath: approvedJsonPath,
+    markdownPath: approvedMarkdownPath,
+  };
 }
 
 function nextRenderPaths(workspace, label = 'render') {
@@ -255,6 +309,7 @@ function publishFinal(workspace, renderFinalPath) {
 }
 
 module.exports = {
+  approveBrief,
   createOrOpenProject,
   formatProjectId,
   nextBriefPaths,

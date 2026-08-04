@@ -15,7 +15,13 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { ROOT, tmp, python, remotionBin, execSync } = require('./env');
+const {
+  ROOT,
+  tmp,
+  python,
+  resolveRemotionCommand,
+  execSync,
+} = require('./env');
 const { loadExtTheme } = require('./load-ext-theme');
 const { resolveOutputGeometry } = require('./lesson/aspect');
 const { REMOTION_AUDIO_ADVANCE_MS } = require('./finish-audio');
@@ -99,6 +105,8 @@ try {
   process.exit(1);
 }
 let video = buildContext.video;
+const transcriptPath = buildContext.paths.transcript;
+const captionsPath = buildContext.paths.captions;
 const PY = lessonAction === 'render' ? null : python();
 const audioWav = tmp(`${id}_audio.wav`);
 const model = opt('model', 'large-v3-turbo');
@@ -112,6 +120,7 @@ const runNodeCapture = (script, scriptArgs) => execFileSync(
   [path.join(ROOT, 'scripts', script), ...scriptArgs.map(String)],
   { cwd: ROOT, stdio: 'pipe' },
 ).toString().trim();
+const remotion = resolveRemotionCommand();
 
 // ── ранние проверки (до тяжёлых шагов: транскрипции, рендера) ──
 // Ключ нужен только для нового ТЗ. Утверждённый brief рендерится без LLM.
@@ -155,10 +164,17 @@ if (lessonAction === 'render') {
 
   if (noTranscribe) {
     log('транскрипцию пропускаю (--no-transcribe): пишу пустой транскрипт');
-    fs.writeFileSync(path.join(ROOT, 'src/data/transcript.json'), '[]');
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, '[]');
   } else {
     log('транскрибирую (faster-whisper)…');
-    sh(`${PY} scripts/transcribe.py "${audioWav}" src/data/transcript.json ${model}`);
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    execFileSync(PY, [
+      path.join(ROOT, 'scripts/transcribe.py'),
+      audioWav,
+      transcriptPath,
+      model,
+    ], { cwd: ROOT, stdio: 'inherit' });
   }
 }
 
@@ -169,7 +185,12 @@ if (args.includes('--tighten') && noTranscribe) {
 } else if (args.includes('--tighten')) {
   log('уплотняю (паузы + слова-паразиты)…');
   const tOut = tmp(`${id}_tight.mp4`);
-  console.log('  ' + sh(`node scripts/tighten.js "${video1}" src/data/transcript.json "${tOut}" src/data/transcript.json`).split('\n').filter(Boolean).slice(-2).join(' | '));
+  console.log('  ' + runNodeCapture('tighten.js', [
+    video1,
+    transcriptPath,
+    tOut,
+    transcriptPath,
+  ]).split('\n').filter(Boolean).slice(-2).join(' | '));
   srcVideo = tOut;
   // пересчитать длительность/кадры по уплотнённому видео
   const dur2 = parseFloat(sh(`ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 "${tOut}"`));
@@ -205,7 +226,7 @@ if (lessonAction === 'plan') {
       .map((file) => `broll/${file}`)
     : [];
   const genArgs = buildGenBriefArgs({
-    transcriptPath: 'src/data/transcript.json',
+    transcriptPath,
     briefPath,
     markdownPath,
     theme,
@@ -310,7 +331,8 @@ if (lessonAction === 'render') {
   }
 
   log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
-  execFileSync(remotionBin(), [
+  execFileSync(remotion.command, [
+    ...remotion.argsPrefix,
     'render',
     'src/index.js',
     prepared.composition,
@@ -368,8 +390,8 @@ if (lessonAction === 'render') {
 }
 
 // 4. субтитры
-sh(`node scripts/build-captions.js`);
-const { CAPTIONS } = requireFresh('../src/data/captions.js');
+runNodeCapture('build-captions.js', [transcriptPath, captionsPath]);
+const { CAPTIONS } = requireFresh(captionsPath);
 log(`субтитров: ${CAPTIONS.length} групп`);
 
 // 5. монтажный лист (+ зум-ритм beatZoom)
@@ -468,7 +490,7 @@ try {
 
 // 7d. гейт динамики: «динамика или слайд-шоу» (docs/editing-rules.md)
 try {
-  const g = runNodeCapture('dynamic-gate.js', [propsPath, 'src/data/transcript.json']);
+  const g = runNodeCapture('dynamic-gate.js', [propsPath, transcriptPath]);
   const verdict = g.split('\n').find((l) => l.includes('Динамика листа')) || '';
   const warn = g.split('\n').filter((l) => l.includes('⚠'));
   if (verdict) log(verdict.trim());
@@ -502,7 +524,8 @@ if (durF > 540) {
     'public/source.mp4',
   ], { cwd: ROOT, stdio: 'inherit' });
 } else {
-  execFileSync(remotionBin(), [
+  execFileSync(remotion.command, [
+    ...remotion.argsPrefix,
     'render',
     'src/index.js',
     'Dynamic',

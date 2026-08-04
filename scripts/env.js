@@ -34,10 +34,27 @@ function python() {
 
 // Запуск локального Remotion CLI кросс-платформенно, без попытки что-либо скачивать.
 // Резолвим бинарь из node_modules пакета (на Windows это .cmd, execSync это учитывает).
-function remotionBin() {
-  const bin = path.join(ROOT, 'node_modules', '.bin',
-    process.platform === 'win32' ? 'remotion.cmd' : 'remotion');
-  return fs.existsSync(bin) ? `"${bin}"` : 'npx --no-install remotion';
+function resolveRemotionCommand(root = ROOT, platform = process.platform) {
+  const bin = path.join(root, 'node_modules', '.bin',
+    platform === 'win32' ? 'remotion.cmd' : 'remotion');
+  return fs.existsSync(bin)
+    ? { command: bin, argsPrefix: [] }
+    : { command: 'npx', argsPrefix: ['--no-install', 'remotion'] };
 }
 
-module.exports = { ROOT, TMPDIR, tmp, python, remotionBin, execSync };
+function remotionBin() {
+  const resolved = resolveRemotionCommand();
+  return resolved.argsPrefix.length
+    ? [resolved.command, ...resolved.argsPrefix].join(' ')
+    : `"${resolved.command}"`;
+}
+
+module.exports = {
+  ROOT,
+  TMPDIR,
+  tmp,
+  python,
+  remotionBin,
+  resolveRemotionCommand,
+  execSync,
+};

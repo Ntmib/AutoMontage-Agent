@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  approveBrief,
   createOrOpenProject,
   formatProjectId,
   nextBriefPaths,
@@ -50,10 +51,13 @@ test('project creation copies one source and creates the full workspace', (t) =>
   assert.ok(fs.existsSync(path.join(workspace.dir, 'assets/music')));
   assert.ok(fs.existsSync(path.join(workspace.dir, 'assets/broll')));
   assert.ok(fs.existsSync(path.join(workspace.dir, 'brief')));
+  assert.ok(fs.existsSync(path.join(workspace.dir, 'transcript')));
   assert.ok(fs.existsSync(path.join(workspace.dir, 'previews')));
   assert.ok(fs.existsSync(path.join(workspace.dir, 'renders')));
   assert.ok(fs.existsSync(path.join(workspace.dir, 'final')));
   assert.equal(workspace.manifest.source.localPath, 'input/source.mp4');
+  assert.equal(workspace.manifest.transcript.words, 'transcript/words.json');
+  assert.equal(workspace.manifest.transcript.captions, 'transcript/captions.js');
   assert.equal(readProjectManifest(workspace.dir).id, '2026.08.05_test-rolik');
 });
 
@@ -116,6 +120,36 @@ test('brief revisions advance from manifest history', (t) => {
   const manifest = readProjectManifest(workspace.dir);
   assert.equal(manifest.currentBrief, 'brief/v01-draft.lesson.json');
   assert.equal(manifest.briefs[0].theme, 'lesson-neutral');
+});
+
+test('approval freezes a reviewed draft under an approved filename', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Approved brief',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const draft = nextBriefPaths(workspace);
+  fs.writeFileSync(draft.jsonPath, JSON.stringify({ status: 'draft', scenes: [] }));
+  fs.writeFileSync(draft.markdownPath, 'Статус: draft\n');
+  recordBrief(workspace, {
+    revision: draft.revision,
+    jsonPath: draft.jsonPath,
+    markdownPath: draft.markdownPath,
+    status: 'draft',
+  });
+
+  const approved = approveBrief(workspace, draft.jsonPath);
+
+  assert.equal(path.basename(approved.jsonPath), 'v01-approved.lesson.json');
+  assert.equal(path.basename(approved.markdownPath), 'v01-approved.lesson.md');
+  assert.equal(JSON.parse(fs.readFileSync(approved.jsonPath, 'utf8')).status, 'approved');
+  assert.match(fs.readFileSync(approved.markdownPath, 'utf8'), /Статус: approved/);
+  assert.equal(
+    readProjectManifest(workspace.dir).currentBrief,
+    'brief/v01-approved.lesson.json',
+  );
 });
 
 test('render versions keep history and publish one canonical final', (t) => {

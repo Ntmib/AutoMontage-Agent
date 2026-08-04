@@ -35,6 +35,8 @@ test('project planning uses its copied source and versioned brief paths', (t) =>
     context.paths.briefMarkdown,
     path.join(context.project.dir, 'brief/v01-draft.lesson.md'),
   );
+  assert.equal(context.paths.transcript, path.join(context.project.dir, 'transcript/words.json'));
+  assert.equal(context.paths.captions, path.join(context.project.dir, 'transcript/captions.js'));
   assert.equal(context.paths.render, null);
 });
 
@@ -86,6 +88,8 @@ test('legacy builds retain the flat out paths', (t) => {
   assert.equal(context.paths.briefJson, path.join(fixture.dir, 'out/demo.lesson.json'));
   assert.equal(context.paths.raw, path.join(fixture.dir, 'out/demo.raw.mp4'));
   assert.equal(context.paths.final, path.join(fixture.dir, 'out/demo.mp4'));
+  assert.equal(context.paths.transcript, path.join(fixture.dir, 'src/data/transcript.json'));
+  assert.equal(context.paths.captions, path.join(fixture.dir, 'src/data/captions.js'));
 });
 
 test('project continuation rejects a different input video', (t) => {

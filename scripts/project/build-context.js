@@ -19,6 +19,8 @@ function legacyPaths(root, id, kind) {
     raw: path.join(out, `${id}.raw.mp4`),
     final: path.join(out, `${id}.mp4`),
     render: null,
+    transcript: path.join(root, 'src/data/transcript.json'),
+    captions: path.join(root, 'src/data/captions.js'),
   };
 }
 
@@ -85,6 +87,8 @@ function createBuildContext({
     raw: renderPaths ? renderPaths.rawPath : null,
     final: renderPaths ? renderPaths.finalPath : null,
     render: renderPaths,
+    transcript: path.join(project.dir, project.manifest.transcript.words),
+    captions: path.join(project.dir, project.manifest.transcript.captions),
   };
 
   return {
