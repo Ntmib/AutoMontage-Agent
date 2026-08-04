@@ -3,6 +3,14 @@
 // Использование:
 //   node scripts/build.js <video> [--theme craft] [--scenario file.json]
 //                                 [--id name] [--frames N] [--model base]
+//                                 [--template lesson] [--no-transcribe] [--title "..."]
+// Опции шаблона/транскрипции:
+//   --template lesson : собрать урок-презентацию (композиция LessonSeq) вместо Dynamic;
+//                       слайды генерятся из речи через gen-slides (нужен ANTHROPIC_API_KEY
+//                       или OPENAI_API_KEY). Тема по умолчанию: lesson-neutral.
+//   --no-transcribe   : пропустить whisper (не качать модель); транскрипт = пустой.
+//                       Осмысленно только с --scenario (блоки берутся из готового листа).
+//   --title "текст"   : заголовок видео для шаблона lesson (плашка сверху).
 const fs = require('fs');
 const path = require('path');
 const { ROOT, tmp, python, remotionBin, execSync } = require('./env');
@@ -14,7 +22,14 @@ if (!video || !fs.existsSync(path.resolve(process.cwd(), video))) { console.erro
 video = path.resolve(process.cwd(), video);   // абсолютный путь — работает из любой папки (глобальный запуск)
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 
-const theme = opt('theme', 'craft');
+// шаблон вывода: 'dynamic' (reel по умолчанию) или 'lesson' (урок-презентация)
+const template = opt('template', 'dynamic');
+const isLesson = template === 'lesson';
+const noTranscribe = args.includes('--no-transcribe');
+const title = opt('title', 'ВИДЕО');
+
+// тема по умолчанию зависит от шаблона: lesson → lesson-neutral, иначе craft
+const theme = opt('theme', isLesson ? 'lesson-neutral' : 'craft');
 const id = opt('id', 'out');
 const outDir = opt('outdir', null);           // куда положить финал (по умолчанию out/ внутри пакета)
 const PY = python();                           // python3 / python — что есть в системе
@@ -25,6 +40,18 @@ const scenarioFile = opt('scenario', null);
 
 const sh = (c) => execSync(c, { cwd: ROOT, stdio: 'pipe' }).toString().trim();
 const log = (m) => console.log('· ' + m);
+
+// ── ранние проверки (до тяжёлых шагов: транскрипции, рендера) ──
+// шаблон lesson генерит слайды из речи через gen-slides – нужен LLM-ключ.
+if (isLesson && !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+  console.error('❌ для шаблона lesson нужен ANTHROPIC_API_KEY или OPENAI_API_KEY: '
+    + 'gen-slides генерирует слайды из речи. Задай ключ в окружении и повтори.');
+  process.exit(1);
+}
+// --no-transcribe без готового листа даст пустой ролик (блоки берутся из субтитров).
+if (noTranscribe && !scenarioFile && !isLesson) {
+  log('⚠️ --no-transcribe без --scenario: транскрипт будет пустым, блоки взять неоткуда – ролик выйдет почти пустым.');
+}
 
 // 1. ffprobe
 const probe = sh(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate:format=duration -of json "${video}"`);
@@ -51,13 +78,20 @@ const W = info.streams[0].width, H = info.streams[0].height;
 log('извлекаю аудио…');
 sh(`ffmpeg -y -i "${video1}" -vn -ar 16000 -ac 1 "${audioWav}"`);
 
-// 3. транскрипция
-log('транскрибирую (faster-whisper)…');
-sh(`${PY} scripts/transcribe.py "${audioWav}" src/data/transcript.json ${model}`);
+// 3. транскрипция (или пустой транскрипт при --no-transcribe, без whisper-модели)
+if (noTranscribe) {
+  log('транскрипцию пропускаю (--no-transcribe): пишу пустой транскрипт');
+  fs.writeFileSync(path.join(ROOT, 'src/data/transcript.json'), '[]');
+} else {
+  log('транскрибирую (faster-whisper)…');
+  sh(`${PY} scripts/transcribe.py "${audioWav}" src/data/transcript.json ${model}`);
+}
 
-// 3b. (опц.) tighten — рез пауз + слов-паразитов
+// 3b. (опц.) tighten: рез пауз + слов-паразитов
 let srcVideo = video1;
-if (args.includes('--tighten')) {
+if (args.includes('--tighten') && noTranscribe) {
+  log('⚠️ --tighten пропущен: транскрипт пуст (--no-transcribe), уплотнять нечего.');
+} else if (args.includes('--tighten')) {
   log('уплотняю (паузы + слова-паразиты)…');
   const tOut = tmp(`${id}_tight.mp4`);
   console.log('  ' + sh(`node scripts/tighten.js "${video1}" src/data/transcript.json "${tOut}" src/data/transcript.json`).split('\n').filter(Boolean).slice(-2).join(' | '));
@@ -69,6 +103,77 @@ if (args.includes('--tighten')) {
 const DUR2 = parseFloat(info.format.duration);
 const totalFrames2 = Math.ceil(DUR2 * FPS);
 const durF = framesOverride ? Math.min(+framesOverride, totalFrames2) : totalFrames2;
+
+// ── общий резолвер темы (строка встроенной темы или объект внешнего бренд-пака) ──
+function resolveTheme(name) {
+  try {
+    const ext = loadExtTheme(name);
+    if (ext) { log(`внешняя тема "${name}" загружена из THEMES_EXT (${process.env.THEMES_EXT})`); return ext; }
+  } catch (e) { console.error('❌ ' + e.message); process.exit(1); }
+  return name;
+}
+
+// ── ШАБЛОН lesson: урок-презентация (композиция LessonSeq) вместо Dynamic ──
+// Флоу: транскрипт (уже готов выше), gen-slides (речь в слайды), props, render.
+if (isLesson) {
+  const themeValL = resolveTheme(theme);
+
+  // gen-slides: из транскрипта собираем монтажный лист слайдов.
+  // тему передаём строкой (для внешней темы gen-slides её не использует, но props получит объект).
+  const slidesOut = `out/${id}.slides.json`;
+  fs.mkdirSync(path.join(ROOT, 'out'), { recursive: true });
+  const maxSl = opt('max', null);
+  log('генерирую слайды из речи (gen-slides)…');
+  try {
+    console.log('  ' + sh(`node scripts/gen-slides.js src/data/transcript.json ${slidesOut} --theme ${typeof theme === 'string' ? theme : 'lesson-neutral'}${maxSl ? ` --max ${maxSl}` : ''}`).split('\n').filter(Boolean).slice(-1)[0]);
+  } catch (e) {
+    const msg = (e.stderr ? e.stderr.toString() : '') + (e.stdout ? e.stdout.toString() : '') || e.message;
+    console.error('❌ gen-slides не собрал слайды: ' + msg.split('\n').filter(Boolean).slice(-1)[0]);
+    process.exit(1);
+  }
+  const sc = JSON.parse(fs.readFileSync(path.join(ROOT, slidesOut), 'utf8'));
+  const slides = sc.slides || [];
+  const lastEnd = slides.reduce((m, s) => Math.max(m, s.end ?? 0), 0);
+  const lessonFrames = framesOverride ? +framesOverride : Math.max(60, Math.round((lastEnd || DUR2 || 8) * FPS));
+
+  // исходник (лицо спикера) в public/source.mp4, карточка спикера тянет его как faceSrc.
+  const destSrcL = path.join(ROOT, 'public/source.mp4');
+  if (path.resolve(srcVideo) !== destSrcL) fs.copyFileSync(path.resolve(srcVideo), destSrcL);
+
+  // props для LessonSeq (см. src/LessonSequence.jsx / data/lesson-seq-demo.js)
+  const lessonProps = {
+    theme: themeValL,
+    slides,
+    faceSrc: 'source.mp4',
+    name: sc.name || '',
+    role: sc.role || '',
+    videoTitle: title,
+    width: W, height: H, fps: FPS,
+    durationInFrames: lessonFrames,
+  };
+  const lessonPropsPath = `out/${id}.lesson.props.json`;
+  fs.writeFileSync(path.join(ROOT, lessonPropsPath), JSON.stringify(lessonProps));
+
+  const rawMp4L = `out/${id}.raw.mp4`;
+  log(`рендер урока (LessonSeq) → ${rawMp4L} …`);
+  execSync(`${remotionBin()} render src/index.js LessonSeq ${rawMp4L} --props=./${lessonPropsPath} --codec=h264 --log=error`,
+    { cwd: ROOT, stdio: 'inherit' });
+
+  const outMp4L = `out/${id}.mp4`;
+  log('финиш (громкость + картинка)…');
+  console.log('  ' + sh(`node scripts/finish.js ${rawMp4L} ${outMp4L} --hdrfix auto`).split('\n').filter(Boolean).slice(-2).join(' | '));
+
+  let finalL = path.join(ROOT, outMp4L);
+  if (outDir) {
+    const dest = path.resolve(process.cwd(), outDir, `${id}.mp4`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(finalL, dest);
+    finalL = dest;
+  }
+  console.log(`\n✅ готово (урок-презентация): ${finalL}  (${W}x${H})`);
+  console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] иначе Telegram сплющит вертикаль.');
+  process.exit(0);
+}
 
 // 4. субтитры
 sh(`node scripts/build-captions.js`);
