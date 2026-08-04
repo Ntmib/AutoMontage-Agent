@@ -23,7 +23,7 @@
 | Компонент | Версия | Роль |
 |---|---|---|
 | Node.js | ≥ 20 (тест 22.x) | движок Remotion, скрипты |
-| Remotion | 4.0.290 (`remotion`, `@remotion/cli`) | покадровый рендер графики из React |
+| Remotion | 4.0.504 (`remotion`, `@remotion/cli`) | покадровый рендер графики из React |
 | React / react-dom | 19.0.0 | компоненты блоков |
 | Python 3 | 3.10+ | транскрипция |
 | faster-whisper | 1.2.1 (`pip install faster-whisper`) | речь → текст + словные таймкоды, ЛОКАЛЬНО, бесплатно |
@@ -51,7 +51,9 @@ pip install faster-whisper
 # 3. playwright chromium (если не стоит)
 npx playwright install chromium
 
-# 4. шрифты (Google Fonts, OFL, с кириллицей) в ~/.fonts
+# 4. шрифты – ОПЦИОНАЛЬНО. Для рендера качать НЕ нужно: ttf уже лежат в public/fonts/
+# и инлайнятся в base64 (src/fonts-data.js). Системные шрифты в ~/.fonts нужны ТОЛЬКО
+# если пересобираешь картинки-плашки через Playwright (scripts/shot-*.js).
 mkdir -p ~/.fonts && cd ~/.fonts
 curl -sL "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald%5Bwght%5D.ttf" -o Oswald.ttf
 curl -sL "https://github.com/google/fonts/raw/main/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf" -o JetBrainsMono.ttf
