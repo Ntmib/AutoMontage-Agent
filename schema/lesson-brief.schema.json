@@ -21,6 +21,17 @@
     "title": { "type": "string" },
     "facePos": { "$ref": "#/definitions/facePos" },
     "faceZoom": { "type": "number", "minimum": 1, "maximum": 2 },
+    "music": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "gainDb"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "gainDb": { "type": "number", "minimum": -60, "maximum": 0 },
+        "fadeInSec": { "type": "number", "minimum": 0, "maximum": 10 },
+        "fadeOutSec": { "type": "number", "minimum": 0, "maximum": 10 }
+      }
+    },
     "output": {
       "type": "object",
       "additionalProperties": false,

@@ -128,6 +128,26 @@ test('approved speaker crop is preserved in render props', () => {
   assert.equal(props.faceZoom, 1.08);
 });
 
+test('approved lesson music is validated and becomes render props', () => {
+  const brief = makeBrief({
+    status: 'approved',
+    music: {
+      file: '/audio/music.mp3',
+      gainDb: -17,
+      fadeInSec: 0.4,
+      fadeOutSec: 0.8,
+    },
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+  const props = buildReelScenesProps({ brief, theme: 'dima-grunge' });
+
+  assert.equal(props.musicSrc, 'source-music.mp3');
+  assert.equal(props.musicGainDb, -17);
+  assert.equal(props.musicFadeInSec, 0.4);
+  assert.equal(props.musicFadeOutSec, 0.8);
+});
+
 test('markdown brief shows scenes and proofread corrections', () => {
   const markdown = formatBriefMarkdown(makeBrief());
 

@@ -75,6 +75,28 @@ test('approved brief prepares ReelScenes with frozen geometry', () => {
   assert.equal(prepared.props.audioSrc, 'source.mp4');
 });
 
+test('approved lesson prepares a local music copy without exposing its path to Remotion', () => {
+  const brief = makeBrief();
+  brief.music = {
+    file: '/Users/editor/Music/track.mp3',
+    gainDb: -17,
+    fadeInSec: 0.4,
+    fadeOutSec: 0.8,
+  };
+
+  const prepared = prepareLessonRender({
+    brief,
+    theme: 'dima-grunge',
+    sourceVideo: '/videos/source.mp4',
+  });
+
+  assert.deepEqual(prepared.music, {
+    sourcePath: '/Users/editor/Music/track.mp3',
+    publicFile: 'source-music.mp3',
+  });
+  assert.equal(prepared.props.musicSrc, 'source-music.mp3');
+});
+
 test('frames override only shortens a local test render', () => {
   const prepared = prepareLessonRender({
     brief: makeBrief(),

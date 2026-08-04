@@ -238,6 +238,16 @@ if (lessonAction === 'render') {
 
   const destSrcL = path.join(ROOT, 'public/source.mp4');
   if (path.resolve(srcVideo) !== destSrcL) fs.copyFileSync(path.resolve(srcVideo), destSrcL);
+  if (prepared.music) {
+    if (!fs.existsSync(prepared.music.sourcePath)) {
+      console.error(`❌ музыка из утверждённого ТЗ не найдена: ${prepared.music.sourcePath}`);
+      process.exit(1);
+    }
+    const destMusic = path.join(ROOT, 'public', prepared.music.publicFile);
+    if (prepared.music.sourcePath !== destMusic) {
+      fs.copyFileSync(prepared.music.sourcePath, destMusic);
+    }
+  }
 
   const lessonPropsPath = `out/${id}.lesson.props.json`;
   fs.mkdirSync(path.join(ROOT, 'out'), { recursive: true });

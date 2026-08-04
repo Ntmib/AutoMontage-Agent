@@ -72,7 +72,12 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
     );
   }
 
-  return { composition: 'ReelScenes', props };
+  const music = brief.music ? {
+    sourcePath: path.resolve(brief.music.file),
+    publicFile: props.musicSrc,
+  } : null;
+
+  return { composition: 'ReelScenes', props, music };
 }
 
 module.exports = {
