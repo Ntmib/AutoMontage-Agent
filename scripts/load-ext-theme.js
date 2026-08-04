@@ -19,11 +19,14 @@ const BUILTIN = new Set(['craft', 'cyber', 'lesson-neutral']);
 function loadExtTheme(id) {
   if (typeof id !== 'string') return null;            // уже объект или пусто – не наше дело
   if (BUILTIN.has(id)) return null;                   // встроенная тема
+  if (!/^[a-z0-9][a-z0-9_-]*$/i.test(id)) return null; // невалидный id (защита от ../, слэшей и т.п.)
 
   const ext = process.env.THEMES_EXT;
   if (!ext) return null;                              // путь к бренд-паку не задан
 
   const file = path.join(ext, id, 'theme.json');
+  // защита от path-traversal: итоговый путь обязан лежать ВНУТРИ ext
+  if (!path.resolve(file).startsWith(path.resolve(ext) + path.sep)) return null;
   if (!fs.existsSync(file)) return null;
 
   let theme;
