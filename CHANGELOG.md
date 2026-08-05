@@ -30,6 +30,8 @@
 - Музыка в approved brief, выбор стартового фрагмента и скорости, анимации воронки,
   логотипов, CTA и живого градиента.
 - `automontage doctor`, глобальный CLI и воспроизводимое демо без ключей.
+- Общий checked process runner, строгий ffprobe parser и запуск локального Remotion CLI
+  через текущий Node без `.cmd`, shell или fallback на скачивание через `npx`.
 
 ### Исправлено
 

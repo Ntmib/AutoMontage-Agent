@@ -1,0 +1,80 @@
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+function hostPath(value, cwd = process.cwd()) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('host path должен быть непустой строкой');
+  }
+  return path.resolve(cwd, value);
+}
+
+function assertInvocation(command, args, stage) {
+  if (typeof command !== 'string' || command.length === 0) {
+    throw new Error(`${stage}: executable не задан`);
+  }
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) {
+    throw new Error(`${stage}: каждый argv должен быть строкой`);
+  }
+}
+
+function assertProcessResult(result, { command, stage }) {
+  const tool = path.basename(command);
+  if (result.error) {
+    if (result.error.code === 'ENOENT') {
+      throw new Error(`${stage}: ${tool} не найден; запусти npm run doctor`);
+    }
+    throw new Error(`${stage}: ${tool} не запустился (${result.error.message})`);
+  }
+  if (result.signal) {
+    throw new Error(`${stage}: ${tool} завершён сигналом ${result.signal}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`${stage}: ${tool} завершился со status ${String(result.status)}`);
+  }
+  return result;
+}
+
+function invoke(command, args, options, stdioOptions) {
+  const {
+    stage = 'process',
+    spawnSyncImpl = spawnSync,
+    cwd,
+    env,
+  } = options;
+  assertInvocation(command, args, stage);
+  const result = spawnSyncImpl(command, args, {
+    cwd,
+    env,
+    shell: false,
+    ...stdioOptions,
+  });
+  return assertProcessResult(result, { command, stage });
+}
+
+function runTool(command, args, options = {}) {
+  return invoke(command, args, options, { stdio: 'inherit' });
+}
+
+function runNodeTool(script, args, options = {}) {
+  return runTool(process.execPath, [script, ...args], options);
+}
+
+function captureTool(command, args, options = {}) {
+  if (!Number.isSafeInteger(options.maxBuffer) || options.maxBuffer <= 0) {
+    throw new Error(`${options.stage || 'process'}: capture требует явный положительный maxBuffer`);
+  }
+  const result = invoke(command, args, options, {
+    encoding: 'utf8',
+    maxBuffer: options.maxBuffer,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return result.stdout || '';
+}
+
+module.exports = {
+  assertProcessResult,
+  captureTool,
+  hostPath,
+  runNodeTool,
+  runTool,
+};

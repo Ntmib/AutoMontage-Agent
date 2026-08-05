@@ -25,25 +25,29 @@ test('Python candidates prefer the project virtual environment', () => {
   );
 });
 
-test('Remotion command is safe for execFile when the local binary exists', (t) => {
+test('Remotion resolves the package bin and always runs it through Node', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-env-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const bin = path.join(root, 'node_modules/.bin/remotion');
-  fs.mkdirSync(path.dirname(bin), { recursive: true });
-  fs.writeFileSync(bin, '');
+  const packageDir = path.join(root, 'node_modules/@remotion/cli');
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+    name: '@remotion/cli',
+    bin: { remotion: 'remotion-cli.js' },
+  }));
+  fs.writeFileSync(path.join(packageDir, 'remotion-cli.js'), '#!/usr/bin/env node\n');
 
-  assert.deepEqual(resolveRemotionCommand(root, 'darwin'), {
-    command: bin,
-    argsPrefix: [],
+  assert.deepEqual(resolveRemotionCommand(root), {
+    command: process.execPath,
+    argsPrefix: [path.join(packageDir, 'remotion-cli.js')],
   });
 });
 
-test('Remotion command falls back to local-only npx arguments', (t) => {
+test('Remotion resolver fails instead of falling back to npx downloads', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-env-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  assert.deepEqual(resolveRemotionCommand(root, 'darwin'), {
-    command: 'npx',
-    argsPrefix: ['--no-install', 'remotion'],
-  });
+  assert.throws(
+    () => resolveRemotionCommand(root),
+    /@remotion\/cli.*npm (ci|run doctor)/,
+  );
 });

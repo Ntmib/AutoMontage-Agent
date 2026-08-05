@@ -21,10 +21,16 @@ npm test
 - создание project-папки, транслитерация, локальный транскрипт и повторное открытие;
 - версии draft/approved brief, render history и канонический final;
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
+- process regression matrix: leading `-`, пробелы, кавычки, `$()`, `;`, newline и Unicode;
+- fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - safe-zone длинных денежных подписей;
 - анимации CTA, воронки, градиента и логотипов.
 
 Любое исправление бага должно добавлять регрессионный тест его причины.
+
+Для host filesystem path тест проверяет абсолютный отдельный argv. Ссылки Remotion/public
+остаются web-relative и не преобразуются в host path. Capture разрешён только для коротких
+ffprobe/JSON-результатов с явным `maxBuffer`.
 
 ## 2. Проверка окружения
 

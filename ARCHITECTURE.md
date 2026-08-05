@@ -104,7 +104,7 @@ Brief замораживает исходник, тему, аспект, раз�
 | Область | Основные файлы |
 |---|---|
 | Пользовательский CLI | `scripts/cli.js`, `scripts/doctor.js` |
-| Оркестрация | `scripts/build.js`, `scripts/env.js` |
+| Оркестрация и процессы | `scripts/build.js`, `scripts/env.js`, `scripts/process.js`, `scripts/media-probe.js` |
 | Папки и версии роликов | `scripts/project/workspace.js`, `scripts/project/build-context.js` |
 | Транскрипция и субтитры | `scripts/transcribe.py`, `scripts/build-captions.js` |
 | Lesson brief | `scripts/gen-brief.js`, `scripts/lesson/*` |
@@ -120,7 +120,8 @@ Brief замораживает исходник, тему, аспект, раз�
   `project.json`, один исходник, транскрипт, ревизии brief, активы, превью, версии рендера и финал.
 - `project.json` – журнал относительных project-путей, статусов brief и рендеров. Только
   `source.originalPath` хранит исторический абсолютный путь исходника.
-- `src/data/transcript.json` и `src/data/captions.js` – legacy-пути для запуска без project-режима.
+- `out/<id>.transcript.json` и `out/<id>.captions.js` – generated data legacy-режима;
+  отслеживаемые `src/data/` остаются только историческими fixtures и не перезаписываются.
 - `props/` – входные props и сценарии для воспроизводимых рендеров.
 - `public/` – ресурсы, доступные Remotion. Личные `public/source*.mp4`, музыка и `public/efir/`
   игнорируются.
@@ -157,6 +158,8 @@ Brief замораживает исходник, тему, аспект, раз�
 - Все визуальные слои используют общий таймкод; A/V-синхрон проверяется в начале, середине и конце.
 - Тексты должны оставаться в safe-zone обеих ориентаций.
 - Секреты, приватные темы, пользовательские медиа и локальная память не попадают в Git.
+- Внешние инструменты получают отдельные argv без shell; длинные процессы наследуют stdio,
+  а короткий capture ограничен явным `maxBuffer` и проверяет error/status/signal.
 
 ## 10. Как расширять
 

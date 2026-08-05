@@ -39,14 +39,33 @@ function python() {
     + '(Windows: python.org или "winget install Python.Python.3"; macOS: "brew install python").');
 }
 
-// Запуск локального Remotion CLI кросс-платформенно, без попытки что-либо скачивать.
-// Резолвим бинарь из node_modules пакета (на Windows это .cmd, execSync это учитывает).
-function resolveRemotionCommand(root = ROOT, platform = process.platform) {
-  const bin = path.join(root, 'node_modules', '.bin',
-    platform === 'win32' ? 'remotion.cmd' : 'remotion');
-  return fs.existsSync(bin)
-    ? { command: bin, argsPrefix: [] }
-    : { command: 'npx', argsPrefix: ['--no-install', 'remotion'] };
+// Запуск локального Remotion CLI кросс-платформенно, без shell, .cmd и npx downloads.
+// Читаем package.bin и всегда запускаем JavaScript entrypoint текущим Node.
+function resolveRemotionCommand(root = ROOT) {
+  const packageFile = path.join(root, 'node_modules', '@remotion', 'cli', 'package.json');
+  if (!fs.existsSync(packageFile)) {
+    throw new Error('@remotion/cli не найден; запусти npm ci, затем npm run doctor');
+  }
+
+  let metadata;
+  try {
+    metadata = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+  } catch (_) {
+    throw new Error('@remotion/cli package.json повреждён; повтори npm ci и npm run doctor');
+  }
+  const relativeBin = typeof metadata.bin === 'string'
+    ? metadata.bin
+    : metadata.bin?.remotion;
+  if (typeof relativeBin !== 'string' || relativeBin.length === 0) {
+    throw new Error('@remotion/cli не объявляет bin.remotion; повтори npm ci и npm run doctor');
+  }
+  const packageDir = path.dirname(packageFile);
+  const entry = path.resolve(packageDir, relativeBin);
+  const relative = path.relative(packageDir, entry);
+  if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(entry)) {
+    throw new Error('@remotion/cli bin.remotion недоступен; повтори npm ci и npm run doctor');
+  }
+  return { command: process.execPath, argsPrefix: [entry] };
 }
 
 function remotionBin() {
