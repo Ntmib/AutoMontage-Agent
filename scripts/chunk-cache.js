@@ -4,8 +4,14 @@ const { createHash, randomUUID } = require('node:crypto');
 
 const { captureTool, hostPath } = require('./process');
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const MANIFEST_NAME = 'manifest.json';
+
+function compareText(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
 
 function fileIdentity(file, fileSystem = fs) {
   const resolved = hostPath(file);
@@ -35,6 +41,145 @@ function fileIdentity(file, fileSystem = fs) {
   return { size, sha256: hash.digest('hex') };
 }
 
+function updateIdentityEntry(hash, type, relativePath, bytes = null) {
+  const relative = relativePath.split(path.sep).join('/');
+  hash.update(type);
+  hash.update('\0');
+  hash.update(String(Buffer.byteLength(relative)));
+  hash.update('\0');
+  hash.update(relative);
+  hash.update('\0');
+  if (bytes !== null) {
+    hash.update(String(bytes.length));
+    hash.update('\0');
+    hash.update(bytes);
+  }
+}
+
+function directoryIdentity(directory, fileSystem = fs) {
+  const root = hostPath(directory);
+  const hash = createHash('sha256');
+
+  function visit(current, relative) {
+    let stat;
+    try {
+      stat = fileSystem.lstatSync(current);
+    } catch {
+      throw new Error('chunk cache: render code недоступен');
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error('chunk cache: symlink в render code запрещён');
+    }
+    if (stat.isDirectory()) {
+      updateIdentityEntry(hash, 'directory', relative);
+      let entries;
+      try {
+        entries = fileSystem.readdirSync(current, { withFileTypes: true })
+          .sort((left, right) => compareText(left.name, right.name));
+      } catch {
+        throw new Error('chunk cache: render code недоступен');
+      }
+      for (const entry of entries) {
+        const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+        visit(path.join(current, entry.name), childRelative);
+      }
+      return;
+    }
+    if (!stat.isFile()) {
+      throw new Error('chunk cache: render code содержит неподдерживаемый тип файла');
+    }
+    let bytes;
+    try {
+      bytes = fileSystem.readFileSync(current);
+    } catch {
+      throw new Error('chunk cache: render code недоступен');
+    }
+    updateIdentityEntry(hash, 'file', relative, bytes);
+  }
+
+  visit(root, '');
+  return hash.digest('hex');
+}
+
+function isContainedPath(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..'
+    && !path.isAbsolute(relative);
+}
+
+function referencedPublicAsset(value, publicDir, fileSystem = fs) {
+  if (typeof value !== 'string') return null;
+  const root = hostPath(publicDir);
+  const candidate = path.resolve(root, value);
+  if (!isContainedPath(root, candidate)) return null;
+  let stat;
+  try {
+    stat = fileSystem.lstatSync(candidate);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) return null;
+  return fileIdentity(candidate, fileSystem);
+}
+
+function escapeJsonPointerSegment(segment) {
+  return segment.replaceAll('~', '~0').replaceAll('/', '~1');
+}
+
+function collectReferencedPublicAssets(props, publicDir, fileSystem = fs) {
+  const assets = [];
+  function visit(value, pointer) {
+    if (typeof value === 'string') {
+      const identity = referencedPublicAsset(value, publicDir, fileSystem);
+      if (identity) assets.push({ pointer, ...identity });
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, `${pointer}/${index}`));
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const key of Object.keys(value).sort()) {
+        visit(value[key], `${pointer}/${escapeJsonPointerSegment(key)}`);
+      }
+    }
+  }
+  visit(props, '');
+  return assets.sort((left, right) => compareText(left.pointer, right.pointer));
+}
+
+function canonicalizeRenderProps(props, publicAssets) {
+  const assetsByPointer = new Map(publicAssets.map((asset) => [asset.pointer, asset]));
+  function visit(value, pointer) {
+    const asset = assetsByPointer.get(pointer);
+    if (asset && typeof value === 'string') {
+      return {
+        publicAsset: {
+          size: asset.size,
+          sha256: asset.sha256,
+        },
+      };
+    }
+    if (Array.isArray(value)) return value.map((item, index) => visit(item, `${pointer}/${index}`));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value).sort().map((key) => [
+        key,
+        visit(value[key], `${pointer}/${escapeJsonPointerSegment(key)}`),
+      ]));
+    }
+    return value;
+  }
+  return visit(props, '');
+}
+
+function sortedValue(value) {
+  if (Array.isArray(value)) return value.map(sortedValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedValue(value[key])]));
+  }
+  return value;
+}
+
 function createRenderJob({
   composition,
   props,
@@ -43,16 +188,22 @@ function createRenderJob({
   total,
   chunk,
   remotionOptions,
+  renderCode,
+  publicAssets,
 }) {
   const descriptor = {
     version: CACHE_VERSION,
     composition,
-    props: fileIdentity(props),
+    props: sortedValue(props),
     source: source ? fileIdentity(source) : null,
     audio: audio ? fileIdentity(audio) : null,
     total,
     chunk,
-    remotionOptions,
+    remotionOptions: sortedValue(remotionOptions),
+    renderCode: sortedValue(renderCode),
+    publicAssets: [...publicAssets]
+      .sort((left, right) => compareText(left.pointer, right.pointer))
+      .map(({ pointer, size, sha256 }) => ({ pointer, size, sha256 })),
   };
   const key = createHash('sha256').update(JSON.stringify(descriptor)).digest('hex');
   return { key, descriptor };
@@ -194,7 +345,10 @@ function isReusableChunk({
 
 module.exports = {
   CACHE_VERSION,
+  canonicalizeRenderProps,
+  collectReferencedPublicAssets,
   createRenderJob,
+  directoryIdentity,
   fileIdentity,
   isReusableChunk,
   loadCacheManifest,

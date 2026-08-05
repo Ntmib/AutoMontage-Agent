@@ -140,6 +140,14 @@ Brief замораживает исходник, тему, аспект, раз�
 | Внешние темы | `scripts/load-ext-theme.js` |
 | Release gates | `scripts/check-release.js`, `scripts/smoke-release.js` |
 
+Длинный рендер хранит части в `out/.chunks/<job-sha256>/`. Cache descriptor v2 включает
+composition, канонизированные props, identities source/audio, диапазоны и Remotion options,
+а также identity всего `src/`, `package.json` и `package-lock.json`. Для каждого реально
+упомянутого в props файла из `public/` сохраняются JSON pointer, размер и SHA-256; остальные
+ресурсы `public/` на key не влияют. Канонические props заменяют media path его content identity,
+поэтому новый временный lease с теми же байтами продолжает resume. Обход `src/` сортирует
+POSIX-relative paths и не следует symlink; symlink прерывает построение cache key.
+
 ## 6. Данные и артефакты
 
 - `projects/YYYY.MM.DD_<slug>/` – основной локальный workspace одного ролика. В нём лежат

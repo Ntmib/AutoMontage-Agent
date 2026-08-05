@@ -11,7 +11,11 @@ const { finiteNumber, optionValue } = require('./build-options');
 const { resolveRemotionCommand } = require('./env');
 const { hostPath, runTool } = require('./process');
 const {
+  canonicalizeRenderProps,
+  collectReferencedPublicAssets,
   createRenderJob,
+  directoryIdentity,
+  fileIdentity,
   isReusableChunk,
   loadCacheManifest,
   probeChunkFrames,
@@ -165,23 +169,27 @@ function resolveRenderSource(propsPath, root = ROOT) {
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error('chunk cache: source должен находиться в public');
   }
-  if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+  if (!fs.existsSync(source) || !fs.lstatSync(source).isFile() || fs.lstatSync(source).isSymbolicLink()) {
     throw new Error('chunk cache: source из props не найден');
   }
   return source;
 }
 
-function main(args = process.argv.slice(2)) {
-  const options = parseChunkOptions(args);
+function main(args = process.argv.slice(2), root = ROOT) {
+  const options = parseChunkOptions(args, root);
   if (!fs.existsSync(options.props) || !fs.statSync(options.props).isFile()) {
     throw new Error('chunk cache: props file не найден');
   }
   if (options.audio && (!fs.existsSync(options.audio) || !fs.statSync(options.audio).isFile())) {
     throw new Error('chunk cache: audio file не найден');
   }
-  const source = resolveRenderSource(options.props);
+  const propsObject = JSON.parse(fs.readFileSync(options.props, 'utf8'));
+  const publicDirectory = path.join(root, 'public');
+  const publicAssets = collectReferencedPublicAssets(propsObject, publicDirectory);
+  const canonicalProps = canonicalizeRenderProps(propsObject, publicAssets);
+  const source = resolveRenderSource(options.props, root);
   const remotionPackage = JSON.parse(fs.readFileSync(
-    path.join(ROOT, 'node_modules/@remotion/cli/package.json'),
+    path.join(root, 'node_modules/@remotion/cli/package.json'),
     'utf8',
   ));
   const remotionOptions = {
@@ -190,16 +198,23 @@ function main(args = process.argv.slice(2)) {
     log: 'error',
     cliVersion: remotionPackage.version,
   };
+  const renderCode = {
+    src: directoryIdentity(path.join(root, 'src')),
+    packageJson: fileIdentity(path.join(root, 'package.json')),
+    lockfile: fileIdentity(path.join(root, 'package-lock.json')),
+  };
   const job = createRenderJob({
     composition: options.composition,
-    props: options.props,
+    props: canonicalProps,
     source,
     audio: options.audio,
     total: options.total,
     chunk: options.chunk,
     remotionOptions,
+    renderCode,
+    publicAssets,
   });
-  const directory = path.join(ROOT, 'out/.chunks', job.key);
+  const directory = path.join(root, 'out/.chunks', job.key);
   fs.mkdirSync(directory, { recursive: true });
   const manifest = loadCacheManifest(directory, job);
   const resolvedRemotion = resolveRemotionCommand();
