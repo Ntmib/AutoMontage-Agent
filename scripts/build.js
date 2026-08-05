@@ -30,6 +30,7 @@ const {
 } = require('./build-commands');
 const { finiteNumber, parseBuildOptions } = require('./build-options');
 const { parseVideoProbe } = require('./media-probe');
+const { resolveSourceTiming } = require('./source-timing');
 const { captureTool, runNodeTool, runTool } = require('./process');
 const { loadExtTheme } = require('./load-ext-theme');
 const { resolveOutputGeometry } = require('./lesson/aspect');
@@ -37,15 +38,20 @@ const { REMOTION_AUDIO_ADVANCE_MS } = require('./finish-audio');
 const {
   LESSON_DEFAULT_THEME,
   assertLessonOptions,
+  bindLessonSourceLease,
   buildGenBriefArgs,
   getLessonAction,
   prepareLessonRender,
 } = require('./lesson/workflow');
-const { createBuildContext } = require('./project/build-context');
+const {
+  copyOutputFile,
+  createBuildContext,
+} = require('./project/build-context');
 const {
   recordBrief,
   runRenderLifecycle,
 } = require('./project/workspace');
+const { withPublicMediaLease } = require('./public-media');
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -157,7 +163,7 @@ const sourceProbe = parseVideoProbe(captureTool(
   sourceProbeCommand.args,
   { cwd: ROOT, stage: 'source ffprobe', maxBuffer: 4 * 1024 * 1024 },
 ), 'source ffprobe');
-const FPS = Math.round(sourceProbe.fps);
+let FPS = sourceProbe.fps;
 let W = sourceProbe.width;
 let H = sourceProbe.height;
 let DUR2 = sourceProbe.duration;
@@ -180,6 +186,7 @@ if (buildOptions.reframeMode) {
   ), 'reframe ffprobe');
   W = reframed.width;
   H = reframed.height;
+  FPS = reframed.fps;
   DUR2 = reframed.duration;
 }
 
@@ -228,10 +235,14 @@ if (args.includes('--tighten') && noTranscribe) {
     probeCommand.args,
     { cwd: ROOT, stage: 'tighten ffprobe', maxBuffer: 4 * 1024 * 1024 },
   ), 'tighten ffprobe');
+  FPS = tightened.fps;
   DUR2 = tightened.duration;
 }
-const totalFrames2 = Math.ceil(DUR2 * FPS);
-const durF = framesOverride ? Math.min(framesOverride, totalFrames2) : totalFrames2;
+const { durationInFrames: durF } = resolveSourceTiming({
+  fps: FPS,
+  duration: DUR2,
+  framesOverride,
+});
 
 // ── общий резолвер темы (строка встроенной темы или объект внешнего бренд-пака) ──
 function resolveTheme(name) {
@@ -339,8 +350,6 @@ if (lessonAction === 'render') {
     process.exit(1);
   }
 
-  const destSrcL = path.join(ROOT, 'public/source.mp4');
-  if (path.resolve(srcVideo) !== destSrcL) fs.copyFileSync(path.resolve(srcVideo), destSrcL);
   if (prepared.music) {
     if (!fs.existsSync(prepared.music.sourcePath)) {
       console.error(`❌ музыка из утверждённого ТЗ не найдена: ${prepared.music.sourcePath}`);
@@ -348,60 +357,70 @@ if (lessonAction === 'render') {
     }
   }
 
-  const lessonPropsPath = buildContext.paths.props;
-  const rawMp4L = buildContext.paths.raw;
-  const outMp4L = buildContext.paths.final;
-  fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
-  fs.writeFileSync(lessonPropsPath, JSON.stringify(prepared.props, null, 2));
-  const lessonRender = buildContext.project
-    ? {
-      version: buildContext.paths.render.version,
-      label: buildContext.paths.render.label,
-      dir: buildContext.paths.render.dir,
-      briefPath,
-    }
-    : null;
-  let finalL = runRenderLifecycle(buildContext.project, lessonRender, () => {
-    log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
-    const renderCommand = remotionRenderCommand(remotion, {
-      entry: 'src/index.js',
-      composition: prepared.composition,
-      output: rawMp4L,
-      props: lessonPropsPath,
-    });
-    runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'lesson render' });
+  const finalL = withPublicMediaLease({
+    root: ROOT,
+    sourcePath: srcVideo,
+    namespace: buildContext.project ? buildContext.project.manifest.slug : 'dynamic',
+  }, (lease) => {
+    bindLessonSourceLease(prepared.props, lease.publicPath);
+    const lessonPropsPath = buildContext.paths.props;
+    const rawMp4L = buildContext.paths.raw;
+    const outMp4L = buildContext.paths.final;
+    fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
+    fs.writeFileSync(lessonPropsPath, JSON.stringify(prepared.props, null, 2));
+    const lessonRender = buildContext.project
+      ? {
+        version: buildContext.paths.render.version,
+        label: buildContext.paths.render.label,
+        dir: buildContext.paths.render.dir,
+        briefPath,
+      }
+      : null;
+    let final = runRenderLifecycle(buildContext.project, lessonRender, () => {
+      log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
+      const renderCommand = remotionRenderCommand(remotion, {
+        entry: 'src/index.js',
+        composition: prepared.composition,
+        output: rawMp4L,
+        props: lessonPropsPath,
+      });
+      runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'lesson render' });
 
-    log('финиш (громкость + картинка)…');
-    runNodeTool(path.join(ROOT, 'scripts/finish.js'), [
-      rawMp4L,
-      outMp4L,
-      '--hdrfix',
-      'auto',
-      '--audio-advance-ms',
-      String(REMOTION_AUDIO_ADVANCE_MS),
-    ], { cwd: ROOT, stage: 'lesson finish' });
-
-    if (prepared.music) {
-      log('подмешиваю слышимую музыку с ducking…');
-      const mixedMp4L = tmp(`${id}_lesson_music.mp4`);
-      runNodeTool(path.join(ROOT, 'scripts/mix-music.js'), [
+      log('финиш (громкость + картинка)…');
+      runNodeTool(path.join(ROOT, 'scripts/finish.js'), [
+        rawMp4L,
         outMp4L,
-        prepared.music.sourcePath,
-        mixedMp4L,
-        ...prepared.music.mixArgs,
-      ], { cwd: ROOT, stage: 'lesson music mix' });
-      fs.copyFileSync(mixedMp4L, outMp4L);
-      fs.unlinkSync(mixedMp4L);
+        '--hdrfix',
+        'auto',
+        '--audio-advance-ms',
+        String(REMOTION_AUDIO_ADVANCE_MS),
+      ], { cwd: ROOT, stage: 'lesson finish' });
+
+      if (prepared.music) {
+        log('подмешиваю слышимую музыку с ducking…');
+        const mixedMp4L = tmp(`${id}_lesson_music.mp4`);
+        runNodeTool(path.join(ROOT, 'scripts/mix-music.js'), [
+          outMp4L,
+          prepared.music.sourcePath,
+          mixedMp4L,
+          ...prepared.music.mixArgs,
+        ], { cwd: ROOT, stage: 'lesson music mix' });
+        fs.copyFileSync(mixedMp4L, outMp4L);
+        fs.unlinkSync(mixedMp4L);
+      }
+      return outMp4L;
+    });
+    if (outDir) {
+      const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
+      final = copyOutputFile({
+        cwd: process.cwd(),
+        outdir: outDir,
+        outputName,
+        source: final,
+      });
     }
-    return outMp4L;
+    return final;
   });
-  if (outDir) {
-    const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
-    const dest = path.resolve(process.cwd(), outDir, `${outputName}.mp4`);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(finalL, dest);
-    finalL = dest;
-  }
   console.log(`\n✅ готово по утверждённому ТЗ: ${finalL}  (${prepared.props.width}x${prepared.props.height})`);
   console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] иначе Telegram сплющит вертикаль.');
   process.exit(0);
@@ -481,10 +500,6 @@ if (args.includes('--autotheme')) {
   } catch (e) { log('⚠️ autotheme не сработал: ' + e.message.split('\n')[0]); }
 }
 
-// 6. исходник в public (пропустить, если это уже он)
-const destSrc = path.join(ROOT, 'public/source.mp4');
-if (path.resolve(srcVideo) !== destSrc) fs.copyFileSync(path.resolve(srcVideo), destSrc);
-
 // 7. props
 const props = { source: 'source.mp4', theme: themeVal, blocks, width: W, height: H, fps: FPS, durationInFrames: durF, beatZoom, beatSec, stillWindows };
 
@@ -498,39 +513,45 @@ if (!vr.ok) {
 }
 log('монтажный лист валиден ✓');
 
-const propsPath = buildContext.paths.props;
-fs.mkdirSync(path.dirname(propsPath), { recursive: true });
-fs.writeFileSync(propsPath, JSON.stringify(props));
+const finalPath = withPublicMediaLease({
+  root: ROOT,
+  sourcePath: srcVideo,
+  namespace: buildContext.project ? buildContext.project.manifest.slug : 'dynamic',
+}, (lease) => {
+  props.source = lease.publicPath;
+  const propsPath = buildContext.paths.props;
+  fs.mkdirSync(path.dirname(propsPath), { recursive: true });
+  fs.writeFileSync(propsPath, JSON.stringify(props));
 
-// 7c. гейт качества листа (Фаза 3.2) – предупреждение, не блокер
-try {
-  const g = runNodeCapture('quality-gate.js', [propsPath]);
-  const warn = g.split('\n').filter((l) => l.includes('⚠'));
-  if (warn.length) { log('гейт качества – замечания:'); warn.forEach((w) => console.log('  ' + w.trim())); }
-  else log('гейт качества: чисто ✓');
-} catch (e) { /* FAIL не блокирует, но покажем */ if (e.stdout) console.log(e.stdout.toString()); }
+  // 7c. гейт качества листа (Фаза 3.2) – предупреждение, не блокер
+  try {
+    const g = runNodeCapture('quality-gate.js', [propsPath]);
+    const warn = g.split('\n').filter((l) => l.includes('⚠'));
+    if (warn.length) { log('гейт качества – замечания:'); warn.forEach((w) => console.log('  ' + w.trim())); }
+    else log('гейт качества: чисто ✓');
+  } catch (e) { /* FAIL не блокирует, но покажем */ if (e.stdout) console.log(e.stdout.toString()); }
 
-// 7d. гейт динамики: «динамика или слайд-шоу» (docs/editing-rules.md)
-try {
-  const g = runNodeCapture('dynamic-gate.js', [propsPath, transcriptPath]);
-  const verdict = g.split('\n').find((l) => l.includes('Динамика листа')) || '';
-  const warn = g.split('\n').filter((l) => l.includes('⚠'));
-  if (verdict) log(verdict.trim());
-  warn.forEach((w) => console.log('  ' + w.trim()));
-} catch (e) { if (e.stdout) { log('⚠️ динамика: похоже на слайд-шоу – стоит добавить событий'); console.log(e.stdout.toString().split('\n').filter((l) => l.includes('⚠')).join('\n')); } }
+  // 7d. гейт динамики: «динамика или слайд-шоу» (docs/editing-rules.md)
+  try {
+    const g = runNodeCapture('dynamic-gate.js', [propsPath, transcriptPath]);
+    const verdict = g.split('\n').find((l) => l.includes('Динамика листа')) || '';
+    const warn = g.split('\n').filter((l) => l.includes('⚠'));
+    if (verdict) log(verdict.trim());
+    warn.forEach((w) => console.log('  ' + w.trim()));
+  } catch (e) { if (e.stdout) { log('⚠️ динамика: похоже на слайд-шоу – стоит добавить событий'); console.log(e.stdout.toString().split('\n').filter((l) => l.includes('⚠')).join('\n')); } }
 
-// 8. рендер (порциями для длинных – Фаза 3.3)
-const rawMp4 = buildContext.paths.raw;
-const outMp4 = buildContext.paths.final;
-const dynamicRender = buildContext.project
-  ? {
-    version: buildContext.paths.render.version,
-    label: buildContext.paths.render.label,
-    dir: buildContext.paths.render.dir,
-    briefPath: activeScenarioPath,
-  }
-  : null;
-let finalPath = runRenderLifecycle(buildContext.project, dynamicRender, () => {
+  // 8. рендер (порциями для длинных – Фаза 3.3)
+  const rawMp4 = buildContext.paths.raw;
+  const outMp4 = buildContext.paths.final;
+  const dynamicRender = buildContext.project
+    ? {
+      version: buildContext.paths.render.version,
+      label: buildContext.paths.render.label,
+      dir: buildContext.paths.render.dir,
+      briefPath: activeScenarioPath,
+    }
+    : null;
+  let final = runRenderLifecycle(buildContext.project, dynamicRender, () => {
   log(`рендер → ${rawMp4} …`);
   if (durF > 540) {
     log('длинный ролик – рендерю порциями (resume при сбое)');
@@ -542,7 +563,7 @@ let finalPath = runRenderLifecycle(buildContext.project, dynamicRender, () => {
       '--chunk',
       '300',
       '--audio',
-      'public/source.mp4',
+      lease.absolutePath,
     ], { cwd: ROOT, stage: 'chunk render' });
   } else {
     const renderCommand = remotionRenderCommand(remotion, {
@@ -594,14 +615,18 @@ let finalPath = runRenderLifecycle(buildContext.project, dynamicRender, () => {
     }
   }
   return outMp4;
+  });
+  if (outDir) {   // глобальный запуск: положить результат рядом с пользователем
+    const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
+    final = copyOutputFile({
+      cwd: process.cwd(),
+      outdir: outDir,
+      outputName,
+      source: final,
+    });
+  }
+  return final;
 });
-if (outDir) {   // глобальный запуск: положить результат рядом с пользователем
-  const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
-  const dest = path.resolve(process.cwd(), outDir, `${outputName}.mp4`);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(finalPath, dest);
-  finalPath = dest;
-}
 console.log(`\n✅ готово: ${finalPath}  (${W}x${H}, аспект исходника сохранён)`);
 console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] – иначе Telegram сплющит вертикаль.');
 

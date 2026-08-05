@@ -106,9 +106,28 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
   return { composition: 'ReelScenes', props, music };
 }
 
+function bindLessonSourceLease(props, publicPath) {
+  if (!props || typeof props !== 'object') throw new TypeError('lesson props are required');
+  if (typeof publicPath !== 'string' || !publicPath) {
+    throw new TypeError('lesson public source lease is required');
+  }
+  const legacySource = props.faceSrc;
+  props.scenes = Array.isArray(props.scenes)
+    ? props.scenes.map((scene) => (
+      scene && scene.faceSrc === legacySource
+        ? { ...scene, faceSrc: publicPath }
+        : scene
+    ))
+    : props.scenes;
+  props.faceSrc = publicPath;
+  props.audioSrc = publicPath;
+  return props;
+}
+
 module.exports = {
   LESSON_DEFAULT_THEME,
   assertLessonOptions,
+  bindLessonSourceLease,
   buildLessonMusicMixArgs,
   buildGenBriefArgs,
   getLessonAction,

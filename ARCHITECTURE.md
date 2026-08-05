@@ -49,6 +49,10 @@ flowchart LR
 `scripts/build.js` является границей пользовательского ввода: пути сначала разрешаются
 как host paths, затем ffprobe, ffmpeg, Python и Remotion получают их отдельными argv через
 `scripts/process.js`. Числовые CLI-параметры проходят конечные диапазоны до первого spawn.
+После исходного и каждого производного видео (reframe/tighten) build берёт геометрию, FPS и
+длительность из соответствующего ffprobe. `scripts/source-timing.js` сохраняет точный numeric
+FPS, включая NTSC `30000/1001` и `24000/1001`, вычисляет `durationInFrames` через `ceil` и
+не даёт положительному целому `--frames` увеличить доступную длину.
 
 Точка оркестрации – `scripts/build.js`. Без `--scenario` он создаёт черновой монтажный
 лист; смысловую расстановку блоков агент затем правит и запускает повторно с готовым JSON.
@@ -57,6 +61,33 @@ flowchart LR
 публикацию в единый lifecycle. Ошибка переводит текущую версию из `started` в `failed`,
 не меняя `latestRender`; новый canonical final сначала копируется во временный соседний
 файл, синхронизируется и только затем атомарно заменяет предыдущий.
+
+`project.json` – недоверенная граница между сохранёнными метаданными и файловой системой:
+`project.json → schema/project.schema.json → resolveProjectPath() → filesystem`.
+Перед чтением и записью старый manifest без `transcript` мигрируется к каноническим путям,
+затем AJV-схема запрещает неизвестные поля, а resolver проверяет каждый project-путь.
+Даже schema-valid manifest не получает доверия к путям: resolver принимает только канонический
+относительный путь внутри workspace, отвергает
+absolute/Windows/traversal-варианты, проверяет `lstat` каждого уже существующего компонента,
+включая dangling symlink, и затем подтверждает containment через `realpath`. Slug ограничен
+каноническим lowercase token. Legacy `--id` отдельно ограничен безопасным filename token,
+а общий для lesson и Dynamic экспорт через `--outdir` проверяет `lstat` каждого существующего
+компонента outdir и финала, включая dangling link, создаёт отсутствующие родители по одному,
+подтверждает `realpath` containment и копирует в непредсказуемый exclusive/no-follow temp.
+Атомарный `rename` публикует temp вместо прямой записи через статическую ссылку назначения.
+Единственное исключение – `source.originalPath`: это provenance исходника, а не workspace-путь.
+
+`project.json` записывается через непредсказуемый соседний temp, открытый с exclusive и
+no-follow flags там, где платформа их поддерживает. Temp-файл проверяется как regular file,
+синхронизируется и атомарно переименовывается; cleanup удаляет его только при совпадении
+file identity с созданным процессом.
+
+Containment защищает от вредоносного manifest и symlink, существующих на момент проверки.
+Соперничающий локальный процесс с правом записи в workspace или внешний `--outdir` может заменить предка между
+проверкой и файловой операцией; portable Node API не даёт для этого кроссплатформенный
+descriptor-relative `openat`-аналог. Такая конкурентная подмена вне границы модели угроз:
+не предоставляйте untrusted локальным процессам запись в папку проекта или каталог экспорта;
+проверки и операции в коде расположены настолько близко друг к другу, насколько позволяет API.
 
 ### 3.2 Lesson – ТЗ до рендера
 
@@ -78,6 +109,12 @@ flowchart LR
 `scripts/gen-brief.js` выбирает только официальные сцены и создаёт draft.
 `scripts/lesson/brief.js` валидирует данные и превращает approved brief в props.
 `schema/lesson-brief.schema.json` фиксирует контракт.
+
+Approval сначала готовит owned sibling temp для JSON, Markdown, нового manifest и rollback-копии.
+Commit идёт в порядке manifest, Markdown, JSON: renderable approved JSON появляется последним.
+Сбой до этого шага удаляет опубликованный Markdown, возвращает прежний manifest и очищает только
+owned temps. При рендере точный legacy `faceSrc: "source.mp4"` внутри сцены переводится на
+текущий source lease вместе с top-level `faceSrc` и `audioSrc`.
 
 Brief замораживает исходник, тему, аспект, размеры, FPS, длительность, сцены и проверенное
 кадрирование лица. Это защищает от ситуации, когда утверждали один монтаж, а рендерится другой.
@@ -113,7 +150,7 @@ Brief замораживает исходник, тему, аспект, раз�
 | Область | Основные файлы |
 |---|---|
 | Пользовательский CLI | `scripts/cli.js`, `scripts/doctor.js` |
-| Оркестрация и процессы | `scripts/build.js`, `scripts/env.js`, `scripts/process.js`, `scripts/media-probe.js` |
+| Оркестрация и процессы | `scripts/build.js`, `scripts/env.js`, `scripts/process.js`, `scripts/media-probe.js`, `scripts/source-timing.js` |
 | Папки и версии роликов | `scripts/project/workspace.js`, `scripts/project/build-context.js` |
 | Транскрипция и субтитры | `scripts/transcribe.py`, `scripts/build-captions.js` |
 | Lesson brief | `scripts/gen-brief.js`, `scripts/lesson/*` |
@@ -123,6 +160,18 @@ Brief замораживает исходник, тему, аспект, раз�
 | Паузы и кадрирование | `scripts/tighten.js`, `scripts/cut-pauses.js`, `scripts/reframe.py`, `scripts/face-center.py` |
 | Внешние темы | `scripts/load-ext-theme.js` |
 | Release gates | `scripts/check-release.js`, `scripts/smoke-release.js` |
+
+Длинный рендер хранит части в `out/.chunks/<job-sha256>/`. Cache descriptor v2 включает
+composition, канонизированные props, identities source/audio, диапазоны и Remotion options,
+а также identity реализации рендера: всего `src/`, `package.json` и `package-lock.json`. Для каждого реально
+упомянутого в props файла из `public/` сохраняются JSON pointer, размер и SHA-256; остальные
+ресурсы `public/` на key не влияют. Канонические props убирают volatile path только у generated
+`.automontage/<lease>/source.<ext>`, поэтому новый lease с теми же байтами продолжает resume.
+Обычные asset paths и произвольные видимые строки сохраняются: два разных b-roll path с
+одинаковыми байтами дают разные keys. Также сохраняется исходный порядок ключей props, наблюдаемый
+Remotion. Общий resolver public media отклоняет symlink на любом
+сегменте и любой realpath escape. Обход `src/` сортирует POSIX-relative paths и не следует
+symlink; symlink прерывает построение cache key.
 
 ## 6. Данные и артефакты
 
@@ -134,15 +183,21 @@ Brief замораживает исходник, тему, аспект, раз�
   отслеживаемые `src/data/` остаются только историческими fixtures и не перезаписываются.
 - `props/` – входные props и сценарии для воспроизводимых рендеров.
 - `public/` – ресурсы, доступные Remotion. Личные `public/source*.mp4`, музыка и `public/efir/`
-  игнорируются.
+  игнорируются. На время рендера исходник копируется в уникальный lease
+  `public/.automontage/<safe-namespace>-<uuid>/source.<ext>` и удаляется в `finally`.
 - `out/` – legacy/cache-путь для запуска без `--project` и `--project-dir`.
 - `tmp/` – промежуточные файлы.
 - `examples/` – небольшие публичные входы для проверки установки.
 
-Project-папки разделяют пользовательские данные и историю рендеров, но текущий Remotion
-bridge всё ещё копирует активный источник в общий `public/source.mp4`; часть временных
-файлов также адресуется через общий `tmp/`. Поэтому один checkout поддерживает только одну
-активную сборку. Параллельные рендеры требуют отдельных clone/worktree.
+Public source bridge изолирован: каждый build получает свой media lease, поэтому второй
+рендер не может подменить байты источника первого. Lease удаляется после успеха и ошибки;
+cleanup проверяет, что удаляет только свой настоящий каталог, а не symlink или общий base.
+Статические/pre-existing symlink и symlink в финальном компоненте lease отклоняются до удаления.
+Node не предоставляет portable descriptor-relative `unlinkat`/`openat`, поэтому соперничающий
+вредоносный локальный процесс всё ещё может заменить parent между проверкой и `rm`: такой TOCTOU
+вне модели угроз при одном доверенном build на checkout, а не дополнительная гарантия lease.
+Но `tmp/` и legacy-пути пока общие, поэтому один checkout по-прежнему допускает только одну
+активную сборку. Для параллельных рендеров нужны отдельные clone/worktree.
 
 ## 7. Переменные окружения
 
@@ -178,7 +233,8 @@ bridge всё ещё копирует активный источник в об�
 - Release checker читает committed Git-объект, а не рабочую папку; smoke подтверждает оба
   публичных render path и после них сверяет hashes защищённых transcript/captions fixtures.
 - Временное принятие dependency advisory допустимо только через неистёкшую машинно
-  проверяемую запись в `SECURITY.md`.
+  проверяемую запись в `SECURITY.md`: review date совпадает с датой текущего release, не лежит
+  в будущем, а документированная цепочка точно совпадает с candidate `package-lock.json`.
 
 ## 10. Как расширять
 

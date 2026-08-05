@@ -26,6 +26,103 @@ function write(root, file, source) {
   fs.writeFileSync(target, source);
 }
 
+function updateReleaseVersion(root, { version, date = '2026-08-05', unreleased = '', section }) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  pkg.version = version;
+  lock.version = version;
+  lock.packages[''].version = version;
+  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  write(root, 'package-lock.json', `${JSON.stringify(lock, null, 2)}\n`);
+  write(root, 'README.md', `# Fixture\n\nCurrent version: **v${version}**.\n\n[Testing](TESTING.md)\n`);
+  const heading = date == null ? `## [${version}]` : `## [${version}] - ${date}`;
+  write(root, 'CHANGELOG.md', [
+    '# Changelog',
+    '',
+    '## [Unreleased]',
+    '',
+    unreleased,
+    heading,
+    '',
+    section,
+    '',
+  ].join('\n'));
+}
+
+function assetRow(file) {
+  return `| \`${file}\` | fixture | generated | test fixture / MIT | test fixture | MIT |`;
+}
+
+function securityException(overrides = {}) {
+  return {
+    ghsa: 'GHSA-5v7r-6r5c-r473',
+    cve: 'CVE-2026-31808',
+    severity: 'moderate',
+    package: 'file-type@16.5.4',
+    fixedIn: 'file-type@21.3.1',
+    chain: [
+      'node-vibrant@4.0.4',
+      '@vibrant/image-node@4.0.4',
+      '@jimp/custom@0.22.12',
+      '@jimp/core@0.22.12',
+      'file-type@16.5.4',
+    ],
+    exposure: 'Optional --autotheme passes only ffmpeg-generated PNG frames to Jimp/Vibrant, not raw ASF input.',
+    mitigation: 'Local-only CLI path, at most 20 scaled PNG frames, no direct untrusted-image upload into file-type.',
+    decision: 'Keep node-vibrant@4.0.4; do not force-fix, override the major chain, or downgrade to 3.x.',
+    triggers: [
+      'upstream node-vibrant/Jimp update',
+      'severity becomes high',
+      'direct untrusted-image input',
+      'next release',
+    ],
+    revisitBy: '2026-09-04',
+    reviewedAt: '2026-08-05',
+    reviewedFor: '1.2.1',
+    ...overrides,
+  };
+}
+
+function writeSecurityException(root, exception) {
+  write(root, 'SECURITY.md', [
+    '# Security',
+    '',
+    '```json security-exception',
+    JSON.stringify(exception),
+    '```',
+    '',
+  ].join('\n'));
+}
+
+function enableNodeVibrant(root) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  pkg.dependencies = { ...(pkg.dependencies || {}), 'node-vibrant': '^4.0.4' };
+  lock.packages[''].dependencies = {
+    ...(lock.packages[''].dependencies || {}),
+    'node-vibrant': '^4.0.4',
+  };
+  lock.packages['node_modules/node-vibrant'] = {
+    version: '4.0.4',
+    dependencies: { '@vibrant/image-node': '^4.0.4' },
+  };
+  lock.packages['node_modules/@vibrant/image-node'] = {
+    version: '4.0.4',
+    dependencies: { '@jimp/custom': '^0.22.12' },
+  };
+  lock.packages['node_modules/@jimp/custom'] = {
+    version: '0.22.12',
+    dependencies: { '@jimp/core': '^0.22.12' },
+  };
+  lock.packages['node_modules/@jimp/core'] = {
+    version: '0.22.12',
+    dependencies: { 'file-type': '^16.5.4' },
+  };
+  lock.packages['node_modules/file-type'] = { version: '16.5.4' };
+  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  write(root, 'package-lock.json', `${JSON.stringify(lock, null, 2)}\n`);
+}
+
 function makeRepository() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-release-check-'));
   git(root, ['init', '-q']);
@@ -57,6 +154,8 @@ function makeRepository() {
     '## [Unreleased]',
     '',
     '## [1.2.0] - 2026-08-05',
+    '',
+    '### Исправлено',
     '',
     '- lesson-neutral; shell hardening; generated data in out/.',
     '- failed lifecycle and atomic final publication.',
@@ -120,11 +219,160 @@ test('missing base ref explains how to fetch history', () => {
   );
 });
 
+test('release notes accept a current patch without 1.2.0-specific wording', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: [
+      '### Исправлено',
+      '',
+      '- Validate release metadata before publication.',
+    ].join('\n'),
+  });
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'generic patch release']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.equal(result.issues.some((entry) => entry.rule === 'release-notes'), false);
+});
+
+test('release notes require the current version section to have a date', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    date: null,
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'undated release']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.match(result.issues.find((entry) => entry.rule === 'release-notes').message, /dated/i);
+});
+
+test('release notes require Unreleased to be whitespace-empty for a release candidate', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    unreleased: 'Still pending.',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'nonempty unreleased']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.match(result.issues.find((entry) => entry.rule === 'release-notes').message, /Unreleased/);
+});
+
+test('release notes require a subsection with at least one bullet', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\nRelease metadata is validated before publication.',
+  });
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'release without bullet']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.match(result.issues.find((entry) => entry.rule === 'release-notes').message, /bullet/i);
+});
+
+test('patch release notes require the exact Исправлено subsection', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Добавлено\n\n- Validate release metadata before publication.',
+  });
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'patch release without fixed subsection']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'release-notes' && /Исправлено/.test(entry.message)
+  )));
+});
+
+test('release notes reject impossible UTC calendar dates', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    date: '2026-02-30',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'impossible release date']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.match(result.issues.find((entry) => entry.rule === 'release-notes').message, /calendar date/i);
+});
+
+test('release checker requires provenance for each recognized binary asset extension', () => {
+  const root = makeRepository();
+  const files = ['public/card.webp', 'public/music.mp3', 'public/clip.mov'];
+  for (const file of files) write(root, file, 'fixture binary');
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'unprovenanced binary assets']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+  const missing = result.issues
+    .filter((entry) => entry.rule === 'asset-provenance')
+    .map((entry) => entry.message.match(/^(public\/[^ ]+)/)?.[1])
+    .filter(Boolean)
+    .sort();
+
+  assert.deepEqual(missing, files.sort());
+});
+
+test('release checker accepts provenance rows using repo-relative binary paths', () => {
+  const root = makeRepository();
+  const files = ['public/card.webp', 'public/music.mp3', 'public/clip.mov'];
+  for (const file of files) write(root, file, 'fixture binary');
+  write(root, 'ASSETS.md', [
+    '# Public asset provenance',
+    '',
+    '| Path | Kind | Origin | Author / license | Source or generator | Redistribution basis |',
+    '|---|---|---|---|---|---|',
+    ...files.map(assetRow),
+    '',
+  ].join('\n'));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'provenanced binary assets']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.equal(result.issues.some((entry) => entry.rule === 'asset-provenance'), false);
+});
+
+test('release checker normalizes provenance paths before stale-row comparison', () => {
+  for (const documentedPath of ['./public/card.webp', 'public\\card.webp']) {
+    const root = makeRepository();
+    write(root, 'public/card.webp', 'fixture binary');
+    write(root, 'ASSETS.md', [
+      '# Public asset provenance',
+      '',
+      '| Path | Kind | Origin | Author / license | Source or generator | Redistribution basis |',
+      '|---|---|---|---|---|---|',
+      assetRow(documentedPath),
+      '',
+    ].join('\n'));
+    git(root, ['add', '.']);
+    git(root, ['commit', '-qm', 'normalized provenance path']);
+
+    const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+    assert.equal(result.issues.some((entry) => entry.rule === 'asset-provenance'), false, documentedPath);
+  }
+});
+
 test('node-vibrant audit exception requires complete and time-bounded evidence', () => {
   const root = makeRepository();
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  pkg.dependencies = { 'node-vibrant': '4.0.4' };
-  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  enableNodeVibrant(root);
   write(root, 'SECURITY.md', [
     '# Security',
     '',
@@ -161,9 +409,9 @@ test('node-vibrant audit exception requires complete and time-bounded evidence',
         '@jimp/core@0.22.12',
         'file-type@16.5.4',
       ],
-      exposure: 'optional autotheme path',
-      mitigation: 'generated PNG input only',
-      decision: 'keep node-vibrant@4.0.4',
+      exposure: 'Optional --autotheme passes only ffmpeg-generated PNG frames to Jimp/Vibrant, not raw ASF input.',
+      mitigation: 'Local-only CLI path, at most 20 scaled PNG frames, no direct untrusted-image upload into file-type.',
+      decision: 'Keep node-vibrant@4.0.4; do not force-fix, override the major chain, or downgrade to 3.x.',
       triggers: [
         'upstream node-vibrant/Jimp update',
         'severity becomes high',
@@ -171,6 +419,8 @@ test('node-vibrant audit exception requires complete and time-bounded evidence',
         'next release',
       ],
       revisitBy: '2026-09-04',
+      reviewedAt: '2026-08-05',
+      reviewedFor: '1.2.0',
     }),
     '```',
     '',
@@ -182,6 +432,168 @@ test('node-vibrant audit exception requires complete and time-bounded evidence',
   const expired = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-09-05T00:00:00Z') });
   assert.equal(accepted.issues.some((entry) => entry.rule === 'security-exception'), false);
   assert.equal(expired.issues.some((entry) => entry.rule === 'security-exception'), true);
+});
+
+test('node-vibrant exception rejects an invalid reviewedAt calendar date', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({ reviewedAt: '2026-02-30' }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'invalid exception review date']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T00:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /reviewedAt/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception requires reviewedFor to match package.json version', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({ reviewedFor: '1.2.0' }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'mismatched exception review version']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T00:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /reviewedFor/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception rejects an advisory changed without review evidence', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({ ghsa: 'GHSA-0000-0000-0000' }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'changed advisory without review']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T00:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /ghsa/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception requires exactly one parseable security-exception fence', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  write(root, 'SECURITY.md', [
+    '# Security',
+    '',
+    '```json security-exception',
+    JSON.stringify(securityException()),
+    '```',
+    '',
+    '```json security-exception',
+    '{"ghsa":',
+    '```',
+    '',
+  ].join('\n'));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'duplicate security exception fences']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T00:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /exactly one/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception rejects a future review date', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    date: '2026-08-06',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({ reviewedAt: '2026-08-06' }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'future exception review']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T23:59:59Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /reviewedAt/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception rejects a stale review carried into a new release date', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    date: '2026-08-06',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({ reviewedAt: '2026-08-05' }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'stale exception review']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-06T12:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /reviewedAt/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception requires exactly the documented five chain entries', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({
+    chain: [...securityException().chain, 'unexpected-extra@1.0.0'],
+  }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'extra exception chain entry']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T12:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /chain/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception is compared with the installed candidate lockfile chain', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException());
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  lock.packages['node_modules/file-type'].version = '16.5.5';
+  write(root, 'package-lock.json', `${JSON.stringify(lock, null, 2)}\n`);
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'changed installed exception chain']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T12:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /chain/.test(entry.message)
+  )));
 });
 
 test('versioned release notes must cover every public release boundary', () => {

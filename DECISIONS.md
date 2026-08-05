@@ -107,3 +107,54 @@ Lesson-процесс разделён на `draft` и `approved`. До явно
 Заметные изменения сначала добавляются в `[Unreleased]` файла `CHANGELOG.md`. При выпуске
 они переносятся в секцию `X.Y.Z` с датой, номер обновляется в манифестах и README, а публичный
 релиз помечается Git-тегом `vX.Y.Z`. Так номер, состав версии и Git-история не расходятся.
+
+## D-010 – Пути из manifest не являются доверенными
+
+**Дата:** 2026-08-05
+**Статус:** принято
+
+`project.json` – сохранённые данные, а не полномочие на доступ к файловой системе. Каждый
+manifest-controlled путь проходит schema validation, канонизацию и containment в project
+workspace; каждый существующий компонент проверяется через `lstat`, включая dangling symlink,
+после чего `realpath` подтверждает containment. Slug, legacy id и внешний final имеют отдельные
+token/containment-проверки. Общий lesson/Dynamic exporter дополнительно проверяет каждый
+существующий компонент `--outdir` и final, создаёт родителей по одному и публикует через
+exclusive sibling temp + atomic rename, поэтому статическая ссылка назначения не разыменовывается.
+
+Отклонены варианты «доверять schema-valid относительному пути» и «проверять только строковый
+prefix»: оба пропускают symlink escape. Descriptor-relative `openat` мог бы сузить локальное
+TOCTOU-окно, но portable Node API его не даёт; конкурентный процесс с правом записи в workspace
+или `--outdir` вне принятой модели угроз. Это защита от существующего состояния файловой системы,
+а не обещание race immunity против hostile writer.
+
+## D-011 – Identity cache включает реализацию рендера
+
+**Дата:** 2026-08-05
+**Статус:** принято
+
+Resume cache учитывает не только props и media, но и весь `src/`, `package.json`,
+`package-lock.json` и реально используемые public resources. Поэтому chunk, собранный другой
+версией Remotion-кода или lockfile, не выдаётся за совместимый.
+
+Content-only нормализация path разрешена только для generated
+`.automontage/<namespace>-<uuid>/source[.<ext>]`; расширение сохраняется как непрозрачный suffix
+basename и может отсутствовать. Обычные public paths и видимые строки остаются частью props
+identity, поэтому два разных b-roll с одинаковыми байтами не считаются одним наблюдаемым входом.
+
+Отклонены cache key только от props/source и полный hash всей `public/` папки: первый даёт
+устаревший результат после изменения реализации, второй инвалидирует cache от неиспользуемого
+ресурса и делает resume непредсказуемо дорогим.
+
+## D-012 – Approved brief публикуется как rollback-транзакция
+
+**Дата:** 2026-08-06
+**Статус:** принято
+
+JSON, Markdown и `project.json` нельзя атомарно заменить одной portable filesystem-операцией.
+Поэтому approval сначала полностью записывает и синхронизирует непредсказуемые owned sibling
+temps, сохраняет rollback-копию manifest, затем публикует manifest, Markdown и только последним
+renderable approved JSON. Сбой до последнего шага удаляет свой Markdown, возвращает прежний
+manifest и очищает temps по file identity.
+
+Отклонены прямые последовательные `writeFile` и порядок JSON до manifest: при ошибке они
+оставляют approved JSON, который можно передать рендеру без зарегистрированного approval.

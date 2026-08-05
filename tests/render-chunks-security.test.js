@@ -12,14 +12,19 @@ const {
   parseChunkOptions,
   remotionChunkCommand,
   renderChunkAtomically,
+  resolveRenderSource,
 } = require('../scripts/render-chunks');
 const {
+  canonicalizeRenderProps,
+  collectReferencedPublicAssets,
   createRenderJob,
+  directoryIdentity,
   fileIdentity,
   isReusableChunk,
   loadCacheManifest,
   recordChunkComplete,
 } = require('../scripts/chunk-cache');
+const { preparePublicMedia } = require('../scripts/public-media');
 
 const hostile = `- lead 'single' "double" $() ;\nЮникод`;
 
@@ -125,42 +130,241 @@ test('chunk renderer contains no shell execution escape hatch', () => {
   assert.doesNotMatch(source, /\bexecSync\b|shell\s*:\s*true/);
 });
 
-test('render job key covers composition, props, source, audio and render options', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-chunk-job-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const props = path.join(dir, 'props.json');
-  const source = path.join(dir, 'source.mp4');
-  const audio = path.join(dir, 'audio.mp4');
-  fs.writeFileSync(props, '{"source":"source.mp4","value":1}');
-  fs.writeFileSync(source, 'source-a');
-  fs.writeFileSync(audio, 'audio-a');
-  const input = {
+function cacheFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-chunk-identity-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const src = path.join(root, 'src');
+  const publicDir = path.join(root, 'public');
+  fs.mkdirSync(src, { recursive: true });
+  fs.mkdirSync(path.join(publicDir, 'broll'), { recursive: true });
+  fs.writeFileSync(path.join(src, 'index.jsx'), 'export const scene = 1;\n');
+  fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture"}\n');
+  fs.writeFileSync(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}\n');
+  fs.writeFileSync(path.join(publicDir, 'broll', 'clip.mp4'), 'b-roll-a');
+  fs.writeFileSync(path.join(publicDir, 'unused.mp4'), 'unused-a');
+  return { root, src, publicDir };
+}
+
+function renderCodeFor(root) {
+  return {
+    src: directoryIdentity(path.join(root, 'src')),
+    packageJson: fileIdentity(path.join(root, 'package.json')),
+    lockfile: fileIdentity(path.join(root, 'package-lock.json')),
+  };
+}
+
+function jobFor(root, props, source = null) {
+  const publicAssets = collectReferencedPublicAssets(props, path.join(root, 'public'));
+  return createRenderJob({
     composition: 'Dynamic',
-    props,
+    props: canonicalizeRenderProps(props, publicAssets),
     source,
-    audio,
+    audio: null,
     total: 75,
     chunk: 30,
     remotionOptions: { entry: 'src/index.js', codec: 'h264', log: 'error' },
-  };
-  const original = createRenderJob(input);
-  assert.equal(createRenderJob(input).key, original.key);
+    renderCode: renderCodeFor(root),
+    publicAssets,
+  });
+}
 
-  fs.writeFileSync(props, '{"source":"source.mp4","value":2}');
-  assert.notEqual(createRenderJob(input).key, original.key);
-  fs.writeFileSync(props, '{"source":"source.mp4","value":1}');
-  fs.writeFileSync(source, 'source-b');
-  assert.notEqual(createRenderJob(input).key, original.key);
-  fs.writeFileSync(source, 'source-a');
-  fs.writeFileSync(audio, 'audio-b');
-  assert.notEqual(createRenderJob(input).key, original.key);
-  fs.writeFileSync(audio, 'audio-a');
-  assert.notEqual(createRenderJob({ ...input, composition: 'ReelScenes' }).key, original.key);
-  assert.notEqual(createRenderJob({ ...input, total: 76 }).key, original.key);
+test('render cache key is stable for identical code, props and public asset bytes', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const props = { source: 'broll/clip.mp4', nested: { broll: 'broll/clip.mp4' }, value: 1 };
+  const source = path.join(publicDir, 'broll', 'clip.mp4');
+  const original = jobFor(root, props, source);
+
+  assert.equal(jobFor(root, props, source).key, original.key);
+  assert.match(renderCodeFor(root).src, /^[a-f0-9]{64}$/);
+  assert.deepEqual(collectReferencedPublicAssets(props, publicDir), [
+    { pointer: '/nested/broll', size: 8, sha256: fileIdentity(source).sha256 },
+    { pointer: '/source', size: 8, sha256: fileIdentity(source).sha256 },
+  ]);
+});
+
+test('render cache key changes when a JSX byte changes', (t) => {
+  const { root } = cacheFixture(t);
+  const props = { source: 'broll/clip.mp4' };
+  const original = jobFor(root, props);
+  fs.writeFileSync(path.join(root, 'src', 'index.jsx'), 'export const scene = 2;\n');
+
+  assert.notEqual(jobFor(root, props).key, original.key);
+});
+
+test('render cache key changes when a referenced public asset changes under the same name', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const props = { source: 'broll/clip.mp4' };
+  const original = jobFor(root, props, path.join(publicDir, 'broll', 'clip.mp4'));
+  fs.writeFileSync(path.join(publicDir, 'broll', 'clip.mp4'), 'b-roll-b');
+
+  assert.notEqual(jobFor(root, props, path.join(publicDir, 'broll', 'clip.mp4')).key, original.key);
+});
+
+test('render cache key ignores an unreferenced public file', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const props = { source: 'broll/clip.mp4' };
+  const original = jobFor(root, props);
+  fs.writeFileSync(path.join(publicDir, 'unused.mp4'), 'unused-b');
+
+  assert.equal(jobFor(root, props).key, original.key);
+});
+
+test('render cache key changes when package metadata changes', (t) => {
+  const { root } = cacheFixture(t);
+  const props = { source: 'broll/clip.mp4' };
+  const original = jobFor(root, props);
+  fs.writeFileSync(path.join(root, 'package.json'), '{"name":"changed"}\n');
+  assert.notEqual(jobFor(root, props).key, original.key);
+
+  fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture"}\n');
+  fs.writeFileSync(path.join(root, 'package-lock.json'), '{"lockfileVersion":4}\n');
+  assert.notEqual(jobFor(root, props).key, original.key);
+});
+
+test('render code identity rejects a symlink instead of following it', (t) => {
+  const { root, src } = cacheFixture(t);
+  const outside = path.join(root, 'outside.jsx');
+  fs.writeFileSync(outside, 'private code');
+  fs.symlinkSync(outside, path.join(src, 'linked.jsx'));
+
+  assert.throws(() => directoryIdentity(src), /chunk cache: symlink в render code запрещён/);
+});
+
+test('public asset collection does not read traversal props outside public', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const secret = path.join(root, 'secret.mp4');
+  fs.writeFileSync(secret, 'do-not-read');
+  const assets = collectReferencedPublicAssets({ broll: '../../secret.mp4' }, publicDir);
+
+  assert.deepEqual(assets, []);
+  assert.deepEqual(canonicalizeRenderProps({ broll: '../../secret.mp4' }, assets), {
+    broll: '../../secret.mp4',
+  });
+});
+
+test('public asset discovery and source resolution reject a symlinked ancestor', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const outside = path.join(root, 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'secret.mp4'), 'do-not-read');
+  fs.symlinkSync(outside, path.join(publicDir, 'linked'));
+  const propsPath = path.join(root, 'props.json');
+  fs.writeFileSync(propsPath, '{"source":"linked/secret.mp4"}');
+
   assert.throws(
-    () => createRenderJob({ ...input, props: path.join(dir, 'missing private props.json') }),
-    (error) => !error.message.includes(dir),
+    () => collectReferencedPublicAssets({ broll: 'linked/secret.mp4' }, publicDir),
+    /chunk cache: public asset проходит через symlink/,
   );
+  assert.throws(
+    () => resolveRenderSource(propsPath, root),
+    /chunk cache: public asset проходит через symlink/,
+  );
+});
+
+test('render cache key preserves observable props key order', (t) => {
+  const { root } = cacheFixture(t);
+  const first = jobFor(root, { source: 'broll/clip.mp4', title: 'same' });
+  const second = jobFor(root, { title: 'same', source: 'broll/clip.mp4' });
+
+  assert.notEqual(second.key, first.key);
+});
+
+test('render cache key ignores random public lease paths when media bytes match', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const firstLease = path.join(
+    publicDir,
+    '.automontage/dynamic-11111111-1111-4111-8111-111111111111/source.mp4',
+  );
+  const secondLease = path.join(
+    publicDir,
+    '.automontage/dynamic-22222222-2222-4222-8222-222222222222/source.mp4',
+  );
+  fs.mkdirSync(path.dirname(firstLease), { recursive: true });
+  fs.mkdirSync(path.dirname(secondLease), { recursive: true });
+  fs.writeFileSync(firstLease, 'same-source-bytes');
+  fs.writeFileSync(secondLease, 'same-source-bytes');
+
+  const first = jobFor(root, {
+    source: '.automontage/dynamic-11111111-1111-4111-8111-111111111111/source.mp4',
+    title: 'same',
+  }, firstLease);
+  const second = jobFor(root, {
+    source: '.automontage/dynamic-22222222-2222-4222-8222-222222222222/source.mp4',
+    title: 'same',
+  }, secondLease);
+
+  assert.equal(second.key, first.key);
+});
+
+test('render cache key normalizes extensionless and unusual generated source leases', (t) => {
+  const { root } = cacheFixture(t);
+  const cases = [
+    ['extensionless', 'input-a', 'input-b'],
+    ['unusual extension', 'input-a.odd-name+v1', 'input-b.odd-name+v1'],
+  ];
+
+  for (const [label, firstName, secondName] of cases) {
+    const firstSource = path.join(root, firstName);
+    const secondSource = path.join(root, secondName);
+    fs.writeFileSync(firstSource, `same-${label}-bytes`);
+    fs.writeFileSync(secondSource, `same-${label}-bytes`);
+    const firstLease = preparePublicMedia({
+      root,
+      sourcePath: firstSource,
+      namespace: 'dynamic',
+      temporaryId: '33333333-3333-4333-8333-333333333333',
+    });
+    const secondLease = preparePublicMedia({
+      root,
+      sourcePath: secondSource,
+      namespace: 'dynamic',
+      temporaryId: '44444444-4444-4444-8444-444444444444',
+    });
+    try {
+      assert.equal(
+        jobFor(root, { source: firstLease.publicPath, title: label }, firstLease.absolutePath).key,
+        jobFor(root, { source: secondLease.publicPath, title: label }, secondLease.absolutePath).key,
+        label,
+      );
+    } finally {
+      firstLease.cleanup();
+      secondLease.cleanup();
+    }
+  }
+});
+
+test('render cache key does not normalize lookalike paths outside generated lease shape', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const firstPath = path.join(publicDir, '.automontage/manual-a/source');
+  const secondPath = path.join(publicDir, '.automontage/manual-b/source');
+  fs.mkdirSync(path.dirname(firstPath), { recursive: true });
+  fs.mkdirSync(path.dirname(secondPath), { recursive: true });
+  fs.writeFileSync(firstPath, 'same-visible-bytes');
+  fs.writeFileSync(secondPath, 'same-visible-bytes');
+
+  assert.notEqual(
+    jobFor(root, { source: '.automontage/manual-a/source' }, firstPath).key,
+    jobFor(root, { source: '.automontage/manual-b/source' }, secondPath).key,
+  );
+});
+
+test('render cache key preserves ordinary public path identity even when asset bytes match', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const firstPath = path.join(publicDir, 'broll', 'a.mp4');
+  const secondPath = path.join(publicDir, 'broll', 'b.mp4');
+  fs.writeFileSync(firstPath, 'same-visible-bytes');
+  fs.writeFileSync(secondPath, 'same-visible-bytes');
+
+  const first = jobFor(root, {
+    broll: 'broll/a.mp4',
+    observableLabel: 'broll/a.mp4',
+  });
+  const second = jobFor(root, {
+    broll: 'broll/b.mp4',
+    observableLabel: 'broll/b.mp4',
+  });
+
+  assert.notEqual(second.key, first.key);
 });
 
 test('chunk reuse requires matching manifest range, hash, size and frame count', (t) => {

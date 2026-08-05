@@ -19,11 +19,24 @@ npm test
 - глобальный таймкод видео между сценами;
 - музыкальный gain, fade, стартовый фрагмент и скорость;
 - создание project-папки, транслитерация, локальный транскрипт и повторное открытие;
-- версии draft/approved brief, render history и канонический final;
+- schema-контракт project manifest, миграция legacy `transcript`, traversal/Windows-path
+  payload, dangling symlink на final/intermediate component и safe slug/id: каждый сохранённый
+  или generated путь обязан остаться внутри своего workspace/outdir;
+- общий lesson/Dynamic export: реальный existing/dangling final symlink и symlinked/non-directory
+  parent отклоняются без изменения внешнего sentinel, а новый вложенный `--outdir` создаётся;
+- exclusive unpredictable temp для manifest; версии draft/approved brief, rollback JSON/Markdown/
+  manifest при I/O failure, render history и канонический final;
 - lifecycle `started → failed/complete`, сохранность прежнего final и атомарную публикацию;
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
 - process regression matrix: leading `-`, пробелы, кавычки, `$()`, `;`, newline и Unicode;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
+- timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
+  считается через `ceil`, а положительный целый `--frames` не превышает длину source;
+- повторный ffprobe после reframe и tighten обновляет FPS, по которому строятся props;
+- уникальный public media lease каждого render, его cleanup и запрет symlink-escape;
+- cache identity: изменение Remotion-кода, lockfile, обычного public resource path или его bytes
+  отменяет reuse; меняющийся generated source lease с теми же bytes сохраняет key также без
+  расширения и с непривычным расширением;
 - safe-zone длинных денежных подписей;
 - анимации CTA, воронки, градиента и маркеров соцсетей.
 
@@ -39,8 +52,11 @@ npm run doctor
 npm run demo
 ```
 
-Одна папка checkout допускает только одну активную сборку из-за общих
-`public/source.mp4` и `tmp/`. Параллельные проверки запускай в отдельных clone/worktree.
+Одна папка checkout допускает только одну активную сборку: Remotion source bridge изолирован
+уникальным lease в `public/.automontage/`, но `tmp/` и legacy-пути остаются общими.
+Параллельные проверки запускай в отдельных clone/worktree. Unit и integration tests также
+проверяют, что leases не пересекаются, cleanup идемпотентен и удаляет источник после успеха
+или ошибки рендера.
 
 Для host filesystem path тест проверяет абсолютный отдельный argv. Ссылки Remotion/public
 остаются web-relative и не преобразуются в host path. Capture разрешён только для коротких
@@ -54,8 +70,16 @@ FPS, bitrate и resolution имеют конечные диапазоны, а п
 ffmpeg filter script удаляется через `finally` и при успешном, и при аварийном завершении.
 Chunk-render проверяет positive integer `totalFrames/--chunk`, рендерит part во временный
 соседний MP4 и публикует его rename только после успешного Remotion exit.
-Resume cache адресуется SHA-256 от composition, props, source/audio identities, диапазонов
-и Remotion options. Manifest разрешает reuse только при совпадении range/hash/size/frames.
+Resume cache v2 адресуется SHA-256 от composition, канонизированных props, source/audio
+identities, диапазонов, Remotion options, всего `src/`, `package.json` и `package-lock.json`.
+Тесты меняют JSX byte, referenced b-roll и package metadata, проверяют, что каждый случай
+инвалидирует key, а неиспользуемый `public/` файл – нет. Для public media фиксируются только
+contained regular files, отсортированные по JSON pointer; traversal не читается, symlink в
+`src/` или на любом сегменте public media отклоняется. Descriptor сохраняет порядок ключей,
+который получает Remotion, поэтому перестановка props тоже меняет key. Одинаковые bytes в разных
+generated `.automontage/<lease>/source.<ext>` дают одинаковый resume key, но byte-identical
+обычные b-roll A и B сохраняют разную наблюдаемую path identity.
+Manifest разрешает reuse только при совпадении range/hash/size/frames.
 
 ## 2. Проверка окружения
 
@@ -149,10 +173,26 @@ npm run check:release -- --tree HEAD --base origin/main
 npm run smoke:release
 ```
 
+Перед commit можно проверить именно staged candidate, а не рабочую папку:
+
+```bash
+CANDIDATE_TREE="$(git write-tree)"
+node scripts/check-release.js --tree "$CANDIDATE_TREE" --base <release-base>
+```
+
 `check:release` читает файлы через `git ls-tree`/`git show`, поэтому проверяет точный
 Git-объект и игнорирует незакоммиченные пользовательские файлы. Current-tree правила
 сверяют версию, Node engines, env-декларации, локальные Markdown-ссылки, приватные id,
-версионные release notes, security exception и полный бинарный инвентарь `ASSETS.md`.
+версионные release notes, security exception и полный бинарный инвентарь `ASSETS.md`. Для release candidate
+`CHANGELOG.md` обязан содержать ровно одну dated-секцию текущей версии вида
+`## [X.Y.Z] - YYYY-MM-DD` с реальной UTC-календарной датой; `[Unreleased]` в этот момент полностью пуст.
+В version section нужны хотя бы один `###` подраздел и bullet, а для patch-версии – `### Исправлено`.
+Каждый tracked public binary (изображение, видео, аудио или шрифт) требует полную строку с repo-relative
+путём в `ASSETS.md`. Исключение `node-vibrant` должно содержать ровно один machine-readable
+`json security-exception` fence с проверяемыми `reviewedAt` (реальная календарная дата) и `reviewedFor`,
+в точности равным текущей версии `package.json`. `reviewedAt` не может быть будущей или перенесённой
+со старой даты релиза; chain содержит ровно пять записей и выводится повторно из candidate
+`package-lock.json`, а не принимается только со слов `SECURITY.md`.
 При наличии `--base` добавляется diff-проверка
 публичной пунктуации; если history/ref недоступен, ошибка содержит команду fetch.
 

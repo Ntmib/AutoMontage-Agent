@@ -271,3 +271,11 @@ test('markdown brief shows scenes and proofread corrections', () => {
   assert.match(markdown, /нейроагенда/);
   assert.match(markdown, /нейроагента/);
 });
+
+test('markdown brief reflects an approved status from its brief object', () => {
+  const markdown = formatBriefMarkdown(makeBrief({ status: 'approved' }));
+
+  assert.match(markdown, /^Статус: `approved`$/m);
+  assert.equal((markdown.match(/^Статус:/gm) || []).length, 1);
+  assert.doesNotMatch(markdown, /^Статус: `draft`$/m);
+});

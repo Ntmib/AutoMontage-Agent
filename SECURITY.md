@@ -44,8 +44,14 @@ override, or downgrade to the incompatible 3.x line. Reassess immediately on an 
 node-vibrant/Jimp update, if severity becomes high, if direct untrusted-image input is
 introduced, at the next release, or no later than 2026-09-04.
 
+For release 1.2.1, the GitHub Security Advisory, npm registry metadata, and the installed
+transitive dependency chain were reviewed again on 2026-08-05. They still match the advisory,
+package path, and mitigation recorded below.
+
 The block below is the machine-readable release-gate record. Keep the prose and JSON in
-sync.
+sync. The gate also derives the installed five-package chain from the candidate
+`package-lock.json`, requires exactly those five entries, and accepts `reviewedAt` only when
+it matches the dated section for `reviewedFor` and is not in the future.
 
 ```json security-exception
 {
@@ -70,6 +76,8 @@ sync.
     "direct untrusted-image input",
     "next release"
   ],
+  "reviewedAt": "2026-08-05",
+  "reviewedFor": "1.2.1",
   "revisitBy": "2026-09-04"
 }
 ```

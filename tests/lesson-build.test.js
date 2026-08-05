@@ -1,5 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const {
   LESSON_DEFAULT_THEME,
@@ -8,6 +12,51 @@ const {
   getLessonAction,
   prepareLessonRender,
 } = require('../scripts/lesson/workflow');
+
+const ROOT = path.resolve(__dirname, '..');
+
+function runLessonBuildWithIntercept(t, args, {
+  failRender = false,
+  materializeFinish = false,
+} = {}) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-lesson-intercept-'));
+  const hook = path.join(directory, 'hook.js');
+  const calls = path.join(directory, 'calls.jsonl');
+  fs.writeFileSync(hook, [
+    "const childProcess = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "const calls = process.env.AUTOMONTAGE_LESSON_CAPTURE;",
+    `const materializeFinish = ${JSON.stringify(materializeFinish)};`,
+    'childProcess.spawnSync = (command, args) => {',
+    "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
+    "  if (command === 'ffprobe') return { status: 0, stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1080, height: 1920, r_frame_rate: '25/1' }], format: { duration: '20' } }) };",
+    "  if (process.env.AUTOMONTAGE_LESSON_FAIL_RENDER && args.includes('render')) return { status: 1, stdout: '', stderr: 'render failed' };",
+    "  if (materializeFinish && command === process.execPath && path.basename(args[0]) === 'finish.js') {",
+    "    fs.mkdirSync(path.dirname(args[2]), { recursive: true });",
+    "    fs.writeFileSync(args[2], 'finished-lesson');",
+    "    return { status: 0, stdout: '' };",
+    '  }',
+    "  return { status: 0, stdout: '' };",
+    '};',
+    '',
+  ].join('\n'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const result = spawnSync(process.execPath, [path.join(ROOT, 'scripts/build.js'), ...args], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      AUTOMONTAGE_LESSON_CAPTURE: calls,
+      AUTOMONTAGE_LESSON_FAIL_RENDER: failRender ? '1' : '',
+      NODE_OPTIONS: `--require=${hook}`,
+    },
+  });
+  const invocations = fs.existsSync(calls)
+    ? fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
+    : [];
+  return { result, invocations };
+}
 
 test('lesson workflow exposes one public default theme', () => {
   assert.equal(LESSON_DEFAULT_THEME, 'lesson-neutral');
@@ -216,4 +265,104 @@ test('lesson rejects source-changing flags that invalidate approved timings', ()
     isLesson: false,
     args: ['--tighten'],
   }));
+});
+
+test('approved lesson props use one temporary public lease and remove it after render', (t) => {
+  const id = `lease-lesson-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);
+  t.after(() => fs.rmSync(propsPath, { force: true }));
+
+  const { result, invocations } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--brief', 'examples/lesson-neutral-approved.json',
+    '--frames', '25',
+    '--id', id,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
+  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/source\.mp4$/);
+  assert.equal(props.audioSrc, props.faceSrc);
+  assert.ok(invocations.some((entry) => entry.args.includes('ReelScenes')));
+  assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
+});
+
+test('approved lesson rebinds legacy scene faceSrc to the same temporary source lease', (t) => {
+  const id = `lease-scene-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);
+  const briefPath = path.join(ROOT, 'out', `${id}.approved.lesson.json`);
+  const brief = JSON.parse(fs.readFileSync(
+    path.join(ROOT, 'examples/lesson-neutral-approved.json'),
+    'utf8',
+  ));
+  brief.scenes[0].faceSrc = 'source.mp4';
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  t.after(() => {
+    fs.rmSync(propsPath, { force: true });
+    fs.rmSync(briefPath, { force: true });
+  });
+
+  const { result } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--brief', briefPath,
+    '--frames', '25',
+    '--id', id,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
+  assert.equal(props.scenes[0].faceSrc, props.faceSrc);
+  assert.equal(props.audioSrc, props.faceSrc);
+  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/source\.mp4$/);
+  assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
+});
+
+test('failed lesson render still removes its temporary public lease', (t) => {
+  const id = `lease-lesson-failed-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);
+  t.after(() => fs.rmSync(propsPath, { force: true }));
+
+  const { result } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--brief', 'examples/lesson-neutral-approved.json',
+    '--frames', '25',
+    '--id', id,
+  ], { failRender: true });
+
+  assert.equal(result.status, 1);
+  const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
+  assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
+});
+
+test('lesson export rejects a pre-existing final symlink without overwriting its target', (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-lesson-export-'));
+  const id = `lesson-export-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);
+  const builtPath = path.join(ROOT, 'out', `${id}.mp4`);
+  const sentinel = path.join(fixture, 'outside.mp4');
+  const destination = path.join(fixture, `${id}.mp4`);
+  fs.writeFileSync(sentinel, 'outside-must-survive');
+  fs.symlinkSync(sentinel, destination, 'file');
+  t.after(() => {
+    fs.rmSync(fixture, { recursive: true, force: true });
+    fs.rmSync(propsPath, { force: true });
+    fs.rmSync(builtPath, { force: true });
+  });
+
+  const { result } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--brief', 'examples/lesson-neutral-approved.json',
+    '--frames', '25',
+    '--id', id,
+    '--outdir', fixture,
+  ], { materializeFinish: true });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /symbolic link/i);
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'outside-must-survive');
+  assert.equal(fs.lstatSync(destination).isSymbolicLink(), true);
 });
