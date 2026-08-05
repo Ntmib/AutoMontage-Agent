@@ -22,6 +22,8 @@ npm test
 - schema-контракт project manifest, миграция legacy `transcript`, traversal/Windows-path
   payload, dangling symlink на final/intermediate component и safe slug/id: каждый сохранённый
   или generated путь обязан остаться внутри своего workspace/outdir;
+- общий lesson/Dynamic export: реальный existing/dangling final symlink и symlinked/non-directory
+  parent отклоняются без изменения внешнего sentinel, а новый вложенный `--outdir` создаётся;
 - exclusive unpredictable temp для manifest; версии draft/approved brief, rollback JSON/Markdown/
   manifest при I/O failure, render history и канонический final;
 - lifecycle `started → failed/complete`, сохранность прежнего final и атомарную публикацию;
@@ -33,7 +35,8 @@ npm test
 - повторный ffprobe после reframe и tighten обновляет FPS, по которому строятся props;
 - уникальный public media lease каждого render, его cleanup и запрет symlink-escape;
 - cache identity: изменение Remotion-кода, lockfile, обычного public resource path или его bytes
-  отменяет reuse; меняющийся generated source lease с теми же bytes сохраняет key;
+  отменяет reuse; меняющийся generated source lease с теми же bytes сохраняет key также без
+  расширения и с непривычным расширением;
 - safe-zone длинных денежных подписей;
 - анимации CTA, воронки, градиента и маркеров соцсетей.
 

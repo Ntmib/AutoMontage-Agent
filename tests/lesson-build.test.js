@@ -15,7 +15,10 @@ const {
 
 const ROOT = path.resolve(__dirname, '..');
 
-function runLessonBuildWithIntercept(t, args, { failRender = false } = {}) {
+function runLessonBuildWithIntercept(t, args, {
+  failRender = false,
+  materializeFinish = false,
+} = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-lesson-intercept-'));
   const hook = path.join(directory, 'hook.js');
   const calls = path.join(directory, 'calls.jsonl');
@@ -28,6 +31,11 @@ function runLessonBuildWithIntercept(t, args, { failRender = false } = {}) {
     "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
     "  if (command === 'ffprobe') return { status: 0, stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1080, height: 1920, r_frame_rate: '25/1' }], format: { duration: '20' } }) };",
     "  if (process.env.AUTOMONTAGE_LESSON_FAIL_RENDER && args.includes('render')) return { status: 1, stdout: '', stderr: 'render failed' };",
+    "  if (process.env.AUTOMONTAGE_LESSON_FINISH_FILE && command === process.execPath && path.basename(args[0]) === 'finish.js') {",
+    "    fs.mkdirSync(path.dirname(args[2]), { recursive: true });",
+    "    fs.writeFileSync(args[2], 'finished-lesson');",
+    "    return { status: 0, stdout: '' };",
+    '  }',
     "  return { status: 0, stdout: '' };",
     '};',
     '',
@@ -40,6 +48,7 @@ function runLessonBuildWithIntercept(t, args, { failRender = false } = {}) {
       ...process.env,
       AUTOMONTAGE_LESSON_CAPTURE: calls,
       AUTOMONTAGE_LESSON_FAIL_RENDER: failRender ? '1' : '',
+      AUTOMONTAGE_LESSON_FINISH_FILE: materializeFinish ? '1' : '',
       NODE_OPTIONS: `--require=${hook}`,
     },
   });
@@ -326,4 +335,34 @@ test('failed lesson render still removes its temporary public lease', (t) => {
   assert.equal(result.status, 1);
   const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
   assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
+});
+
+test('lesson export rejects a pre-existing final symlink without overwriting its target', (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-lesson-export-'));
+  const id = `lesson-export-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);
+  const builtPath = path.join(ROOT, 'out', `${id}.mp4`);
+  const sentinel = path.join(fixture, 'outside.mp4');
+  const destination = path.join(fixture, `${id}.mp4`);
+  fs.writeFileSync(sentinel, 'outside-must-survive');
+  fs.symlinkSync(sentinel, destination, 'file');
+  t.after(() => {
+    fs.rmSync(fixture, { recursive: true, force: true });
+    fs.rmSync(propsPath, { force: true });
+    fs.rmSync(builtPath, { force: true });
+  });
+
+  const { result } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--brief', 'examples/lesson-neutral-approved.json',
+    '--frames', '25',
+    '--id', id,
+    '--outdir', fixture,
+  ], { materializeFinish: true });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /symbolic link/i);
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'outside-must-survive');
+  assert.equal(fs.lstatSync(destination).isSymbolicLink(), true);
 });

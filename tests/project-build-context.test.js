@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  copyOutputFile,
   createBuildContext,
   resolveOutputDestination,
 } = require('../scripts/project/build-context');
@@ -172,6 +173,87 @@ test('explicit output destination remains beneath outdir independently of its fi
       outputName,
     );
   }
+});
+
+test('safe output copy creates a legitimate nested outdir and preserves bytes', (t) => {
+  const fixture = makeFixture(t);
+
+  const destination = copyOutputFile({
+    cwd: fixture.dir,
+    outdir: 'exports/deep/nested',
+    outputName: 'lesson-safe',
+    source: fixture.source,
+  });
+
+  assert.equal(destination, path.join(fixture.dir, 'exports/deep/nested/lesson-safe.mp4'));
+  assert.equal(fs.readFileSync(destination, 'utf8'), 'video');
+
+  fs.writeFileSync(fixture.source, 'updated-video');
+  assert.equal(copyOutputFile({
+    cwd: fixture.dir,
+    outdir: 'exports/deep/nested',
+    outputName: 'lesson-safe',
+    source: fixture.source,
+  }), destination);
+  assert.equal(fs.readFileSync(destination, 'utf8'), 'updated-video');
+});
+
+test('safe output copy rejects existing and dangling final symlinks without touching targets', (t) => {
+  const fixture = makeFixture(t);
+  const outputRoot = path.join(fixture.dir, 'exports');
+  fs.mkdirSync(outputRoot);
+
+  const outside = path.join(fixture.dir, 'outside.mp4');
+  const existingLink = path.join(outputRoot, 'existing.mp4');
+  fs.writeFileSync(outside, 'outside-must-survive');
+  fs.symlinkSync(outside, existingLink, 'file');
+  assert.throws(() => copyOutputFile({
+    cwd: fixture.dir,
+    outdir: 'exports',
+    outputName: 'existing',
+    source: fixture.source,
+  }), /symbolic link/i);
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'outside-must-survive');
+  assert.equal(fs.lstatSync(existingLink).isSymbolicLink(), true);
+
+  const absentTarget = path.join(fixture.dir, 'absent-target.mp4');
+  const danglingLink = path.join(outputRoot, 'dangling.mp4');
+  fs.symlinkSync(absentTarget, danglingLink, 'file');
+  assert.throws(() => copyOutputFile({
+    cwd: fixture.dir,
+    outdir: 'exports',
+    outputName: 'dangling',
+    source: fixture.source,
+  }), /symbolic link/i);
+  assert.equal(fs.existsSync(absentTarget), false);
+  assert.equal(fs.lstatSync(danglingLink).isSymbolicLink(), true);
+});
+
+test('safe output copy rejects a symlinked or non-directory outdir parent', (t) => {
+  const fixture = makeFixture(t);
+  const exportsDir = path.join(fixture.dir, 'exports');
+  const outsideDir = path.join(fixture.dir, 'outside');
+  fs.mkdirSync(exportsDir);
+  fs.mkdirSync(outsideDir);
+  fs.writeFileSync(path.join(outsideDir, 'sentinel'), 'outside-must-survive');
+  fs.symlinkSync(outsideDir, path.join(exportsDir, 'linked'), 'dir');
+
+  assert.throws(() => copyOutputFile({
+    cwd: fixture.dir,
+    outdir: 'exports/linked/nested',
+    outputName: 'owned',
+    source: fixture.source,
+  }), /symbolic link/i);
+  assert.equal(fs.existsSync(path.join(outsideDir, 'nested', 'owned.mp4')), false);
+  assert.equal(fs.readFileSync(path.join(outsideDir, 'sentinel'), 'utf8'), 'outside-must-survive');
+
+  fs.writeFileSync(path.join(exportsDir, 'not-a-directory'), 'plain-file');
+  assert.throws(() => copyOutputFile({
+    cwd: fixture.dir,
+    outdir: 'exports/not-a-directory/nested',
+    outputName: 'owned',
+    source: fixture.source,
+  }), /directory/i);
 });
 
 test('project continuation rejects a different input video', (t) => {

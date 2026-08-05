@@ -24,6 +24,7 @@ const {
   loadCacheManifest,
   recordChunkComplete,
 } = require('../scripts/chunk-cache');
+const { preparePublicMedia } = require('../scripts/public-media');
 
 const hostile = `- lead 'single' "double" $() ;\nЮникод`;
 
@@ -293,6 +294,58 @@ test('render cache key ignores random public lease paths when media bytes match'
   }, secondLease);
 
   assert.equal(second.key, first.key);
+});
+
+test('render cache key normalizes extensionless and unusual generated source leases', (t) => {
+  const { root } = cacheFixture(t);
+  const cases = [
+    ['extensionless', 'input-a', 'input-b'],
+    ['unusual extension', 'input-a.odd-name+v1', 'input-b.odd-name+v1'],
+  ];
+
+  for (const [label, firstName, secondName] of cases) {
+    const firstSource = path.join(root, firstName);
+    const secondSource = path.join(root, secondName);
+    fs.writeFileSync(firstSource, `same-${label}-bytes`);
+    fs.writeFileSync(secondSource, `same-${label}-bytes`);
+    const firstLease = preparePublicMedia({
+      root,
+      sourcePath: firstSource,
+      namespace: 'dynamic',
+      temporaryId: '33333333-3333-4333-8333-333333333333',
+    });
+    const secondLease = preparePublicMedia({
+      root,
+      sourcePath: secondSource,
+      namespace: 'dynamic',
+      temporaryId: '44444444-4444-4444-8444-444444444444',
+    });
+    try {
+      assert.equal(
+        jobFor(root, { source: firstLease.publicPath, title: label }, firstLease.absolutePath).key,
+        jobFor(root, { source: secondLease.publicPath, title: label }, secondLease.absolutePath).key,
+        label,
+      );
+    } finally {
+      firstLease.cleanup();
+      secondLease.cleanup();
+    }
+  }
+});
+
+test('render cache key does not normalize lookalike paths outside generated lease shape', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const firstPath = path.join(publicDir, '.automontage/manual-a/source');
+  const secondPath = path.join(publicDir, '.automontage/manual-b/source');
+  fs.mkdirSync(path.dirname(firstPath), { recursive: true });
+  fs.mkdirSync(path.dirname(secondPath), { recursive: true });
+  fs.writeFileSync(firstPath, 'same-visible-bytes');
+  fs.writeFileSync(secondPath, 'same-visible-bytes');
+
+  assert.notEqual(
+    jobFor(root, { source: '.automontage/manual-a/source' }, firstPath).key,
+    jobFor(root, { source: '.automontage/manual-b/source' }, secondPath).key,
+  );
 });
 
 test('render cache key preserves ordinary public path identity even when asset bytes match', (t) => {

@@ -117,12 +117,15 @@ Lesson-процесс разделён на `draft` и `approved`. До явно
 manifest-controlled путь проходит schema validation, канонизацию и containment в project
 workspace; каждый существующий компонент проверяется через `lstat`, включая dangling symlink,
 после чего `realpath` подтверждает containment. Slug, legacy id и внешний final имеют отдельные
-token/containment-проверки.
+token/containment-проверки. Общий lesson/Dynamic exporter дополнительно проверяет каждый
+существующий компонент `--outdir` и final, создаёт родителей по одному и публикует через
+exclusive sibling temp + atomic rename, поэтому статическая ссылка назначения не разыменовывается.
 
 Отклонены варианты «доверять schema-valid относительному пути» и «проверять только строковый
 prefix»: оба пропускают symlink escape. Descriptor-relative `openat` мог бы сузить локальное
 TOCTOU-окно, но portable Node API его не даёт; конкурентный процесс с правом записи в workspace
-вне принятой модели угроз.
+или `--outdir` вне принятой модели угроз. Это защита от существующего состояния файловой системы,
+а не обещание race immunity против hostile writer.
 
 ## D-011 – Identity cache включает реализацию рендера
 
@@ -134,7 +137,8 @@ Resume cache учитывает не только props и media, но и вес
 версией Remotion-кода или lockfile, не выдаётся за совместимый.
 
 Content-only нормализация path разрешена только для generated
-`.automontage/<lease>/source.<ext>`. Обычные public paths и видимые строки остаются частью props
+`.automontage/<namespace>-<uuid>/source[.<ext>]`; расширение сохраняется как непрозрачный suffix
+basename и может отсутствовать. Обычные public paths и видимые строки остаются частью props
 identity, поэтому два разных b-roll с одинаковыми байтами не считаются одним наблюдаемым входом.
 
 Отклонены cache key только от props/source и полный hash всей `public/` папки: первый даёт

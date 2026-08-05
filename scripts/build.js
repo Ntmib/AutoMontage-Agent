@@ -44,8 +44,8 @@ const {
   prepareLessonRender,
 } = require('./lesson/workflow');
 const {
+  copyOutputFile,
   createBuildContext,
-  resolveOutputDestination,
 } = require('./project/build-context');
 const {
   recordBrief,
@@ -412,14 +412,12 @@ if (lessonAction === 'render') {
     });
     if (outDir) {
       const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
-      const dest = resolveOutputDestination({
+      final = copyOutputFile({
         cwd: process.cwd(),
         outdir: outDir,
         outputName,
+        source: final,
       });
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.copyFileSync(final, dest);
-      final = dest;
     }
     return final;
   });
@@ -620,14 +618,12 @@ const finalPath = withPublicMediaLease({
   });
   if (outDir) {   // глобальный запуск: положить результат рядом с пользователем
     const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
-    const dest = resolveOutputDestination({
+    final = copyOutputFile({
       cwd: process.cwd(),
       outdir: outDir,
       outputName,
+      source: final,
     });
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(final, dest);
-    final = dest;
   }
   return final;
 });

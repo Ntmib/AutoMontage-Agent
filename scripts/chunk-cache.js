@@ -153,7 +153,7 @@ function escapeJsonPointerSegment(segment) {
 }
 
 function isGeneratedSourceLease(value) {
-  return /^\.automontage\/[A-Za-z0-9_-]+-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/source\.[A-Za-z0-9]+$/i
+  return /^\.automontage\/[A-Za-z0-9_-]+-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/source(?:\.[^/\\]*)?$/i
     .test(value);
 }
 

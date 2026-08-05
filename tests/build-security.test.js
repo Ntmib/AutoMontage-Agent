@@ -18,7 +18,10 @@ const { parseBuildOptions } = require('../scripts/build-options');
 const ROOT = path.resolve(__dirname, '..');
 const HOSTILE = path.resolve(ROOT, `tmp/- clip ' " $() ;\nЮникод.mp4`);
 
-function runBuildWithIntercept(t, args, { ffprobeRates = ['30/1'] } = {}) {
+function runBuildWithIntercept(t, args, {
+  ffprobeRates = ['30/1'],
+  materializeFinish = false,
+} = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-build-intercept-'));
   const hook = path.join(directory, 'hook.js');
   const calls = path.join(directory, 'calls.jsonl');
@@ -44,6 +47,11 @@ function runBuildWithIntercept(t, args, { ffprobeRates = ['30/1'] } = {}) {
     "    fs.writeFileSync(args[2], 'module.exports = { CAPTIONS: [] };\\n');",
     "    return { status: 0, stdout: 'captions ready' };",
     '  }',
+    "  if (process.env.AUTOMONTAGE_BUILD_FINISH_FILE && command === process.execPath && path.basename(args[0]) === 'finish.js') {",
+    "    fs.mkdirSync(path.dirname(args[2]), { recursive: true });",
+    "    fs.writeFileSync(args[2], 'finished-dynamic');",
+    "    return { status: 0, stdout: '' };",
+    '  }',
     "  return { status: 0, stdout: '' };",
     '};',
     '',
@@ -55,6 +63,7 @@ function runBuildWithIntercept(t, args, { ffprobeRates = ['30/1'] } = {}) {
     env: {
       ...process.env,
       AUTOMONTAGE_BUILD_CAPTURE: calls,
+      AUTOMONTAGE_BUILD_FINISH_FILE: materializeFinish ? '1' : '',
       NODE_OPTIONS: `--require=${hook}`,
     },
   });
@@ -193,4 +202,34 @@ test('long Dynamic render gives Remotion a unique lease and muxes the same absol
   assert.ok(chunkRender, 'long build should invoke render-chunks.js');
   assert.equal(chunkRender.args.at(-1), path.join(ROOT, 'public', props.source));
   assert.equal(fs.existsSync(path.join(ROOT, 'public', props.source)), false);
+});
+
+test('Dynamic export rejects a pre-existing final symlink without overwriting its target', (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-dynamic-export-'));
+  const id = `dynamic-export-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.props.json`);
+  const builtPath = path.join(ROOT, 'out', `${id}.mp4`);
+  const sentinel = path.join(fixture, 'outside.mp4');
+  const destination = path.join(fixture, `${id}.mp4`);
+  fs.writeFileSync(sentinel, 'outside-must-survive');
+  fs.symlinkSync(sentinel, destination, 'file');
+  t.after(() => {
+    fs.rmSync(fixture, { recursive: true, force: true });
+    fs.rmSync(propsPath, { force: true });
+    fs.rmSync(builtPath, { force: true });
+  });
+
+  const { result } = runBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--scenario', 'examples/scenario-demo.json',
+    '--no-transcribe',
+    '--frames', '25',
+    '--id', id,
+    '--outdir', fixture,
+  ], { materializeFinish: true });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /symbolic link/i);
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'outside-must-survive');
+  assert.equal(fs.lstatSync(destination).isSymbolicLink(), true);
 });
