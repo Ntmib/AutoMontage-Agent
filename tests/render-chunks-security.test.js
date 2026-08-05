@@ -12,6 +12,7 @@ const {
   parseChunkOptions,
   remotionChunkCommand,
   renderChunkAtomically,
+  resolveRenderSource,
 } = require('../scripts/render-chunks');
 const {
   canonicalizeRenderProps,
@@ -238,6 +239,33 @@ test('public asset collection does not read traversal props outside public', (t)
   assert.deepEqual(canonicalizeRenderProps({ broll: '../../secret.mp4' }, assets), {
     broll: '../../secret.mp4',
   });
+});
+
+test('public asset discovery and source resolution reject a symlinked ancestor', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const outside = path.join(root, 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'secret.mp4'), 'do-not-read');
+  fs.symlinkSync(outside, path.join(publicDir, 'linked'));
+  const propsPath = path.join(root, 'props.json');
+  fs.writeFileSync(propsPath, '{"source":"linked/secret.mp4"}');
+
+  assert.throws(
+    () => collectReferencedPublicAssets({ broll: 'linked/secret.mp4' }, publicDir),
+    /chunk cache: public asset проходит через symlink/,
+  );
+  assert.throws(
+    () => resolveRenderSource(propsPath, root),
+    /chunk cache: public asset проходит через symlink/,
+  );
+});
+
+test('render cache key preserves observable props key order', (t) => {
+  const { root } = cacheFixture(t);
+  const first = jobFor(root, { source: 'broll/clip.mp4', title: 'same' });
+  const second = jobFor(root, { title: 'same', source: 'broll/clip.mp4' });
+
+  assert.notEqual(second.key, first.key);
 });
 
 test('render cache key ignores random public lease paths when media bytes match', (t) => {

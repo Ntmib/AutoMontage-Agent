@@ -107,18 +107,44 @@ function isContainedPath(root, candidate) {
     && !path.isAbsolute(relative);
 }
 
-function referencedPublicAsset(value, publicDir, fileSystem = fs) {
+function resolveContainedPublicFile(value, publicDir, fileSystem = fs) {
   if (typeof value !== 'string') return null;
   const root = hostPath(publicDir);
   const candidate = path.resolve(root, value);
   if (!isContainedPath(root, candidate)) return null;
+  const relative = path.relative(root, candidate);
+  const segments = relative.split(path.sep);
+  let current = root;
   let stat;
   try {
-    stat = fileSystem.lstatSync(candidate);
-  } catch {
+    stat = fileSystem.lstatSync(current);
+    if (stat.isSymbolicLink()) {
+      throw new Error('chunk cache: public asset проходит через symlink');
+    }
+    if (!stat.isDirectory()) return null;
+    for (const segment of segments) {
+      current = path.join(current, segment);
+      stat = fileSystem.lstatSync(current);
+      if (stat.isSymbolicLink()) {
+        throw new Error('chunk cache: public asset проходит через symlink');
+      }
+    }
+    if (!stat.isFile()) return null;
+    const realRoot = fileSystem.realpathSync(root);
+    const realCandidate = fileSystem.realpathSync(candidate);
+    if (!isContainedPath(realRoot, realCandidate)) {
+      throw new Error('chunk cache: public asset выходит за пределы public');
+    }
+  } catch (error) {
+    if (error?.message?.startsWith('chunk cache: public asset ')) throw error;
     return null;
   }
-  if (!stat.isFile() || stat.isSymbolicLink()) return null;
+  return candidate;
+}
+
+function referencedPublicAsset(value, publicDir, fileSystem = fs) {
+  const candidate = resolveContainedPublicFile(value, publicDir, fileSystem);
+  if (!candidate) return null;
   return fileIdentity(candidate, fileSystem);
 }
 
@@ -162,7 +188,7 @@ function canonicalizeRenderProps(props, publicAssets) {
     }
     if (Array.isArray(value)) return value.map((item, index) => visit(item, `${pointer}/${index}`));
     if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.keys(value).sort().map((key) => [
+      return Object.fromEntries(Object.keys(value).map((key) => [
         key,
         visit(value[key], `${pointer}/${escapeJsonPointerSegment(key)}`),
       ]));
@@ -194,7 +220,7 @@ function createRenderJob({
   const descriptor = {
     version: CACHE_VERSION,
     composition,
-    props: sortedValue(props),
+    props,
     source: source ? fileIdentity(source) : null,
     audio: audio ? fileIdentity(audio) : null,
     total,
@@ -354,5 +380,6 @@ module.exports = {
   loadCacheManifest,
   probeChunkFrames,
   recordChunkComplete,
+  resolveContainedPublicFile,
   writeManifestAtomic,
 };

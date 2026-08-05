@@ -64,7 +64,9 @@ identities, диапазонов, Remotion options, всего `src/`, `package.
 Тесты меняют JSX byte, referenced b-roll и package metadata, проверяют, что каждый случай
 инвалидирует key, а неиспользуемый `public/` файл — нет. Для public media фиксируются только
 contained regular files, отсортированные по JSON pointer; traversal не читается, symlink в
-`src/` отклоняется. Одинаковые bytes в разных временных lease-path дают одинаковый resume key.
+`src/` или на любом сегменте public media отклоняется. Descriptor сохраняет порядок ключей,
+который получает Remotion, поэтому перестановка props тоже меняет key. Одинаковые bytes в разных
+временных lease-path дают одинаковый resume key.
 Manifest разрешает reuse только при совпадении range/hash/size/frames.
 
 ## 2. Проверка окружения

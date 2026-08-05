@@ -145,8 +145,10 @@ composition, канонизированные props, identities source/audio, д
 а также identity всего `src/`, `package.json` и `package-lock.json`. Для каждого реально
 упомянутого в props файла из `public/` сохраняются JSON pointer, размер и SHA-256; остальные
 ресурсы `public/` на key не влияют. Канонические props заменяют media path его content identity,
-поэтому новый временный lease с теми же байтами продолжает resume. Обход `src/` сортирует
-POSIX-relative paths и не следует symlink; symlink прерывает построение cache key.
+поэтому новый временный lease с теми же байтами продолжает resume, но сохраняют исходный порядок
+ключей props, наблюдаемый Remotion. Общий resolver public media отклоняет symlink на любом
+сегменте и любой realpath escape. Обход `src/` сортирует POSIX-relative paths и не следует
+symlink; symlink прерывает построение cache key.
 
 ## 6. Данные и артефакты
 

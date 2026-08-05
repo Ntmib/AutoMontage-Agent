@@ -20,6 +20,7 @@ const {
   loadCacheManifest,
   probeChunkFrames,
   recordChunkComplete,
+  resolveContainedPublicFile,
 } = require('./chunk-cache');
 
 const ROOT = path.join(__dirname, '..');
@@ -164,12 +165,8 @@ function resolveRenderSource(propsPath, root = ROOT) {
   }
   if (typeof props.source !== 'string' || props.source.length === 0) return null;
   const publicDirectory = path.join(root, 'public');
-  const source = path.resolve(publicDirectory, props.source);
-  const relative = path.relative(publicDirectory, source);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error('chunk cache: source должен находиться в public');
-  }
-  if (!fs.existsSync(source) || !fs.lstatSync(source).isFile() || fs.lstatSync(source).isSymbolicLink()) {
+  const source = resolveContainedPublicFile(props.source, publicDirectory);
+  if (!source) {
     throw new Error('chunk cache: source из props не найден');
   }
   return source;
