@@ -107,6 +107,70 @@ test('missing base ref explains how to fetch history', () => {
   );
 });
 
+test('node-vibrant audit exception requires complete and time-bounded evidence', () => {
+  const root = makeRepository();
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  pkg.dependencies = { 'node-vibrant': '4.0.4' };
+  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  write(root, 'SECURITY.md', [
+    '# Security',
+    '',
+    '```json security-exception',
+    JSON.stringify({
+      ghsa: 'GHSA-5v7r-6r5c-r473',
+      chain: ['node-vibrant@4.0.4', 'file-type@16.5.4'],
+      revisitBy: '2026-09-04',
+    }),
+    '```',
+    '',
+  ].join('\n'));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'incomplete exception']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T00:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => entry.rule === 'security-exception'));
+
+  write(root, 'SECURITY.md', [
+    '# Security',
+    '',
+    '```json security-exception',
+    JSON.stringify({
+      ghsa: 'GHSA-5v7r-6r5c-r473',
+      cve: 'CVE-2026-31808',
+      severity: 'moderate',
+      package: 'file-type@16.5.4',
+      fixedIn: 'file-type@21.3.1',
+      chain: [
+        'node-vibrant@4.0.4',
+        '@vibrant/image-node@4.0.4',
+        '@jimp/custom@0.22.12',
+        '@jimp/core@0.22.12',
+        'file-type@16.5.4',
+      ],
+      exposure: 'optional autotheme path',
+      mitigation: 'generated PNG input only',
+      decision: 'keep node-vibrant@4.0.4',
+      triggers: [
+        'upstream node-vibrant/Jimp update',
+        'severity becomes high',
+        'direct untrusted-image input',
+        'next release',
+      ],
+      revisitBy: '2026-09-04',
+    }),
+    '```',
+    '',
+  ].join('\n'));
+  git(root, ['add', 'SECURITY.md']);
+  git(root, ['commit', '-qm', 'complete exception']);
+
+  const accepted = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T00:00:00Z') });
+  const expired = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-09-05T00:00:00Z') });
+  assert.equal(accepted.issues.some((entry) => entry.rule === 'security-exception'), false);
+  assert.equal(expired.issues.some((entry) => entry.rule === 'security-exception'), true);
+});
+
 test('smoke guard detects any protected-file mutation', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-smoke-guard-'));
   write(root, 'src/data/captions.js', 'module.exports = [];\n');

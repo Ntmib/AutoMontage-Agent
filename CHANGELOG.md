@@ -12,6 +12,8 @@
 - Локальные argv-only генераторы нейтрального demo-source и preview документации.
 - Object-aware `check:release` для проверки точного Git-дерева и публичный smoke-runner
   двух путей рендера с медиапроверкой, manifest/hash-контролем и защитой transcript/captions.
+- `SECURITY.md` с ограниченным по времени исключением для moderate advisory в optional
+  `--autotheme`; release checker проверяет полноту записи и дату пересмотра.
 
 ### Исправлено
 

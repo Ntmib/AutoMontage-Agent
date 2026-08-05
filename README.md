@@ -193,6 +193,7 @@ Remotion (анимация плашек кодом), faster-whisper (распо�
 - [TESTING.md](TESTING.md) – от быстрых тестов до проверки готового MP4.
 - [DECISIONS.md](DECISIONS.md) – решения, которые не нужно заново переигрывать в каждой сессии.
 - [CHANGELOG.md](CHANGELOG.md) – история релизов и заметные изменения по версиям.
+- [SECURITY.md](SECURITY.md) – политика отчётов и ограниченные по времени исключения audit.
 - [AGENTS.md](AGENTS.md) – правила работы AI-агентов и обязательный синхрон документации.
 
 ### Версии и история изменений
@@ -221,6 +222,11 @@ git config core.hooksPath .githooks
 push и pull request с полной историей репозитория. В настройках репозитория дополнительно
 включены GitHub Secret Scanning и Push Protection. Не обходи локальную проверку через
 `--no-verify`.
+
+`npm audit --audit-level=high` блокирует high/critical advisories. Пять текущих moderate
+записей сводятся к одному transitive `file-type` advisory внутри optional `--autotheme`;
+точная цепочка, граница входа и дата обязательного пересмотра записаны в
+[`SECURITY.md`](SECURITY.md). Это временное исключение, а не заявление об отсутствии риска.
 
 ### Проверка кандидата в релиз
 

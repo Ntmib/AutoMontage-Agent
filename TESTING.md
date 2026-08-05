@@ -167,3 +167,11 @@ CI блокирует high/critical уязвимости командой `npm a
 Dependabot еженедельно проверяет npm-пакеты и используемые GitHub Actions. Все actions в
 workflow закреплены по неизменяемому commit SHA, чтобы плавающий тег нельзя было незаметно
 подменить.
+
+Полный `npm audit` сейчас должен показывать ровно пять moderate записей по одной цепочке
+`node-vibrant -> @vibrant/image-node -> @jimp/custom -> @jimp/core -> file-type` и ноль
+high/critical. Исключение действительно только в форме, описанной в
+[`SECURITY.md`](SECURITY.md), и автоматически истекает по `revisitBy`. После изменения
+dependency tree, advisory severity или входа `--autotheme` документ и release gate нужно
+пересмотреть вместе. `npm audit fix --force`, major override и downgrade на 3.x не являются
+проверенным исправлением для этого релиза.

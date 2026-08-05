@@ -162,6 +162,100 @@ function checkPackageMetadata(read, issues) {
   }
 }
 
+function checkSecurityException(files, read, issues, now) {
+  const pkg = jsonValue(read('package.json'), 'package.json', issues, 'package.json');
+  if (!pkg || !pkg.dependencies || !pkg.dependencies['node-vibrant']) return;
+  if (!files.includes('SECURITY.md')) {
+    issues.push(issue(
+      'security-exception', 'SECURITY.md', 1,
+      'node-vibrant is present without a tracked security exception',
+      'document the accepted advisory, exposure, mitigation, triggers, and revisit date.',
+    ));
+    return;
+  }
+  const source = read('SECURITY.md');
+  const marker = /```json security-exception\s*\n([\s\S]*?)\n```/.exec(source);
+  if (!marker) {
+    issues.push(issue(
+      'security-exception', 'SECURITY.md', 1,
+      'machine-readable security-exception JSON block is missing',
+      'add one fenced `json security-exception` block with the required evidence.',
+    ));
+    return;
+  }
+  const line = lineNumber(source, marker.index);
+  let exception;
+  try {
+    exception = JSON.parse(marker[1]);
+  } catch (error) {
+    issues.push(issue(
+      'security-exception', 'SECURITY.md', line,
+      `security exception JSON is invalid (${error.message})`,
+      'repair the fenced JSON without comments or trailing commas.',
+    ));
+    return;
+  }
+  const requiredStrings = [
+    'ghsa', 'cve', 'severity', 'package', 'fixedIn', 'exposure', 'mitigation', 'decision', 'revisitBy',
+  ];
+  const missing = requiredStrings.filter((key) => (
+    typeof exception[key] !== 'string' || !exception[key].trim()
+  ));
+  if (!Array.isArray(exception.chain) || exception.chain.length < 5) missing.push('chain');
+  if (!Array.isArray(exception.triggers) || exception.triggers.length < 4) missing.push('triggers');
+  const expected = {
+    ghsa: 'GHSA-5v7r-6r5c-r473',
+    cve: 'CVE-2026-31808',
+    severity: 'moderate',
+    package: 'file-type@16.5.4',
+    fixedIn: 'file-type@21.3.1',
+  };
+  const incorrect = Object.entries(expected)
+    .filter(([key, value]) => exception[key] !== value)
+    .map(([key]) => key);
+  const expectedChain = [
+    'node-vibrant@4.0.4',
+    '@vibrant/image-node@4.0.4',
+    '@jimp/custom@0.22.12',
+    '@jimp/core@0.22.12',
+    'file-type@16.5.4',
+  ];
+  if (Array.isArray(exception.chain)
+    && expectedChain.some((entry, index) => exception.chain[index] !== entry)) {
+    incorrect.push('chain');
+  }
+  const requiredTriggers = [
+    'upstream node-vibrant/Jimp update',
+    'severity becomes high',
+    'direct untrusted-image input',
+    'next release',
+  ];
+  if (Array.isArray(exception.triggers)
+    && requiredTriggers.some((entry) => !exception.triggers.includes(entry))) {
+    incorrect.push('triggers');
+  }
+  if (missing.length || incorrect.length) {
+    issues.push(issue(
+      'security-exception', 'SECURITY.md', line,
+      `security exception is incomplete or inaccurate (${[...new Set([...missing, ...incorrect])].join(', ')})`,
+      'record the exact advisory, five-package chain, exposure, mitigation, decision, four triggers, and revisit date.',
+    ));
+    return;
+  }
+  const revisit = /^\d{4}-\d{2}-\d{2}$/.test(exception.revisitBy)
+    ? new Date(`${exception.revisitBy}T00:00:00Z`)
+    : new Date(Number.NaN);
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const days = (revisit.getTime() - today.getTime()) / 86_400_000;
+  if (!Number.isFinite(days) || days < 0 || days > 30) {
+    issues.push(issue(
+      'security-exception', 'SECURITY.md', line,
+      `revisitBy ${exception.revisitBy} is expired, invalid, or more than 30 days away`,
+      'reassess upstream and set a new evidence-backed date no more than 30 days away.',
+    ));
+  }
+}
+
 function checkEnvironment(files, read, issues) {
   const declarations = new Set();
   const envSource = read('.env.example');
@@ -283,7 +377,7 @@ function checkChangedPunctuation(additions, issues) {
   }
 }
 
-function checkRelease({ cwd = ROOT, tree = 'HEAD', base = null } = {}) {
+function checkRelease({ cwd = ROOT, tree = 'HEAD', base = null, now = new Date() } = {}) {
   const resolvedCwd = path.resolve(cwd);
   const treeSha = resolveTree(resolvedCwd, tree, 'tree');
   const baseSha = base ? resolveTree(resolvedCwd, base, 'base') : null;
@@ -297,6 +391,7 @@ function checkRelease({ cwd = ROOT, tree = 'HEAD', base = null } = {}) {
   };
   const issues = [];
   checkPackageMetadata(read, issues);
+  checkSecurityException(files, read, issues, now);
   checkEnvironment(files, read, issues);
   checkMarkdownLinks(files, read, issues);
   checkPrivateData(files, read, issues);
