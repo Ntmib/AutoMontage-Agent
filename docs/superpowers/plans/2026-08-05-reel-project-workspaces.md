@@ -480,7 +480,7 @@ git commit -m "docs: document isolated reel projects"
 
 **Files:**
 - Create locally, ignored: `projects/2026.08.04_claude-code-montage/**`
-- Do not modify or delete existing `out/c0027-*` artifacts.
+- Do not modify or delete existing `out/private-reel-*` artifacts.
 
 **Interfaces:**
 - Consumes: the existing source, briefs, contact sheets and v1-v9 MP4 files.

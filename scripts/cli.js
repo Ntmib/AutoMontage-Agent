@@ -23,7 +23,7 @@ function help() {
   automontage --help                  эта справка
 
 Частые опции:
-  --theme <id>          тема: Dynamic по умолчанию craft, lesson — lesson-neutral
+  --theme <id>          тема: Dynamic по умолчанию craft, lesson – lesson-neutral
   --template lesson     создать черновик ТЗ из 7 готовых сцен и остановиться
   --aspect source       формат как у исходника (дефолт для lesson)
   --aspect vertical     вертикальный результат 1080x1920
