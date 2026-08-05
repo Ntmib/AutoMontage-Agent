@@ -43,6 +43,8 @@
   заранее отклоняет недопустимые numeric/reframe параметры.
 - Сбой render, finish, music или публикации теперь фиксирует project-render как `failed`;
   canonical final заменяется атомарно только после успешной обработки.
+- Finish, music mix и Telegram pack запускают ffmpeg без shell, валидируют filter/media
+  параметры заранее; Telegram pack жёстко требует два потока и A/V drift меньше 80 мс.
 - Транскрипты разных роликов больше не перезаписывают общий `src/data/transcript.json` в
   project-режиме.
 - Legacy-режим и `automontage demo` теперь хранят generated transcript/captions и demo MP4

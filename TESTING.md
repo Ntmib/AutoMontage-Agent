@@ -35,6 +35,8 @@ ffprobe/JSON-результатов с явным `maxBuffer`.
 
 Статический guard для `scripts/build.js` запрещает `execSync` и `shell: true`. Опции
 `--frames`, `--max`, `--beatSec`, `--brandLock` и `--reframe` проверяются до ffprobe.
+Та же граница действует для `finish.js`, `mix-music.js` и `pack-tg.js`: filter values,
+FPS, bitrate и resolution имеют конечные диапазоны, а пути остаются отдельными argv.
 
 ## 2. Проверка окружения
 
@@ -98,6 +100,9 @@ node scripts/dynamic-gate.js path/to/scenario.json path/to/transcript.json
 - сравнить A/V-синхрон в начале, середине и конце;
 - декодировать итог целиком через ffmpeg и проверить параметры через ffprobe;
 - проверить громкость и отсутствие обрыва музыки/голоса.
+
+`pack-tg.js` требует video и audio stream с конечными start/duration. Разница start или
+duration в 80 мс и больше является ошибкой с ненулевым exit code; 79 мс ещё проходит.
 
 Готовность означает не только зелёные тесты: итоговый MP4 должен открываться, полностью
 декодироваться и визуально соответствовать утверждённому монтажному листу.

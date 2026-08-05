@@ -67,21 +67,26 @@ function runNodeTool(script, args, options = {}) {
   return runTool(process.execPath, [script, ...args], options);
 }
 
-function captureTool(command, args, options = {}) {
+function captureToolResult(command, args, options = {}) {
   if (!Number.isSafeInteger(options.maxBuffer) || options.maxBuffer <= 0) {
     throw new Error(`${options.stage || 'process'}: capture требует явный положительный maxBuffer`);
   }
-  const result = invoke(command, args, options, {
+  return invoke(command, args, options, {
     encoding: 'utf8',
     maxBuffer: options.maxBuffer,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+}
+
+function captureTool(command, args, options = {}) {
+  const result = captureToolResult(command, args, options);
   return result.stdout || '';
 }
 
 module.exports = {
   assertProcessResult,
   captureTool,
+  captureToolResult,
   hostPath,
   runNodeTool,
   runTool,
