@@ -104,15 +104,26 @@ node scripts/build.js \
 
 Подключение (на любой машине, без изменения кода движка):
 
-```
-export THEMES_EXT=/путь/к/мой-бренд-пак/themes    # Windows: set THEMES_EXT=...
+```bash
+export THEMES_EXT="/путь/с пробелами/мой-бренд-пак/themes"
 node scripts/build.js видео.mp4 --theme <theme-id>
 ```
 
+```powershell
+$env:THEMES_EXT = "C:\путь с пробелами\мой-бренд-пак\themes"
+node scripts/build.js видео.mp4 --theme <theme-id>
+```
+
+```bat
+set "THEMES_EXT=C:\путь с пробелами\мой-бренд-пак\themes"
+node scripts\build.js видео.mp4 --theme <theme-id>
+```
+
 Загрузчик `scripts/load-ext-theme.js` при `--theme <id>` ищет `$THEMES_EXT/<id>/theme.json`,
-читает его объектом и отдаёт в `getTheme`. Если id встроенный или файла нет – работает
-как раньше. Так каждый собирает свою тему поверх открытых шаблонов, а автор бренда
-держит стиль приватно.
+читает его объектом и отдаёт в `getTheme`. Встроенные id не требуют внешней папки. Любой
+другой явно заданный id работает fail-closed: отсутствие `THEMES_EXT`, файла, блока
+`colors` или валидного JSON останавливает сборку до Remotion. Ошибка показывает id, но не
+раскрывает абсолютный путь бренд-пака.
 
 ### Памятка агенту: подключить приватный стиль на новой машине
 

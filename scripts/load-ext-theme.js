@@ -14,29 +14,43 @@ const path = require('path');
 // Встроенные темы репозитория – их грузить снаружи не нужно.
 const BUILTIN = new Set(['craft', 'cyber', 'lesson-neutral']);
 
-// Пытается загрузить внешнюю тему по id. Возвращает объект-тему или null.
-// null означает «внешней темы нет» – вызывающий код оставляет строковый id как есть.
+function themeLabel(id) {
+  return JSON.stringify(String(id));
+}
+
+// Пытается загрузить внешнюю тему по id. Для встроенной темы возвращает null.
+// Любой другой явный id обязан разрешиться во внешнюю тему, иначе рендер останавливается.
 function loadExtTheme(id) {
   if (typeof id !== 'string') return null;            // уже объект или пусто – не наше дело
   if (BUILTIN.has(id)) return null;                   // встроенная тема
-  if (!/^[a-z0-9][a-z0-9_-]*$/i.test(id)) return null; // невалидный id (защита от ../, слэшей и т.п.)
+  if (!/^[a-z0-9][a-z0-9_-]*$/i.test(id)) {
+    throw new Error(`недопустимый id внешней темы ${themeLabel(id)}`);
+  }
 
   const ext = process.env.THEMES_EXT;
-  if (!ext) return null;                              // путь к бренд-паку не задан
+  if (!ext) {
+    throw new Error(
+      `внешняя тема ${themeLabel(id)} недоступна: задай THEMES_EXT (встроенные: ${[...BUILTIN].join(', ')})`,
+    );
+  }
 
   const file = path.join(ext, id, 'theme.json');
   // защита от path-traversal: итоговый путь обязан лежать ВНУТРИ ext
-  if (!path.resolve(file).startsWith(path.resolve(ext) + path.sep)) return null;
-  if (!fs.existsSync(file)) return null;
+  if (!path.resolve(file).startsWith(path.resolve(ext) + path.sep)) {
+    throw new Error(`недопустимый id внешней темы ${themeLabel(id)}`);
+  }
+  if (!fs.existsSync(file)) {
+    throw new Error(`внешняя тема ${themeLabel(id)} не найдена в THEMES_EXT`);
+  }
 
   let theme;
   try {
     theme = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) {
-    throw new Error(`внешняя тема "${id}" (${file}): битый JSON: ${e.message}`);
+    throw new Error(`внешняя тема ${themeLabel(id)}: битый JSON: ${e.message}`);
   }
   if (!theme || !theme.colors) {
-    throw new Error(`внешняя тема "${id}" (${file}) без обязательного блока colors`);
+    throw new Error(`внешняя тема ${themeLabel(id)} без обязательного блока colors`);
   }
   return theme;
 }

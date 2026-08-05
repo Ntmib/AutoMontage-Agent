@@ -205,7 +205,7 @@ const durF = framesOverride ? Math.min(+framesOverride, totalFrames2) : totalFra
 function resolveTheme(name) {
   try {
     const ext = loadExtTheme(name);
-    if (ext) { log(`внешняя тема "${name}" загружена из THEMES_EXT (${process.env.THEMES_EXT})`); return ext; }
+    if (ext) { log(`внешняя тема "${name}" загружена из THEMES_EXT`); return ext; }
   } catch (e) { console.error('❌ ' + e.message); process.exit(1); }
   return name;
 }
@@ -444,11 +444,7 @@ if (args.includes('--autopos')) {
 }
 
 // 5c. (опц.) внешний бренд-пак – тема из THEMES_EXT/<id>/theme.json (приватный стиль)
-let themeVal = theme;
-try {
-  const ext = loadExtTheme(theme);
-  if (ext) { themeVal = ext; log(`внешняя тема "${theme}" загружена из THEMES_EXT (${process.env.THEMES_EXT})`); }
-} catch (e) { console.error('❌ ' + e.message); process.exit(1); }
+let themeVal = resolveTheme(theme);
 
 // 5d. (опц.) autotheme – тема из палитры видео (Фаза 4.4-4.6)
 if (args.includes('--autotheme')) {

@@ -108,6 +108,8 @@ node scripts/build.js video.mp4 --template lesson \
 Для lesson `--theme` можно не указывать: встроенная `lesson-neutral` используется по
 умолчанию. Dynamic сохраняет прежний default `craft`; приватные темы задаются явно через
 `--theme <id>` и `THEMES_EXT`.
+Если явный внешний id не найден, `THEMES_EXT` не задан или `theme.json` повреждён,
+сборка останавливается до Remotion: незаметной подмены на `craft` нет.
 
 После проверки ТЗ утвердить конкретную ревизию и отрендерить её:
 

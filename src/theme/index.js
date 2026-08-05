@@ -9,7 +9,10 @@ const THEMES = { craft, cyber, 'lesson-neutral': lessonNeutral };
 // (сгенерированным из палитры видео через scripts/palette.js).
 export const getTheme = (name) => {
   if (name && typeof name === 'object' && name.colors) return name;
-  return THEMES[name] || craft;
+  if (typeof name === 'string' && Object.prototype.hasOwnProperty.call(THEMES, name)) {
+    return THEMES[name];
+  }
+  throw new Error(`Unknown theme: ${String(name)}`);
 };
 
 export const ThemeContext = createContext(craft);
