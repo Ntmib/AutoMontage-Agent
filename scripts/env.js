@@ -3,7 +3,7 @@
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { execSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -83,5 +83,4 @@ module.exports = {
   pythonCandidates,
   remotionBin,
   resolveRemotionCommand,
-  execSync,
 };

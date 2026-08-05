@@ -14,14 +14,23 @@
 //   --title "текст"   : заголовок видео для шаблона lesson (плашка сверху).
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
 const {
   ROOT,
   tmp,
   python,
   resolveRemotionCommand,
-  execSync,
 } = require('./env');
+const {
+  audioExtractionCommand,
+  frameAnalysisCommand,
+  paletteCommand,
+  reframeCommand,
+  remotionRenderCommand,
+  videoProbeCommand,
+} = require('./build-commands');
+const { finiteNumber, parseBuildOptions } = require('./build-options');
+const { parseVideoProbe } = require('./media-probe');
+const { captureTool, runNodeTool, runTool } = require('./process');
 const { loadExtTheme } = require('./load-ext-theme');
 const { resolveOutputGeometry } = require('./lesson/aspect');
 const { REMOTION_AUDIO_ADVANCE_MS } = require('./finish-audio');
@@ -44,6 +53,14 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const inputVideo = args[0];
 if (!inputVideo || !fs.existsSync(path.resolve(process.cwd(), inputVideo))) {
   console.error('❌ укажи существующий видеофайл');
+  process.exit(1);
+}
+
+let buildOptions;
+try {
+  buildOptions = parseBuildOptions(args);
+} catch (error) {
+  console.error(`❌ ${error.message}`);
   process.exit(1);
 }
 
@@ -111,16 +128,15 @@ const captionsPath = buildContext.paths.captions;
 const PY = lessonAction === 'render' ? null : python();
 const audioWav = tmp(`${id}_audio.wav`);
 const model = opt('model', 'large-v3-turbo');
-const framesOverride = opt('frames', null);
+const framesOverride = buildOptions.framesOverride;
 const scenarioFile = opt('scenario', null);
 
-const sh = (c) => execSync(c, { cwd: ROOT, stdio: 'pipe' }).toString().trim();
 const log = (m) => console.log('· ' + m);
-const runNodeCapture = (script, scriptArgs) => execFileSync(
+const runNodeCapture = (script, scriptArgs, stage = script) => captureTool(
   process.execPath,
   [path.join(ROOT, 'scripts', script), ...scriptArgs.map(String)],
-  { cwd: ROOT, stdio: 'pipe' },
-).toString().trim();
+  { cwd: ROOT, stage, maxBuffer: 16 * 1024 * 1024 },
+).trim();
 const remotion = resolveRemotionCommand();
 
 // ── ранние проверки (до тяжёлых шагов: транскрипции, рендера) ──
@@ -136,32 +152,45 @@ if (noTranscribe && !scenarioFile && !isLesson) {
 }
 
 // 1. ffprobe
-const probe = sh(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate:format=duration -of json "${video}"`);
-const info = JSON.parse(probe);
-const [fn, fd] = info.streams[0].r_frame_rate.split('/').map(Number);
-const FPS = Math.round(fn / (fd || 1)) || 30;
-const DUR = parseFloat(info.format.duration);
-log(`видео ${info.streams[0].width}x${info.streams[0].height} @ ${FPS}fps, ${DUR.toFixed(1)}с (тема: ${theme})`);
+const sourceProbeCommand = videoProbeCommand(video);
+const sourceProbe = parseVideoProbe(captureTool(
+  sourceProbeCommand.command,
+  sourceProbeCommand.args,
+  { cwd: ROOT, stage: 'source ffprobe', maxBuffer: 4 * 1024 * 1024 },
+), 'source ffprobe');
+const FPS = Math.round(sourceProbe.fps);
+let W = sourceProbe.width;
+let H = sourceProbe.height;
+let DUR2 = sourceProbe.duration;
+log(`видео ${W}x${H} @ ${FPS}fps, ${DUR2.toFixed(1)}с (тема: ${theme})`);
 
 // 1b. (опц.) reframe 16:9 → 9:16 по лицу (Фаза 3.1)
 let video1 = video;
-if (args.includes('--reframe')) {
-  const rmode = opt('reframe', 'track');
+if (buildOptions.reframeMode) {
+  const rmode = buildOptions.reframeMode;
   log(`reframe → вертикаль (${rmode})…`);
   const rOut = tmp(`${id}_reframe.mp4`);
-  console.log('  ' + sh(`${PY} scripts/reframe.py "${video}" "${rOut}" --mode ${rmode}`).split('\n').filter(Boolean).slice(-1)[0]);
+  const command = reframeCommand(PY, ROOT, video, rOut, rmode);
+  runTool(command.command, command.args, { cwd: ROOT, stage: 'reframe' });
   video1 = rOut;
-  const wh = sh(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "${rOut}"`).split('x');
-  info.streams[0].width = +wh[0]; info.streams[0].height = +wh[1];
+  const probeCommand = videoProbeCommand(rOut);
+  const reframed = parseVideoProbe(captureTool(
+    probeCommand.command,
+    probeCommand.args,
+    { cwd: ROOT, stage: 'reframe ffprobe', maxBuffer: 4 * 1024 * 1024 },
+  ), 'reframe ffprobe');
+  W = reframed.width;
+  H = reframed.height;
+  DUR2 = reframed.duration;
 }
-const W = info.streams[0].width, H = info.streams[0].height;
 
 // 2-3. Для утверждённого lesson brief повторная транскрипция не нужна.
 if (lessonAction === 'render') {
   log('использую утверждённый brief: транскрипцию пропускаю');
 } else {
   log('извлекаю аудио…');
-  sh(`ffmpeg -y -i "${video1}" -vn -ar 16000 -ac 1 "${audioWav}"`);
+  const command = audioExtractionCommand(video1, audioWav);
+  runTool(command.command, command.args, { cwd: ROOT, stage: 'audio extraction' });
 
   if (noTranscribe) {
     log('транскрипцию пропускаю (--no-transcribe): пишу пустой транскрипт');
@@ -170,12 +199,12 @@ if (lessonAction === 'render') {
   } else {
     log('транскрибирую (faster-whisper)…');
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
-    execFileSync(PY, [
+    runTool(PY, [
       path.join(ROOT, 'scripts/transcribe.py'),
       audioWav,
       transcriptPath,
       model,
-    ], { cwd: ROOT, stdio: 'inherit' });
+    ], { cwd: ROOT, stage: 'transcription' });
   }
 }
 
@@ -186,20 +215,24 @@ if (args.includes('--tighten') && noTranscribe) {
 } else if (args.includes('--tighten')) {
   log('уплотняю (паузы + слова-паразиты)…');
   const tOut = tmp(`${id}_tight.mp4`);
-  console.log('  ' + runNodeCapture('tighten.js', [
+  runNodeTool(path.join(ROOT, 'scripts/tighten.js'), [
     video1,
     transcriptPath,
     tOut,
     transcriptPath,
-  ]).split('\n').filter(Boolean).slice(-2).join(' | '));
+  ], { cwd: ROOT, stage: 'tighten' });
   srcVideo = tOut;
   // пересчитать длительность/кадры по уплотнённому видео
-  const dur2 = parseFloat(sh(`ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 "${tOut}"`));
-  if (dur2 > 0) { info.format.duration = dur2; }
+  const probeCommand = videoProbeCommand(tOut);
+  const tightened = parseVideoProbe(captureTool(
+    probeCommand.command,
+    probeCommand.args,
+    { cwd: ROOT, stage: 'tighten ffprobe', maxBuffer: 4 * 1024 * 1024 },
+  ), 'tighten ffprobe');
+  DUR2 = tightened.duration;
 }
-const DUR2 = parseFloat(info.format.duration);
 const totalFrames2 = Math.ceil(DUR2 * FPS);
-const durF = framesOverride ? Math.min(+framesOverride, totalFrames2) : totalFrames2;
+const durF = framesOverride ? Math.min(framesOverride, totalFrames2) : totalFrames2;
 
 // ── общий резолвер темы (строка встроенной темы или объект внешнего бренд-пака) ──
 function resolveTheme(name) {
@@ -235,7 +268,7 @@ if (lessonAction === 'plan') {
     geometry,
     duration: DUR2,
     source: path.resolve(srcVideo),
-    maxScenes: Number.parseInt(opt('max', '12'), 10) || 12,
+    maxScenes: buildOptions.maxScenes,
     availableBroll,
     facePos,
     faceZoom,
@@ -243,11 +276,11 @@ if (lessonAction === 'plan') {
   fs.mkdirSync(path.dirname(briefPath), { recursive: true });
   log(`собираю черновик ТЗ из 7 готовых сцен (${geometry.width}x${geometry.height})…`);
   try {
-    execFileSync(
-      process.execPath,
-      [path.join(ROOT, 'scripts/gen-brief.js'), ...genArgs],
-      { cwd: ROOT, stdio: 'inherit', env: process.env },
-    );
+    runNodeTool(path.join(ROOT, 'scripts/gen-brief.js'), genArgs.map(String), {
+      cwd: ROOT,
+      env: process.env,
+      stage: 'gen-brief',
+    });
   } catch (error) {
     console.error(`❌ gen-brief не собрал ТЗ: ${error.message}`);
     process.exit(1);
@@ -332,37 +365,33 @@ if (lessonAction === 'render') {
   }
 
   log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
-  execFileSync(remotion.command, [
-    ...remotion.argsPrefix,
-    'render',
-    'src/index.js',
-    prepared.composition,
-    rawMp4L,
-    `--props=${lessonPropsPath}`,
-    '--codec=h264',
-    '--log=error',
-  ], { cwd: ROOT, stdio: 'inherit' });
+  const renderCommand = remotionRenderCommand(remotion, {
+    entry: 'src/index.js',
+    composition: prepared.composition,
+    output: rawMp4L,
+    props: lessonPropsPath,
+  });
+  runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'lesson render' });
 
   log('финиш (громкость + картинка)…');
-  console.log('  ' + runNodeCapture('finish.js', [
+  runNodeTool(path.join(ROOT, 'scripts/finish.js'), [
     rawMp4L,
     outMp4L,
     '--hdrfix',
     'auto',
     '--audio-advance-ms',
-    REMOTION_AUDIO_ADVANCE_MS,
-  ]).split('\n').filter(Boolean).slice(-2).join(' | '));
+    String(REMOTION_AUDIO_ADVANCE_MS),
+  ], { cwd: ROOT, stage: 'lesson finish' });
 
   if (prepared.music) {
     log('подмешиваю слышимую музыку с ducking…');
     const mixedMp4L = tmp(`${id}_lesson_music.mp4`);
-    execFileSync(process.execPath, [
-      path.join(ROOT, 'scripts/mix-music.js'),
+    runNodeTool(path.join(ROOT, 'scripts/mix-music.js'), [
       outMp4L,
       prepared.music.sourcePath,
       mixedMp4L,
       ...prepared.music.mixArgs,
-    ], { cwd: ROOT, stdio: 'inherit' });
+    ], { cwd: ROOT, stage: 'lesson music mix' });
     fs.copyFileSync(mixedMp4L, outMp4L);
     fs.unlinkSync(mixedMp4L);
   }
@@ -397,14 +426,16 @@ log(`субтитров: ${CAPTIONS.length} групп`);
 
 // 5. монтажный лист (+ зум-ритм beatZoom)
 // приоритет: флаг --beat → из scenario-файла → выкл по умолчанию
-let blocks, beatZoom = false, beatSec = parseFloat(opt('beatSec', '3')), stillWindows = [];
+let blocks, beatZoom = false, beatSec = buildOptions.beatSec, stillWindows = [];
 let activeScenarioPath = null;
 if (scenarioFile) {
   activeScenarioPath = buildContext.resolveBrief(scenarioFile);
   const sc = JSON.parse(fs.readFileSync(activeScenarioPath, 'utf8'));
   blocks = sc.blocks;
   if (sc.beatZoom != null) beatZoom = !!sc.beatZoom;
-  if (sc.beatSec != null) beatSec = sc.beatSec;
+  if (sc.beatSec != null) {
+    beatSec = finiteNumber(sc.beatSec, 'scenario beatSec', { min: 0.1, max: 60 });
+  }
   if (sc.stillWindows != null) stillWindows = sc.stillWindows;
   log(`лист из файла: ${blocks.length} блоков`);
 } else {
@@ -435,7 +466,8 @@ if (args.includes('--autopos')) {
   if (slots) {
     try {
       const placeJson = tmp(`${id}_place.json`);
-      sh(`${PY} scripts/analyze-frames.py "${srcVideo}" --slots "${slots}" --out "${placeJson}"`);
+      const command = frameAnalysisCommand(PY, ROOT, srcVideo, slots, placeJson);
+      runTool(command.command, command.args, { cwd: ROOT, stage: 'frame analysis' });
       const place = JSON.parse(fs.readFileSync(placeJson, 'utf8'));
       acc.forEach((b, i) => { if (place[i] && place[i].pos) b.pos = place[i].pos; });
       log(`autopos: позиции плашек расставлены по кадру (${acc.length})`);
@@ -449,8 +481,13 @@ let themeVal = resolveTheme(theme);
 // 5d. (опц.) autotheme – тема из палитры видео (Фаза 4.4-4.6)
 if (args.includes('--autotheme')) {
   try {
-    const bl = opt('brandLock', '1.0');
-    const out = sh(`node scripts/palette.js "${srcVideo}" --brandLock ${bl}`);
+    const bl = buildOptions.brandLock;
+    const command = paletteCommand(ROOT, srcVideo, bl);
+    const out = captureTool(command.command, command.args, {
+      cwd: ROOT,
+      stage: 'autotheme palette',
+      maxBuffer: 16 * 1024 * 1024,
+    });
     themeVal = JSON.parse(out.split('// ── diagnostics')[0].trim());
     log(`autotheme: тема сгенерирована из палитры видео (brandLock ${bl})`);
   } catch (e) { log('⚠️ autotheme не сработал: ' + e.message.split('\n')[0]); }
@@ -509,8 +546,7 @@ if (buildContext.project) {
 log(`рендер → ${rawMp4} …`);
 if (durF > 540) {
   log('длинный ролик – рендерю порциями (resume при сбое)');
-  execFileSync(process.execPath, [
-    path.join(ROOT, 'scripts/render-chunks.js'),
+  runNodeTool(path.join(ROOT, 'scripts/render-chunks.js'), [
     'Dynamic',
     propsPath,
     rawMp4,
@@ -519,28 +555,25 @@ if (durF > 540) {
     '300',
     '--audio',
     'public/source.mp4',
-  ], { cwd: ROOT, stdio: 'inherit' });
+  ], { cwd: ROOT, stage: 'chunk render' });
 } else {
-  execFileSync(remotion.command, [
-    ...remotion.argsPrefix,
-    'render',
-    'src/index.js',
-    'Dynamic',
-    rawMp4,
-    `--props=${propsPath}`,
-    '--codec=h264',
-    '--log=error',
-  ], { cwd: ROOT, stdio: 'inherit' });
+  const renderCommand = remotionRenderCommand(remotion, {
+    entry: 'src/index.js',
+    composition: 'Dynamic',
+    output: rawMp4,
+    props: propsPath,
+  });
+  runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'dynamic render' });
 }
 
 // 9. финиш-проход: громкость -14 LUFS (+ авто HDR→SDR)
 log('финиш (громкость + картинка)…');
-console.log('  ' + runNodeCapture('finish.js', [
+runNodeTool(path.join(ROOT, 'scripts/finish.js'), [
   rawMp4,
   outMp4,
   '--hdrfix',
   'auto',
-]).split('\n').filter(Boolean).slice(-2).join(' | '));
+], { cwd: ROOT, stage: 'dynamic finish' });
 
 // 10. (опц.) фоновая музыка с ducking (Фаза 2.2)
 if (props.audio && props.audio.music && props.audio.music.file) {
@@ -560,12 +593,12 @@ if (props.audio && props.audio.music && props.audio.music.file) {
     if (d.attack_ms != null) flags.push('--attack', String(d.attack_ms));
     if (d.release_ms != null) flags.push('--release', String(d.release_ms));
     const musTmp = tmp(`${id}_mus.mp4`);
-    console.log('  ' + runNodeCapture('mix-music.js', [
+    runNodeTool(path.join(ROOT, 'scripts/mix-music.js'), [
       outMp4,
       musPath,
       musTmp,
       ...flags,
-    ]).split('\n').filter(Boolean).slice(-1)[0]);
+    ], { cwd: ROOT, stage: 'dynamic music mix' });
     fs.copyFileSync(musTmp, outMp4); fs.unlinkSync(musTmp);   // кросс-платформенно (без unix mv)
   } else {
     log(`⚠️ музыка не найдена: ${musPath} – пропускаю`);

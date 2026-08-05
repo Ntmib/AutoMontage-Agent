@@ -32,6 +32,9 @@ npm test
 остаются web-relative и не преобразуются в host path. Capture разрешён только для коротких
 ffprobe/JSON-результатов с явным `maxBuffer`.
 
+Статический guard для `scripts/build.js` запрещает `execSync` и `shell: true`. Опции
+`--frames`, `--max`, `--beatSec`, `--brandLock` и `--reframe` проверяются до ffprobe.
+
 ## 2. Проверка окружения
 
 ```bash

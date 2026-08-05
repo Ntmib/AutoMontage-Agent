@@ -19,17 +19,25 @@ function assertInvocation(command, args, stage) {
 
 function assertProcessResult(result, { command, stage }) {
   const tool = path.basename(command);
+  const fail = (message) => {
+    const error = new Error(message);
+    error.stdout = result.stdout;
+    error.stderr = result.stderr;
+    error.status = result.status;
+    error.signal = result.signal;
+    throw error;
+  };
   if (result.error) {
     if (result.error.code === 'ENOENT') {
-      throw new Error(`${stage}: ${tool} не найден; запусти npm run doctor`);
+      fail(`${stage}: ${tool} не найден; запусти npm run doctor`);
     }
-    throw new Error(`${stage}: ${tool} не запустился (${result.error.message})`);
+    fail(`${stage}: ${tool} не запустился (${result.error.message})`);
   }
   if (result.signal) {
-    throw new Error(`${stage}: ${tool} завершён сигналом ${result.signal}`);
+    fail(`${stage}: ${tool} завершён сигналом ${result.signal}`);
   }
   if (result.status !== 0) {
-    throw new Error(`${stage}: ${tool} завершился со status ${String(result.status)}`);
+    fail(`${stage}: ${tool} завершился со status ${String(result.status)}`);
   }
   return result;
 }
