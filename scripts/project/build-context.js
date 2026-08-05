@@ -107,7 +107,12 @@ function createBuildContext({
         ? path.resolve(input)
         : path.resolve(project.dir, input);
       assertInsideProject(project.dir, candidate);
-      return candidate;
+      const relativePath = path.relative(project.dir, candidate).split(path.sep).join('/');
+      return resolveProjectPath(project.dir, relativePath, {
+        label: 'project brief path',
+        mustExist: true,
+        type: 'file',
+      });
     },
   };
 }

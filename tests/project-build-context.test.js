@@ -72,6 +72,37 @@ test('project rendering resolves briefs inside the project and allocates a rende
   assert.throws(() => context.resolveBrief('../outside.json'), /внутри проекта/);
 });
 
+test('project brief resolution rejects an in-project symlink but accepts a contained file', (t) => {
+  const fixture = makeFixture(t);
+  const planned = createBuildContext({
+    root: fixture.dir,
+    cwd: fixture.dir,
+    video: fixture.source,
+    projectName: 'Brief symlink',
+    action: 'plan',
+    kind: 'lesson',
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const containedBrief = path.join(planned.project.dir, 'brief/contained.lesson.json');
+  const outsideBrief = path.join(fixture.dir, 'outside.lesson.json');
+  const symlinkBrief = path.join(planned.project.dir, 'brief/symlink.lesson.json');
+  fs.writeFileSync(containedBrief, '{}');
+  fs.writeFileSync(outsideBrief, '{"outside":true}');
+  fs.symlinkSync(outsideBrief, symlinkBrief, 'file');
+  const context = createBuildContext({
+    root: fixture.dir,
+    cwd: fixture.dir,
+    video: planned.video,
+    projectDir: planned.project.dir,
+    action: 'plan',
+    kind: 'lesson',
+  });
+
+  assert.equal(context.resolveBrief('brief/contained.lesson.json'), containedBrief);
+  assert.throws(() => context.resolveBrief('brief/symlink.lesson.json'), /symbolic link/i);
+  assert.equal(fs.readFileSync(outsideBrief, 'utf8'), '{"outside":true}');
+});
+
 test('legacy builds isolate generated data under out', (t) => {
   const fixture = makeFixture(t);
   const context = createBuildContext({

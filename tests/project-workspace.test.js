@@ -245,6 +245,33 @@ test('existing project rejects a different source', (t) => {
   );
 });
 
+test('first brief and render allocation reject project directory symlinks before writing outside', (t) => {
+  const fixture = makeFixture(t);
+
+  for (const [directory, allocate] of [
+    ['brief', (workspace) => nextBriefPaths(workspace)],
+    ['renders', (workspace) => nextRenderPaths(workspace, 'First')],
+  ]) {
+    const workspace = createOrOpenProject({
+      baseDir: path.join(fixture.dir, 'projects'),
+      name: `Symlink ${directory}`,
+      sourcePath: fixture.sourcePath,
+      now: new Date('2026-08-05T12:00:00Z'),
+    });
+    const outsideDir = path.join(fixture.dir, `outside-${directory}`);
+    const sentinelPath = path.join(outsideDir, 'sentinel.txt');
+    fs.mkdirSync(outsideDir);
+    fs.writeFileSync(sentinelPath, `outside-${directory}`);
+    fs.rmdirSync(path.join(workspace.dir, directory));
+    fs.symlinkSync(outsideDir, path.join(workspace.dir, directory), 'dir');
+
+    assert.throws(() => createOrOpenProject({ projectDir: workspace.dir }), /symbolic link/i);
+    assert.throws(() => allocate(workspace), /symbolic link/i);
+    assert.equal(fs.readFileSync(sentinelPath, 'utf8'), `outside-${directory}`);
+    assert.deepEqual(fs.readdirSync(outsideDir), ['sentinel.txt']);
+  }
+});
+
 test('brief revisions advance from manifest history', (t) => {
   const fixture = makeFixture(t);
   const workspace = createOrOpenProject({

@@ -189,8 +189,19 @@ function ensureProjectDirectories(projectDir) {
     'renders',
     'final',
   ];
+  fs.mkdirSync(projectDir, { recursive: true });
   for (const directory of directories) {
-    fs.mkdirSync(path.join(projectDir, directory), { recursive: true });
+    const directoryPath = resolveProjectPath(projectDir, directory, {
+      label: `project directory ${directory}`,
+      mustExist: false,
+      type: 'directory',
+    });
+    fs.mkdirSync(directoryPath, { recursive: true });
+    resolveProjectPath(projectDir, directory, {
+      label: `project directory ${directory}`,
+      mustExist: true,
+      type: 'directory',
+    });
   }
 }
 
@@ -310,10 +321,23 @@ function nextBriefPaths(workspace, kind = 'lesson') {
   );
   const revision = highestRevision + 1;
   const prefix = `${formatVersion(revision)}-draft.${kind}`;
+  resolveProjectPath(workspace.dir, 'brief', {
+    label: 'project directory brief',
+    mustExist: true,
+    type: 'directory',
+  });
   return {
     revision,
-    jsonPath: path.join(workspace.dir, 'brief', `${prefix}.json`),
-    markdownPath: path.join(workspace.dir, 'brief', `${prefix}.md`),
+    jsonPath: resolveProjectPath(workspace.dir, path.posix.join('brief', `${prefix}.json`), {
+      label: 'next brief JSON path',
+      mustExist: false,
+      type: 'file',
+    }),
+    markdownPath: resolveProjectPath(workspace.dir, path.posix.join('brief', `${prefix}.md`), {
+      label: 'next brief Markdown path',
+      mustExist: false,
+      type: 'file',
+    }),
   };
 }
 
@@ -408,19 +432,42 @@ function nextRenderPaths(workspace, label = 'render') {
   );
   const version = highestVersion + 1;
   const safeLabel = slugifyProjectName(label);
-  const dir = path.join(
-    workspace.dir,
-    'renders',
-    `${formatVersion(version)}-${safeLabel}`,
-  );
+  const renderDirectory = path.posix.join('renders', `${formatVersion(version)}-${safeLabel}`);
+  resolveProjectPath(workspace.dir, 'renders', {
+    label: 'project directory renders',
+    mustExist: true,
+    type: 'directory',
+  });
+  const dir = resolveProjectPath(workspace.dir, renderDirectory, {
+    label: 'next render directory',
+    mustExist: false,
+    type: 'directory',
+  });
   fs.mkdirSync(dir, { recursive: true });
+  resolveProjectPath(workspace.dir, renderDirectory, {
+    label: 'next render directory',
+    mustExist: true,
+    type: 'directory',
+  });
   return {
     version,
     label: safeLabel,
     dir,
-    propsPath: path.join(dir, 'props.json'),
-    rawPath: path.join(dir, 'raw.mp4'),
-    finalPath: path.join(dir, 'final.mp4'),
+    propsPath: resolveProjectPath(workspace.dir, path.posix.join(renderDirectory, 'props.json'), {
+      label: 'next render props path',
+      mustExist: false,
+      type: 'file',
+    }),
+    rawPath: resolveProjectPath(workspace.dir, path.posix.join(renderDirectory, 'raw.mp4'), {
+      label: 'next render raw path',
+      mustExist: false,
+      type: 'file',
+    }),
+    finalPath: resolveProjectPath(workspace.dir, path.posix.join(renderDirectory, 'final.mp4'), {
+      label: 'next render final path',
+      mustExist: false,
+      type: 'file',
+    }),
   };
 }
 
