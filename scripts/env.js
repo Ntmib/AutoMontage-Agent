@@ -1,9 +1,9 @@
 // Кросс-платформенные помощники (Windows / macOS / Linux).
-// Убирает жёсткие /tmp и python3 — движок ставится и работает на любой ОС.
+// Убирает жёсткие /tmp и python3 – движок ставится и работает на любой ОС.
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { execSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -16,11 +16,18 @@ function tmp(name) {
 // Автоопределение интерпретатора Python 3.
 // Windows: обычно `python`. macOS/Linux: обычно `python3`. Берём тот, что реально Python 3.
 let _py = null;
+function pythonCandidates(root = ROOT, platform = process.platform) {
+  const localPython = platform === 'win32'
+    ? path.join(root, '.venv', 'Scripts', 'python.exe')
+    : path.join(root, '.venv', 'bin', 'python');
+  return platform === 'win32'
+    ? [localPython, 'python', 'python3', 'py']
+    : [localPython, 'python3', 'python'];
+}
+
 function python() {
   if (_py) return _py;
-  const candidates = process.platform === 'win32'
-    ? ['python', 'python3', 'py']
-    : ['python3', 'python'];
+  const candidates = pythonCandidates();
   for (const cmd of candidates) {
     try {
       const r = spawnSync(cmd, ['--version'], { encoding: 'utf8' });
@@ -32,12 +39,48 @@ function python() {
     + '(Windows: python.org или "winget install Python.Python.3"; macOS: "brew install python").');
 }
 
-// Запуск локального Remotion CLI кросс-платформенно, без попытки что-либо скачивать.
-// Резолвим бинарь из node_modules пакета (на Windows это .cmd, execSync это учитывает).
-function remotionBin() {
-  const bin = path.join(ROOT, 'node_modules', '.bin',
-    process.platform === 'win32' ? 'remotion.cmd' : 'remotion');
-  return fs.existsSync(bin) ? `"${bin}"` : 'npx --no-install remotion';
+// Запуск локального Remotion CLI кросс-платформенно, без shell, .cmd и npx downloads.
+// Читаем package.bin и всегда запускаем JavaScript entrypoint текущим Node.
+function resolveRemotionCommand(root = ROOT) {
+  const packageFile = path.join(root, 'node_modules', '@remotion', 'cli', 'package.json');
+  if (!fs.existsSync(packageFile)) {
+    throw new Error('@remotion/cli не найден; запусти npm ci, затем npm run doctor');
+  }
+
+  let metadata;
+  try {
+    metadata = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+  } catch (_) {
+    throw new Error('@remotion/cli package.json повреждён; повтори npm ci и npm run doctor');
+  }
+  const relativeBin = typeof metadata.bin === 'string'
+    ? metadata.bin
+    : metadata.bin?.remotion;
+  if (typeof relativeBin !== 'string' || relativeBin.length === 0) {
+    throw new Error('@remotion/cli не объявляет bin.remotion; повтори npm ci и npm run doctor');
+  }
+  const packageDir = path.dirname(packageFile);
+  const entry = path.resolve(packageDir, relativeBin);
+  const relative = path.relative(packageDir, entry);
+  if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(entry)) {
+    throw new Error('@remotion/cli bin.remotion недоступен; повтори npm ci и npm run doctor');
+  }
+  return { command: process.execPath, argsPrefix: [entry] };
 }
 
-module.exports = { ROOT, TMPDIR, tmp, python, remotionBin, execSync };
+function remotionBin() {
+  const resolved = resolveRemotionCommand();
+  return resolved.argsPrefix.length
+    ? [resolved.command, ...resolved.argsPrefix].join(' ')
+    : `"${resolved.command}"`;
+}
+
+module.exports = {
+  ROOT,
+  TMPDIR,
+  tmp,
+  python,
+  pythonCandidates,
+  remotionBin,
+  resolveRemotionCommand,
+};

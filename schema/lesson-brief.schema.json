@@ -1,0 +1,177 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AutoMontage lesson brief",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "status",
+    "source",
+    "theme",
+    "title",
+    "output",
+    "corrections",
+    "scenes"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "status": { "enum": ["draft", "approved"] },
+    "source": { "type": "string", "minLength": 1 },
+    "theme": { "type": ["string", "object"] },
+    "title": { "type": "string" },
+    "facePos": { "$ref": "#/definitions/facePos" },
+    "faceZoom": { "type": "number", "minimum": 1, "maximum": 2 },
+    "music": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "gainDb"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "gainDb": { "type": "number", "minimum": -60, "maximum": 0 },
+        "fadeInSec": { "type": "number", "minimum": 0, "maximum": 10 },
+        "fadeOutSec": { "type": "number", "minimum": 0, "maximum": 10 },
+        "startSec": { "type": "number", "minimum": 0, "maximum": 3600 },
+        "playbackRate": { "type": "number", "minimum": 0.5, "maximum": 2 },
+        "ducking": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "thresholdDb": { "type": "number", "minimum": -60, "maximum": 0 },
+            "ratio": { "type": "number", "minimum": 1, "maximum": 20 },
+            "attackMs": { "type": "number", "minimum": 0.01, "maximum": 2000 },
+            "releaseMs": { "type": "number", "minimum": 0.01, "maximum": 9000 }
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["aspect", "width", "height", "fps", "durationInFrames"],
+      "properties": {
+        "aspect": { "enum": ["source", "vertical", "horizontal"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "number", "exclusiveMinimum": 0 },
+        "durationInFrames": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "corrections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "reason"],
+        "properties": {
+          "start": { "type": "number", "minimum": 0 },
+          "end": { "type": "number", "minimum": 0 },
+          "from": { "type": "string", "minLength": 1 },
+          "to": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scene", "start", "end"],
+        "properties": {
+          "scene": {
+            "enum": [
+              "fullscreen",
+              "split",
+              "bottom-diagram",
+              "blur-overlay",
+              "text-only",
+              "stat",
+              "broll"
+            ]
+          },
+          "start": { "type": "number", "minimum": 0 },
+          "end": { "type": "number", "minimum": 0 },
+          "reason": { "type": "string" },
+          "videoTitle": { "type": "string" },
+          "faceSrc": { "type": "string" },
+          "facePos": { "$ref": "#/definitions/facePos" },
+          "variant": { "enum": ["speaker-circle", "funnel", "blur-only", "social-logos", "animated-gradient", "keyword-bounce"] },
+          "handle": { "type": "string" },
+          "animateKeyword": { "type": "string" },
+          "bulletDelaySec": { "type": "number", "minimum": 0, "maximum": 10 },
+          "logos": {
+            "type": "array",
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": { "enum": ["telegram", "instagram", "youtube", "zoom"] }
+          },
+          "caption": { "type": "string" },
+          "num": { "type": "string" },
+          "headCream": { "type": "string" },
+          "headOrange": { "type": "string" },
+          "bullets": {
+            "type": "array",
+            "maxItems": 4,
+            "items": { "type": "string" }
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": { "type": "string" }
+          },
+          "label": { "type": "string" },
+          "big": { "type": "string" },
+          "sub": { "type": "string" },
+          "quoteCream": { "type": "string" },
+          "quoteOrange": { "type": "string" },
+          "author": { "type": "string" },
+          "statCream": { "type": "string" },
+          "statOrange": { "type": "string" },
+          "brollSrc": { "type": "string", "minLength": 1 }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "scene": { "const": "fullscreen" } } },
+            "then": { "required": ["caption"] }
+          },
+          {
+            "if": { "properties": { "scene": { "const": "split" } } },
+            "then": { "required": ["headCream", "headOrange", "bullets"] }
+          },
+          {
+            "if": { "properties": { "scene": { "const": "bottom-diagram" } } },
+            "then": { "required": ["headCream", "headOrange", "steps"] }
+          },
+          {
+            "if": { "properties": { "scene": { "const": "blur-overlay" } } },
+            "then": { "required": ["big", "headCream", "headOrange"] }
+          },
+          {
+            "if": { "properties": { "scene": { "const": "text-only" } } },
+            "then": { "required": ["quoteCream", "quoteOrange"] }
+          },
+          {
+            "if": { "properties": { "scene": { "const": "stat" } } },
+            "then": { "required": ["statCream", "statOrange", "headCream", "headOrange"] }
+          },
+          {
+            "if": { "properties": { "scene": { "const": "broll" } } },
+            "then": { "required": ["brollSrc", "headCream", "headOrange"] }
+          }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "facePos": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}

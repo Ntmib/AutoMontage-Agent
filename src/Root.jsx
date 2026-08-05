@@ -7,6 +7,12 @@ import { scenarioJob1 } from './scenario-job1';
 import { scenarioJob1V } from './scenario-job1v';
 import { scenarioPreview } from './scenario-preview';
 import { scenarioPreviewH } from './scenario-preview-h';
+import { LessonComp } from './LessonComp';
+import { lessonSample } from './data/lesson-sample';
+import { LessonSequence } from './LessonSequence';
+import { lessonSeqDemo } from './data/lesson-seq-demo';
+import { LessonVertical } from './LessonVertical';
+import { SceneDirector } from './SceneDirector';
 
 export const RemotionRoot = () => {
   return (
@@ -56,7 +62,7 @@ export const RemotionRoot = () => {
           fps: props.fps || 25,
         })}
       />
-      {/* Боевой ролик — вертикальная версия (reframe + реалистичные broll) */}
+      {/* Боевой ролик – вертикальная версия (reframe + нейтральные broll) */}
       <Composition
         id="Job1V"
         component={Timeline}
@@ -85,6 +91,58 @@ export const RemotionRoot = () => {
         width={1280}
         height={720}
         defaultProps={scenarioPreviewH}
+      />
+      {/* Шаблон lesson-presentation (16:9): карточка спикера + слайд-панель.
+          theme приходит из props (строка или объект-тема из внешнего бренд-пака). */}
+      <Composition
+        id="Lesson"
+        component={LessonComp}
+        durationInFrames={90}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={lessonSample}
+      />
+      {/* lesson-presentation: секвенсор слайдов по таймкодам + карточка спикера */}
+      <Composition
+        id="LessonSeq"
+        component={LessonSequence}
+        durationInFrames={240}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={lessonSeqDemo}
+        calculateMetadata={({ props }) => {
+          const fps = props.fps || 30;
+          const last = (props.slides || []).reduce((m, s) => Math.max(m, s.end ?? 0), 0);
+          const dur = props.durationInFrames || Math.max(60, Math.round((last || 8) * fps));
+          return { durationInFrames: dur, fps, width: props.width || 1920, height: props.height || 1080 };
+        }}
+      />
+      {/* lesson-vertical: вертикаль 9:16 для Stories/Shorts (спикер сверху, слайд снизу) */}
+      <Composition
+        id="LessonVert"
+        component={LessonVertical}
+        durationInFrames={90}
+        fps={30}
+        width={1080}
+        height={1920}
+        defaultProps={{ theme: 'lesson-neutral', slide: lessonSample.slide, videoTitle: 'ВИДЕО', name: 'Спикер', role: '' }}
+      />
+      {/* Режиссёр сцен (вертикаль 9:16): список сцен по таймкодам + переходы + сейф-зона */}
+      <Composition
+        id="ReelScenes"
+        component={SceneDirector}
+        durationInFrames={300}
+        fps={30}
+        width={1080}
+        height={1920}
+        defaultProps={{ theme: 'lesson-neutral', videoTitle: 'ВИДЕО', scenes: [] }}
+        calculateMetadata={({ props }) => {
+          const fps = props.fps || 30;
+          const last = (props.scenes || []).reduce((m, s) => Math.max(m, s.end ?? 0), 0);
+          return { durationInFrames: props.durationInFrames || Math.max(30, Math.round((last || 10) * fps)), fps, width: props.width || 1080, height: props.height || 1920 };
+        }}
       />
       {/* Пайплайн: размеры и длина берутся из props (любой аспект/длительность) */}
       <Composition

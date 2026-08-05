@@ -22,7 +22,7 @@ export const scenarioJob1 = {
     { type: 'SubtitleCard', start: 15.3, end: 18.8, text: 'Это сделал агент', accent: true, sub: 'плашка появилась сама' },
 
     // «накладываются картинки, генерирует под запрос» → broll агент монтирует
-    { type: 'BrollFullscreen', start: 19.4, end: 24.3, image: 'broll/agent_edit.png', caption: 'агент генерирует картинку под запрос' },
+    { type: 'BrollFullscreen', start: 19.4, end: 24.3, image: 'broll/screenshot.png', caption: 'агент генерирует картинку под запрос' },
 
     // «делай скриншот этого видео» → broll скриншот
     { type: 'BrollFullscreen', start: 25.4, end: 31.0, image: 'broll/screenshot.png', caption: 'скриншот готов за секунду' },

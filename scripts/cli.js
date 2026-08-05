@@ -1,57 +1,84 @@
 #!/usr/bin/env node
-// Глобальная команда `automontage` — работает из любой папки на Windows/macOS/Linux.
+// Глобальная команда `automontage` – работает из любой папки на Windows/macOS/Linux.
 // Движок сам находит свой корень (__dirname), результат кладёт в папку пользователя.
 //
-//   automontage <видео> [опции build.js]   — смонтировать ролик
-//   automontage demo                        — собрать демо из примера в репозитории
-//   automontage --help                      — помощь
+//   automontage <видео> [опции build.js]   – смонтировать ролик
+//   automontage demo                        – собрать демо из примера в репозитории
+//   automontage --help                      – помощь
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
+const { buildDemoArgs, ensureOutputDestination } = require('./project/cli-options');
 
 const ROOT = path.join(__dirname, '..');
 const argv = process.argv.slice(2);
 
 function help() {
-  console.log(`AutoMontage-Agent — автомонтаж видео.
+  console.log(`AutoMontage-Agent – автомонтаж видео.
 
 Использование:
-  automontage <видео.mp4> [опции]     смонтировать (результат — в текущей папке)
-  automontage demo                    собрать демо-ролик из примера
+  automontage <видео.mp4> [опции]     смонтировать (результат в текущей папке)
+  automontage demo                    собрать демо-ролик из примера (без ключей и whisper)
+  automontage doctor                  проверить окружение (что доустановить)
   automontage --help                  эта справка
 
 Частые опции:
-  --theme craft|cyber   стиль оформления (по умолчанию craft)
+  --theme <id>          тема: Dynamic по умолчанию craft, lesson – lesson-neutral
+  --template lesson     создать черновик ТЗ из 7 готовых сцен и остановиться
+  --aspect source       формат как у исходника (дефолт для lesson)
+  --aspect vertical     вертикальный результат 1080x1920
+  --aspect horizontal   горизонтальный результат 1920x1080
+  --brief file.json     рендер утверждённого lesson-ТЗ через ReelScenes
+  --face-x 0.5          горизонтальный центр лица в исходнике, от 0 до 1
+  --face-y 0.5          вертикальный центр лица в исходнике, от 0 до 1
+  --face-zoom 1.05      дополнительное приближение спикера, от 1 до 2
+  --title "ТЕМА"        заголовок для lesson
+  --project "Тема"      создать локальную папку ролика с историей версий
+  --project-dir <путь>   продолжить работу в существующей папке ролика
+  --version-label <имя>  подпись новой версии рендера, например ducking
   --scenario file.json  готовый монтажный лист
+  --no-transcribe       не транскрибировать (для монтажа по готовому --scenario)
   --model turbo|small   модель распознавания речи
-  --tighten             срезать паузы и слова-паразиты
+  --tighten             срезать паузы и слова-паразиты (не вместе с lesson)
   --beat                ритмичный зум под музыку
   --autopos             плашки автоматически мимо лица
-  --reframe             перекадрировать в вертикаль по лицу
+  --reframe             перекадрировать Dynamic в вертикаль по лицу
   --outdir <путь>       куда положить результат (по умолчанию текущая папка)
 
-Требуется: Node.js, Python 3, ffmpeg (и Chromium для картинок-плашек).`);
+Внешние темы подключаются по id через каталог THEMES_EXT.
+
+Сначала проверь окружение: automontage doctor
+Требуется: Node.js (>=20), Python 3, ffmpeg (Chromium только для пересборки картинок).`);
 }
 
 if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { help(); process.exit(0); }
+
+// проверка окружения: automontage doctor
+if (argv[0] === 'doctor') {
+  try { execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'doctor.js')], { stdio: 'inherit', cwd: ROOT }); }
+  catch (e) { process.exit(e.status || 1); }
+  process.exit(0);
+}
 
 const buildJs = path.join(ROOT, 'scripts', 'build.js');
 
 let forward;
 if (argv[0] === 'demo') {
-  const demoSrc = path.join(ROOT, 'public', 'source_h.mp4');
-  if (!fs.existsSync(demoSrc)) {
-    console.error('Демо-исходник не входит в репозиторий (личное видео не публикуется).');
-    console.error('Запусти на своём видео: automontage <видео.mp4> --scenario src/scenario-preview-h.js');
+  // демо из коробки: лёгкое тест-видео + готовый монтажный лист, без whisper и ключей
+  forward = buildDemoArgs(ROOT, process.cwd());
+  const demoSrc = forward[0];
+  const demoList = forward[2];
+  if (!fs.existsSync(demoSrc) || !fs.existsSync(demoList)) {
+    console.error('Демо-файлы не найдены (examples/demo-source.mp4 + examples/scenario-demo.json).');
+    console.error('Смонтируй своё: automontage <видео.mp4>');
     process.exit(1);
   }
-  forward = [demoSrc, '--id', 'demo'];
 } else {
   forward = argv.slice();
 }
 
-// результат — в текущую папку пользователя, если явно не задан --outdir
-if (!forward.includes('--outdir')) forward.push('--outdir', process.cwd());
+// В project-режиме папка ролика владеет финалом. Legacy-режим копирует его пользователю.
+forward = ensureOutputDestination(forward, process.cwd());
 
 try {
   // build.js резолвит видео от своего process.cwd() → запускаем с cwd пользователя

@@ -1,0 +1,86 @@
+{
+  "theme": "lesson-neutral",
+  "faceSrc": "source.mp4",
+  "audioSrc": "source.mp4",
+  "videoTitle": "АГЕНТ ОТ А ДО Я",
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "durationInFrames": 720,
+  "debug": false,
+  "scenes": [
+    {
+      "scene": "fullscreen",
+      "start": 0,
+      "end": 3,
+      "caption": "АГЕНТ ОТ А ДО Я"
+    },
+    {
+      "scene": "split",
+      "start": 3,
+      "end": 6,
+      "num": "01",
+      "headCream": "ОТ НЕЙРОАГЕНТА",
+      "headOrange": "ДО НЕЙРОЗАВОДА",
+      "bullets": [
+        "За один день весь путь",
+        "От первого агента",
+        "До своего нейрозавода"
+      ]
+    },
+    {
+      "scene": "bottom-diagram",
+      "start": 6,
+      "end": 9,
+      "headCream": "КАК УСТРОЕН",
+      "headOrange": "НЕЙРОЗАВОД",
+      "steps": [
+        "Собираешь агента",
+        "Связываешь в цепочку",
+        "Запускаешь конвейер"
+      ]
+    },
+    {
+      "scene": "blur-overlay",
+      "start": 9,
+      "end": 12,
+      "big": "10x",
+      "headCream": "БЫСТРЕЕ",
+      "headOrange": "БЕЗ КОМАНДЫ",
+      "sub": "один агент вместо отдела"
+    },
+    {
+      "scene": "text-only",
+      "start": 12,
+      "end": 15,
+      "quoteCream": "НЕ КУРС,",
+      "quoteOrange": "А СИСТЕМА",
+      "author": "АГЕНТ ОТ А ДО Я"
+    },
+    {
+      "scene": "stat",
+      "start": 15,
+      "end": 18,
+      "statCream": "26",
+      "statOrange": "ч",
+      "headCream": "ЭКОНОМИЯ",
+      "headOrange": "В НЕДЕЛЮ",
+      "sub": "на рутине"
+    },
+    {
+      "scene": "broll",
+      "start": 18,
+      "end": 21,
+      "headCream": "ГОТОВЫЙ",
+      "headOrange": "РЕЗУЛЬТАТ",
+      "sub": "собрано движком"
+    },
+    {
+      "scene": "chart",
+      "start": 21,
+      "end": 24,
+      "months": 12,
+      "perMonth": 20000
+    }
+  ]
+}

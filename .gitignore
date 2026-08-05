@@ -5,21 +5,53 @@ venv/
 __pycache__/
 *.pyc
 
+# секреты и локальные настройки
+.env
+.env.*
+!.env.example
+.npmrc
+.netrc
+credentials*.json
+service-account*.json
+secrets*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
 # рабочие выходы рендера
 out/
 tmp/
 *.log
 
+# локальные проекты роликов: исходники, транскрипты, музыка, версии и финалы
+projects/
+
 # исходное сырьё пользователя (свой ролик кладут сами, в репозиторий не коммитим)
 public/source*.mp4
+public/source-music.*
+public/broll/avatar_photo.jpg
 
-# аудио: музыку не распространяем (лицензии/вес). Генератор бита — в scripts/
+# аудио: музыку не распространяем (лицензии/вес). Генератор бита – в scripts/
 assets/music/*.wav
 assets/music/*.mp3
 
 # сгенерированные артефакты пайплайна
 props/placement_*.json
+scripts/*_frame.jpg
 
 # системное
 .DS_Store
 Thumbs.db
+
+# тестовые исходники эфиров (личные, не в паблик)
+public/efir/
+
+# локальная память проекта (репозиторий публичный)
+MEMORY.md
+memory/
+knowledge/
+instructions/memory-rules.md
+_progress.md

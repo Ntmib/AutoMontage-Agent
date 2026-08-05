@@ -1,37 +1,153 @@
 #!/usr/bin/env node
-// Фаза 1.2 — финиш-проход: громкость под соцсети + (опц.) HDR→SDR + резкость.
+// Фаза 1.2 – финиш-проход: громкость под соцсети + (опц.) HDR→SDR + резкость.
 //   node finish.js <in.mp4> <out.mp4> [--hdrfix auto|on|off] [--sharpen] [--lanczos WxH]
-const { execSync } = require('child_process');
+const { finiteNumber, optionValue } = require('./build-options');
+const { buildFinishAudioFilter } = require('./finish-audio');
+const {
+  captureTool,
+  captureToolResult,
+  hostPath,
+  runTool,
+} = require('./process');
 
-const a = process.argv.slice(2);
-const [inp, out] = a;
-const opt = (k, d) => { const i = a.indexOf('--' + k); return i >= 0 ? a[i + 1] : d; };
-const hdrMode = opt('hdrfix', 'auto');
-const sharpen = a.includes('--sharpen');
-const lanczos = opt('lanczos', null);
+function parseResolution(value) {
+  if (value == null) return null;
+  const match = /^(\d+)x(\d+)$/i.exec(String(value));
+  if (!match) throw new Error('--lanczos должен иметь формат WIDTHxHEIGHT');
+  const width = finiteNumber(match[1], '--lanczos width', { min: 16, max: 8192, integer: true });
+  const height = finiteNumber(match[2], '--lanczos height', { min: 16, max: 8192, integer: true });
+  return { width, height };
+}
 
-// автодетект HDR по color_transfer
-let isHDR = false;
-try {
-  const ct = execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of default=nk=1:nw=1 "${inp}"`).toString().trim();
-  isHDR = /smpte2084|arib-std-b67/.test(ct);
-} catch {}
-const doHDR = hdrMode === 'on' || (hdrMode === 'auto' && isHDR);
+function parseFinishOptions(args) {
+  const hdrMode = optionValue(args, 'hdrfix', 'auto');
+  if (!['auto', 'on', 'off'].includes(hdrMode)) {
+    throw new Error('--hdrfix принимает только auto, on или off');
+  }
+  const audioAdvanceMs = finiteNumber(
+    optionValue(args, 'audio-advance-ms', '0'),
+    '--audio-advance-ms',
+    { min: 0, max: 250 },
+  );
+  buildFinishAudioFilter(audioAdvanceMs);
+  return {
+    hdrMode,
+    sharpen: args.includes('--sharpen'),
+    lanczos: parseResolution(optionValue(args, 'lanczos', null)),
+    audioAdvanceMs,
+  };
+}
 
-const vf = [];
-if (doHDR) vf.push('zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709', 'tonemap=tonemap=hable:desat=0', 'zscale=t=bt709:m=bt709:r=tv', 'format=yuv420p');
-if (lanczos) vf.push(`scale=${lanczos.replace('x', ':')}:flags=lanczos`);
-if (sharpen) vf.push('unsharp=5:5:0.8:5:5:0.0');
+function hdrProbeCommand(input) {
+  return {
+    command: 'ffprobe',
+    args: [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=color_transfer',
+      '-of', 'default=nk=1:nw=1',
+      hostPath(input),
+    ],
+  };
+}
 
-const AUDIO = '-af loudnorm=I=-14:TP=-1.5:LRA=11 -c:a aac -b:a 160k';
-const video = vf.length ? `-vf "${vf.join(',')}" -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p` : '-c:v copy';
+function finishEncodeCommand(input, output, options, isHDR) {
+  const doHDR = options.hdrMode === 'on' || (options.hdrMode === 'auto' && isHDR);
+  const videoFilters = [];
+  if (doHDR) {
+    videoFilters.push(
+      'zscale=t=linear:npl=100',
+      'format=gbrpf32le',
+      'zscale=p=bt709',
+      'tonemap=tonemap=hable:desat=0',
+      'zscale=t=bt709:m=bt709:r=tv',
+      'format=yuv420p',
+    );
+  }
+  if (options.lanczos) {
+    videoFilters.push(`scale=${options.lanczos.width}:${options.lanczos.height}:flags=lanczos`);
+  }
+  if (options.sharpen) videoFilters.push('unsharp=5:5:0.8:5:5:0.0');
 
-console.log(`финиш: loudnorm=-14LUFS${doHDR ? ' + HDR→SDR' : ''}${sharpen ? ' + sharpen' : ''}${lanczos ? ' + lanczos' : ''}`);
-execSync(`ffmpeg -y -i "${inp}" ${video} ${AUDIO} -movflags +faststart "${out}"`, { stdio: 'pipe' });
+  const args = ['-y', '-i', hostPath(input)];
+  if (videoFilters.length) {
+    args.push('-vf', videoFilters.join(','), '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p');
+  } else {
+    args.push('-c:v', 'copy');
+  }
+  args.push(
+    '-af', buildFinishAudioFilter(options.audioAdvanceMs),
+    '-c:a', 'aac',
+    '-b:a', '160k',
+    '-shortest',
+    '-movflags', '+faststart',
+    hostPath(output),
+  );
+  return { command: 'ffmpeg', args, doHDR };
+}
 
-// печать реальной громкости после нормализации (для проверки)
-try {
-  const m = execSync(`ffmpeg -i "${out}" -af loudnorm=print_format=summary -f null - 2>&1 | grep -i "Input Integrated" || true`).toString().trim();
-  if (m) console.log('  факт: ' + m.replace('Input', 'громкость'));
-} catch {}
-console.log(`✅ ${out}`);
+function loudnessCommand(output) {
+  return {
+    command: 'ffmpeg',
+    args: ['-i', hostPath(output), '-af', 'loudnorm=print_format=summary', '-f', 'null', '-'],
+  };
+}
+
+function parseLoudnessSummary(stderr) {
+  const match = /Input Integrated:\s*(-?(?:\d+(?:\.\d+)?|inf))\s*LUFS/i.exec(String(stderr || ''));
+  return match ? match[1].toLowerCase() : null;
+}
+
+function main(args = process.argv.slice(2)) {
+  const [input, output] = args;
+  if (!input || !output) throw new Error('укажи входной и выходной MP4');
+  const options = parseFinishOptions(args);
+  let isHDR = false;
+  if (options.hdrMode === 'auto') {
+    try {
+      const probe = hdrProbeCommand(input);
+      const transfer = captureTool(probe.command, probe.args, {
+        stage: 'HDR probe',
+        maxBuffer: 1024 * 1024,
+      });
+      isHDR = /smpte2084|arib-std-b67/.test(transfer);
+    } catch (error) {
+      console.warn(`⚠️ HDR probe не сработал: ${error.message}`);
+    }
+  }
+  const command = finishEncodeCommand(input, output, options, isHDR);
+  console.log(`финиш: loudnorm=-14LUFS${options.audioAdvanceMs ? ` + звук вперёд ${options.audioAdvanceMs}мс` : ''}${command.doHDR ? ' + HDR→SDR' : ''}${options.sharpen ? ' + sharpen' : ''}${options.lanczos ? ' + lanczos' : ''}`);
+  runTool(command.command, command.args, { stage: 'finish encode' });
+
+  try {
+    const loudness = loudnessCommand(output);
+    const result = captureToolResult(loudness.command, loudness.args, {
+      stage: 'loudness verification',
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const integrated = parseLoudnessSummary(result.stderr);
+    if (integrated == null) console.warn('⚠️ loudness verification не вернул Input Integrated');
+    else console.log(`  факт: громкость Integrated: ${integrated} LUFS`);
+  } catch (error) {
+    console.warn(`⚠️ loudness verification не сработал: ${error.message}`);
+  }
+  console.log(`✅ ${output}`);
+}
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(`❌ ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+module.exports = {
+  finishEncodeCommand,
+  hdrProbeCommand,
+  loudnessCommand,
+  main,
+  parseFinishOptions,
+  parseLoudnessSummary,
+};

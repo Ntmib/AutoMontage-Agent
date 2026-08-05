@@ -1,14 +1,18 @@
 import { createContext, useContext } from 'react';
 import craft from './craft';
 import cyber from './cyber';
+import lessonNeutral from './lesson-neutral';
 
-const THEMES = { craft, cyber };
+const THEMES = { craft, cyber, 'lesson-neutral': lessonNeutral };
 
 // name может быть: строкой ('craft'/'cyber') или объектом-темой
 // (сгенерированным из палитры видео через scripts/palette.js).
 export const getTheme = (name) => {
   if (name && typeof name === 'object' && name.colors) return name;
-  return THEMES[name] || craft;
+  if (typeof name === 'string' && Object.prototype.hasOwnProperty.call(THEMES, name)) {
+    return THEMES[name];
+  }
+  throw new Error(`Unknown theme: ${String(name)}`);
 };
 
 export const ThemeContext = createContext(craft);

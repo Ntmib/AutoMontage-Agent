@@ -1,0 +1,13 @@
+{
+  "source": "source.mp4",
+  "theme": "craft",
+  "beatSec": 3,
+  "blocks": [
+    { "type": "LabelTop", "start": 0.3, "text": ">_ ДЕМО АВТОМОНТАЖА" },
+    { "type": "SubtitleCard", "start": 0.8, "end": 3.5, "text": "Собрано движком", "accent": true, "sub": "без монтажёра" },
+    { "type": "InfoCard", "start": 3.8, "end": 7.0, "tag": "// КАК", "title": "ЛИСТ + ВИДЕО", "pills": ["готовый --scenario", "без транскрипции"] },
+    { "type": "BrollFullscreen", "start": 7.2, "end": 10.0, "image": "broll/growth.png", "caption": "врезка на весь экран" },
+    { "type": "CounterCard", "start": 10.2, "end": 12.5, "label": "ЭКОНОМИЯ НА МОНТАЖЕ", "value": 100000, "unit": "₽/мес" },
+    { "type": "CTACard", "start": 12.8, "head": "СМОНТИРУЙ СВОЁ", "btn": "automontage видео.mp4" }
+  ]
+}
