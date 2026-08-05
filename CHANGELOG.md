@@ -47,6 +47,8 @@
   параметры заранее; Telegram pack жёстко требует два потока и A/V drift меньше 80 мс.
 - Нарезка пауз и filler-слов больше не интерполирует пути/тайминги в shell и очищает
   временный filter script даже после ошибки ffmpeg; positional maxGap/pad читаются верно.
+- Порционный Remotion-рендер, покадровый concat и audio mux переведены на checked argv;
+  незавершённый chunk больше не публикуется как готовый resume-файл.
 - Транскрипты разных роликов больше не перезаписывают общий `src/data/transcript.json` в
   project-режиме.
 - Legacy-режим и `automontage demo` теперь хранят generated transcript/captions и demo MP4
