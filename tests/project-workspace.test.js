@@ -98,7 +98,6 @@ test('manifest rejects a final path that escapes through a symbolic link', (t) =
   });
   const outsideDir = path.join(fixture.dir, 'outside');
   fs.mkdirSync(outsideDir);
-  fs.writeFileSync(path.join(outsideDir, 'final.mp4'), 'outside-render');
   fs.symlinkSync('../../outside', path.join(workspace.dir, 'renders', 'link'), 'dir');
   const manifest = { ...workspace.manifest, final: 'renders/link/final.mp4' };
   fs.writeFileSync(
@@ -107,7 +106,7 @@ test('manifest rejects a final path that escapes through a symbolic link', (t) =
   );
 
   assert.throws(() => readProjectManifest(workspace.dir), /final.*symbolic link/i);
-  assert.equal(fs.readFileSync(path.join(outsideDir, 'final.mp4'), 'utf8'), 'outside-render');
+  assert.equal(fs.existsSync(path.join(outsideDir, 'final.mp4')), false);
 });
 
 test('manifest migration adds the canonical transcript paths before validation', (t) => {
