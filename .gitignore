@@ -31,6 +31,7 @@ projects/
 
 # исходное сырьё пользователя (свой ролик кладут сами, в репозиторий не коммитим)
 public/source*.mp4
+public/.automontage/
 public/source-music.*
 public/broll/avatar_photo.jpg
 

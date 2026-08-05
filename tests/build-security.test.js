@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -16,6 +17,44 @@ const { parseBuildOptions } = require('../scripts/build-options');
 
 const ROOT = path.resolve(__dirname, '..');
 const HOSTILE = path.resolve(ROOT, `tmp/- clip ' " $() ;\nЮникод.mp4`);
+
+function runBuildWithIntercept(t, args) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-build-intercept-'));
+  const hook = path.join(directory, 'hook.js');
+  const calls = path.join(directory, 'calls.jsonl');
+  fs.writeFileSync(hook, [
+    "const childProcess = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "const calls = process.env.AUTOMONTAGE_BUILD_CAPTURE;",
+    'childProcess.spawnSync = (command, args) => {',
+    "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
+    "  if (command === 'ffprobe') return { status: 0, stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1080, height: 1920, r_frame_rate: '30/1' }], format: { duration: '20' } }) };",
+    "  if (args[0] === '--version') return { status: 0, stdout: 'Python 3.12.0' };",
+    "  if (command === process.execPath && path.basename(args[0]) === 'build-captions.js') {",
+    "    fs.mkdirSync(path.dirname(args[2]), { recursive: true });",
+    "    fs.writeFileSync(args[2], 'module.exports = { CAPTIONS: [] };\\n');",
+    "    return { status: 0, stdout: 'captions ready' };",
+    '  }',
+    "  return { status: 0, stdout: '' };",
+    '};',
+    '',
+  ].join('\n'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const result = spawnSync(process.execPath, [path.join(ROOT, 'scripts/build.js'), ...args], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      AUTOMONTAGE_BUILD_CAPTURE: calls,
+      NODE_OPTIONS: `--require=${hook}`,
+    },
+  });
+  const invocations = fs.existsSync(calls)
+    ? fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
+    : [];
+  return { result, invocations };
+}
 
 test('build process builders keep hostile host paths as one absolute argv', () => {
   const probe = videoProbeCommand(HOSTILE);
@@ -100,4 +139,26 @@ test('invalid build values fail before ffprobe or sentinel execution', () => {
   assert.match(result.stderr, /--frames/);
   assert.doesNotMatch(result.stdout, /видео .*fps/);
   assert.equal(fs.existsSync(sentinel), false);
+});
+
+test('long Dynamic render gives Remotion a unique lease and muxes the same absolute source', (t) => {
+  const id = `lease-dynamic-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.props.json`);
+  t.after(() => fs.rmSync(propsPath, { force: true }));
+
+  const { result, invocations } = runBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--scenario', 'examples/scenario-demo.json',
+    '--no-transcribe',
+    '--frames', '600',
+    '--id', id,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
+  assert.match(props.source, /^\.automontage\/dynamic-[0-9a-f-]+\/source\.mp4$/);
+  const chunkRender = invocations.find((entry) => path.basename(entry.args[0]) === 'render-chunks.js');
+  assert.ok(chunkRender, 'long build should invoke render-chunks.js');
+  assert.equal(chunkRender.args.at(-1), path.join(ROOT, 'public', props.source));
+  assert.equal(fs.existsSync(path.join(ROOT, 'public', props.source)), false);
 });

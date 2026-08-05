@@ -41,8 +41,11 @@ npm run doctor
 npm run demo
 ```
 
-Одна папка checkout допускает только одну активную сборку из-за общих
-`public/source.mp4` и `tmp/`. Параллельные проверки запускай в отдельных clone/worktree.
+Одна папка checkout допускает только одну активную сборку: Remotion source bridge изолирован
+уникальным lease в `public/.automontage/`, но `tmp/` и legacy-пути остаются общими.
+Параллельные проверки запускай в отдельных clone/worktree. Unit и integration tests также
+проверяют, что leases не пересекаются, cleanup идемпотентен и удаляет источник после успеха
+или ошибки рендера.
 
 Для host filesystem path тест проверяет абсолютный отдельный argv. Ссылки Remotion/public
 остаются web-relative и не преобразуются в host path. Capture разрешён только для коротких
