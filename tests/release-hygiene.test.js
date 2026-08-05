@@ -51,6 +51,19 @@ function makeRepository() {
   write(root, '.env.example', 'OPENAI_API_KEY=\nTHEMES_EXT=\n');
   write(root, 'src/example.js', "const key = process.env.OPENAI_API_KEY;\nconst theme = process.env.THEMES_EXT;\n");
   write(root, 'ASSETS.md', '# Public asset provenance\n\n| Path | Kind | Origin | Author / license | Source or generator | Redistribution basis |\n|---|---|---|---|---|---|\n');
+  write(root, 'CHANGELOG.md', [
+    '# Changelog',
+    '',
+    '## [Unreleased]',
+    '',
+    '## [1.2.0] - 2026-08-05',
+    '',
+    '- lesson-neutral; shell hardening; generated data in out/.',
+    '- failed lifecycle and atomic final publication.',
+    '- private demo-preview cleanup and ASSETS.md provenance.',
+    '- temporary exception is recorded in SECURITY.md.',
+    '',
+  ].join('\n'));
   git(root, ['add', '.']);
   git(root, ['commit', '-qm', 'valid fixture']);
   return root;
@@ -169,6 +182,28 @@ test('node-vibrant audit exception requires complete and time-bounded evidence',
   const expired = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-09-05T00:00:00Z') });
   assert.equal(accepted.issues.some((entry) => entry.rule === 'security-exception'), false);
   assert.equal(expired.issues.some((entry) => entry.rule === 'security-exception'), true);
+});
+
+test('versioned release notes must cover every public release boundary', () => {
+  const root = makeRepository();
+  write(root, 'CHANGELOG.md', [
+    '# Changelog',
+    '',
+    '## [Unreleased]',
+    '',
+    'All important work is still here.',
+    '',
+    '## [1.2.0] - 2026-08-05',
+    '',
+    '- lesson-neutral only.',
+    '',
+  ].join('\n'));
+  git(root, ['add', 'CHANGELOG.md']);
+  git(root, ['commit', '-qm', 'incomplete release notes']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.ok(result.issues.some((entry) => entry.rule === 'release-notes'));
 });
 
 test('smoke guard detects any protected-file mutation', () => {

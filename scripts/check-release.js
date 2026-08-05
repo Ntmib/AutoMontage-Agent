@@ -256,6 +256,53 @@ function checkSecurityException(files, read, issues, now) {
   }
 }
 
+function checkReleaseNotes(files, read, issues) {
+  if (!files.includes('CHANGELOG.md')) {
+    issues.push(issue(
+      'release-notes', 'CHANGELOG.md', 1,
+      'versioned release notes are missing',
+      'add CHANGELOG.md with a section matching package.json version.',
+    ));
+    return;
+  }
+  const packageSource = read('package.json');
+  const pkg = jsonValue(packageSource, 'package.json', issues, 'package.json');
+  if (!pkg || typeof pkg.version !== 'string') return;
+  const source = read('CHANGELOG.md');
+  const escapedVersion = pkg.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const heading = new RegExp(`^## \\[${escapedVersion}\\](?:\\s+-\\s+\\d{4}-\\d{2}-\\d{2})?\\s*$`, 'm');
+  const match = heading.exec(source);
+  if (!match) {
+    issues.push(issue(
+      'release-notes', 'CHANGELOG.md', 1,
+      `release section [${pkg.version}] is missing`,
+      `add a dated ## [${pkg.version}] section with the final public changes.`,
+    ));
+    return;
+  }
+  const rest = source.slice(match.index + match[0].length);
+  const nextSection = rest.search(/^## \[/m);
+  const section = nextSection < 0 ? rest : rest.slice(0, nextSection);
+  const required = [
+    ['lesson-neutral', /lesson-neutral/i],
+    ['shell hardening', /shell/i],
+    ['generated-data isolation', /out\//i],
+    ['failed render lifecycle', /failed/i],
+    ['atomic final', /atomic|атом/i],
+    ['private demo cleanup', /demo-preview/i],
+    ['asset provenance', /ASSETS\.md/],
+    ['temporary security exception', /SECURITY\.md/],
+  ];
+  const missing = required.filter(([, pattern]) => !pattern.test(section)).map(([label]) => label);
+  if (missing.length) {
+    issues.push(issue(
+      'release-notes', 'CHANGELOG.md', lineNumber(source, match.index),
+      `release ${pkg.version} omits: ${missing.join(', ')}`,
+      'move every shipped public change from Unreleased into the versioned release section.',
+    ));
+  }
+}
+
 function checkEnvironment(files, read, issues) {
   const declarations = new Set();
   const envSource = read('.env.example');
@@ -392,6 +439,7 @@ function checkRelease({ cwd = ROOT, tree = 'HEAD', base = null, now = new Date()
   const issues = [];
   checkPackageMetadata(read, issues);
   checkSecurityException(files, read, issues, now);
+  checkReleaseNotes(files, read, issues);
   checkEnvironment(files, read, issues);
   checkMarkdownLinks(files, read, issues);
   checkPrivateData(files, read, issues);

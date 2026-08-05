@@ -29,6 +29,19 @@ npm test
 
 Любое исправление бага должно добавлять регрессионный тест его причины.
 
+Для золотого пути свежего клона отдельно проверь:
+
+```bash
+git clone https://github.com/Ntmib/AutoMontage-Agent.git
+cd AutoMontage-Agent
+npm ci
+npm run doctor
+npm run demo
+```
+
+Одна папка checkout допускает только одну активную сборку из-за общих
+`public/source.mp4` и `tmp/`. Параллельные проверки запускай в отдельных clone/worktree.
+
 Для host filesystem path тест проверяет абсолютный отдельный argv. Ссылки Remotion/public
 остаются web-relative и не преобразуются в host path. Capture разрешён только для коротких
 ffprobe/JSON-результатов с явным `maxBuffer`.
@@ -138,8 +151,9 @@ npm run smoke:release
 
 `check:release` читает файлы через `git ls-tree`/`git show`, поэтому проверяет точный
 Git-объект и игнорирует незакоммиченные пользовательские файлы. Current-tree правила
-сверяют версию, Node engines, env-декларации, локальные Markdown-ссылки, приватные id и
-полный бинарный инвентарь `ASSETS.md`. При наличии `--base` добавляется diff-проверка
+сверяют версию, Node engines, env-декларации, локальные Markdown-ссылки, приватные id,
+версионные release notes, security exception и полный бинарный инвентарь `ASSETS.md`.
+При наличии `--base` добавляется diff-проверка
 публичной пунктуации; если history/ref недоступен, ошибка содержит команду fetch.
 
 `smoke:release` с удалённым из дочернего окружения `THEMES_EXT` рендерит 75 кадров

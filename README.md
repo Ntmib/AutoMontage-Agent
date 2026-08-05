@@ -51,10 +51,25 @@ automontage doctor      # или: node scripts/doctor.js
 ```bash
 git clone https://github.com/Ntmib/AutoMontage-Agent.git
 cd AutoMontage-Agent
-npm install            # Node-зависимости
+npm ci                 # точные Node-зависимости из package-lock.json
 pip install -r requirements.txt   # Python: faster-whisper, opencv, numpy
 npm install -g .       # ставит глобальную команду automontage
 ```
+
+### Быстрая проверка свежего клона
+
+Этот короткий маршрут не требует API-ключей или Whisper-модели:
+
+```bash
+git clone https://github.com/Ntmib/AutoMontage-Agent.git
+cd AutoMontage-Agent
+npm ci
+npm run doctor
+npm run demo
+```
+
+`doctor` перечислит обязательные и опциональные части окружения, а демо создаст
+`out/demo.mp4` по готовому публичному монтажному листу.
 
 Дальше – из ЛЮБОЙ папки:
 
@@ -95,6 +110,10 @@ automontage --help                  # все опции
 Для работы под ключ используй project-режим. Движок создаст локальную папку
 `projects/YYYY.MM.DD_latin-slug/` и сложит туда копию исходника, транскрипт, все версии ТЗ,
 музыку, превью, рендеры и один канонический финал. Папка `projects/` игнорируется Git.
+
+В одном checkout запускай только одну активную сборку: Remotion использует общий
+`public/source.mp4`, а часть промежуточных файлов живёт в общем `tmp/`. Для параллельных
+роликов используй отдельные clone/worktree, иначе процессы могут подменить вход друг другу.
 
 Создать новый lesson-проект с форматом исходника:
 
