@@ -29,6 +29,8 @@ npm test
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;
 - повторный ffprobe после reframe и tighten обновляет FPS, по которому строятся props;
+- уникальный public media lease каждого render, его cleanup и запрет symlink-escape;
+- cache identity: изменение Remotion-кода, lockfile или используемого public resource отменяет reuse;
 - safe-zone длинных денежных подписей;
 - анимации CTA, воронки, градиента и маркеров соцсетей.
 
@@ -65,7 +67,7 @@ Chunk-render проверяет positive integer `totalFrames/--chunk`, ренд
 Resume cache v2 адресуется SHA-256 от composition, канонизированных props, source/audio
 identities, диапазонов, Remotion options, всего `src/`, `package.json` и `package-lock.json`.
 Тесты меняют JSX byte, referenced b-roll и package metadata, проверяют, что каждый случай
-инвалидирует key, а неиспользуемый `public/` файл — нет. Для public media фиксируются только
+инвалидирует key, а неиспользуемый `public/` файл – нет. Для public media фиксируются только
 contained regular files, отсортированные по JSON pointer; traversal не читается, symlink в
 `src/` или на любом сегменте public media отклоняется. Descriptor сохраняет порядок ключей,
 который получает Remotion, поэтому перестановка props тоже меняет key. Одинаковые bytes в разных
@@ -164,13 +166,20 @@ npm run check:release -- --tree HEAD --base origin/main
 npm run smoke:release
 ```
 
+Перед commit можно проверить именно staged candidate, а не рабочую папку:
+
+```bash
+CANDIDATE_TREE="$(git write-tree)"
+node scripts/check-release.js --tree "$CANDIDATE_TREE" --base <release-base>
+```
+
 `check:release` читает файлы через `git ls-tree`/`git show`, поэтому проверяет точный
 Git-объект и игнорирует незакоммиченные пользовательские файлы. Current-tree правила
 сверяют версию, Node engines, env-декларации, локальные Markdown-ссылки, приватные id,
 версионные release notes, security exception и полный бинарный инвентарь `ASSETS.md`. Для release candidate
 `CHANGELOG.md` обязан содержать ровно одну dated-секцию текущей версии вида
 `## [X.Y.Z] - YYYY-MM-DD` с реальной UTC-календарной датой; `[Unreleased]` в этот момент полностью пуст.
-В version section нужны хотя бы один `###` подраздел и bullet, а для patch-версии — `### Исправлено`.
+В version section нужны хотя бы один `###` подраздел и bullet, а для patch-версии – `### Исправлено`.
 Каждый tracked public binary (изображение, видео, аудио или шрифт) требует полную строку с repo-relative
 путём в `ASSETS.md`. Исключение `node-vibrant` должно содержать ровно один machine-readable
 `json security-exception` fence с проверяемыми `reviewedAt` (реальная календарная дата) и `reviewedFor`,

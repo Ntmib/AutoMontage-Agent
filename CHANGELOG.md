@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-05
+
+### Исправлено
+
+- Закрыт выход manifest-controlled путей за пределы project workspace, включая symlink escape.
+- Исходник каждого render получает отдельную public media lease вместо общего `public/source.mp4`.
+- Chunk cache инвалидируется при изменении Remotion-кода, lockfile и используемых публичных ресурсов.
+- Дробные FPS исходника, включая 30000/1001 и 24000/1001, передаются в Remotion без округления.
+- Утверждённый Markdown brief регенерируется из approved JSON и больше не сохраняет статус draft.
+- Release checker проверяет актуальную секцию версии, расширенный provenance бинарных файлов и повторную оценку security exception.
+
 ## [1.2.0] - 2026-08-05
 
 ### Добавлено

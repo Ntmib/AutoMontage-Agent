@@ -62,13 +62,14 @@ FPS, включая NTSC `30000/1001` и `24000/1001`, вычисляет `durat
 не меняя `latestRender`; новый canonical final сначала копируется во временный соседний
 файл, синхронизируется и только затем атомарно заменяет предыдущий.
 
-`project.json` — недоверенная граница между сохранёнными метаданными и файловой системой:
+`project.json` – недоверенная граница между сохранёнными метаданными и файловой системой:
 `project.json → schema/project.schema.json → resolveProjectPath() → filesystem`.
 Перед чтением и записью старый manifest без `transcript` мигрируется к каноническим путям,
 затем AJV-схема запрещает неизвестные поля, а resolver проверяет каждый project-путь.
-Resolver принимает только канонический относительный путь внутри workspace, отвергает
+Даже schema-valid manifest не получает доверия к путям: resolver принимает только канонический
+относительный путь внутри workspace, отвергает
 absolute/Windows/traversal-варианты и проверяет `realpath` существующего предка, чтобы
-symlink не вывел операцию за пределы проекта. Единственное исключение —
+symlink не вывел операцию за пределы проекта. Единственное исключение –
 `source.originalPath`: это provenance исходника, а не workspace-путь.
 
 Containment защищает от вредоносного manifest и symlink, существующих на момент проверки.
@@ -146,7 +147,7 @@ Brief замораживает исходник, тему, аспект, раз�
 
 Длинный рендер хранит части в `out/.chunks/<job-sha256>/`. Cache descriptor v2 включает
 composition, канонизированные props, identities source/audio, диапазоны и Remotion options,
-а также identity всего `src/`, `package.json` и `package-lock.json`. Для каждого реально
+а также identity реализации рендера: всего `src/`, `package.json` и `package-lock.json`. Для каждого реально
 упомянутого в props файла из `public/` сохраняются JSON pointer, размер и SHA-256; остальные
 ресурсы `public/` на key не влияют. Канонические props заменяют media path его content identity,
 поэтому новый временный lease с теми же байтами продолжает resume, но сохраняют исходный порядок
