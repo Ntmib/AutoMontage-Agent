@@ -1,6 +1,8 @@
 const path = require('path');
 const { buildReelScenesProps } = require('./brief');
 
+const LESSON_DEFAULT_THEME = 'lesson-neutral';
+
 const DEFAULT_DUCKING = {
   thresholdDb: -28,
   ratio: 8,
@@ -105,6 +107,7 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
 }
 
 module.exports = {
+  LESSON_DEFAULT_THEME,
   assertLessonOptions,
   buildLessonMusicMixArgs,
   buildGenBriefArgs,

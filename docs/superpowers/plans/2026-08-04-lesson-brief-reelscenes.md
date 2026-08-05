@@ -171,7 +171,7 @@ CLI contract:
 
 ```bash
 node scripts/gen-brief.js src/data/transcript.json out/id.lesson.json \
-  --markdown out/id.lesson.md --theme dima-grunge --title "ТЕМА" \
+  --markdown out/id.lesson.md --theme lesson-neutral --title "ТЕМА" \
   --aspect vertical --width 1080 --height 1920 --fps 30 --duration 120
 ```
 
@@ -221,7 +221,7 @@ Expected: FAIL because the workflow helpers do not exist.
 
 `--template lesson` without `--brief` must transcribe, invoke `gen-brief.js`, print both output paths and exit before Remotion. `--template lesson --brief file.json` must skip LLM and transcription, require `approved`, copy the supplied video to ignored `public/source.mp4`, resolve the external theme, write props with `faceSrc` and `audioSrc`, and render composition `ReelScenes`.
 
-Default lesson theme becomes `dima-grunge`. The approved brief freezes aspect and dimensions; changing aspect requires a new draft and a new approval.
+Default lesson theme becomes `lesson-neutral`. The approved brief freezes aspect and dimensions; changing aspect requires a new draft and a new approval.
 
 - [x] **Step 4: Run tests and verify GREEN**
 
@@ -262,7 +262,7 @@ Run `gen-brief.js` helper tests and validate a fixture draft. Confirm `build.js`
 
 - [x] **Step 3: Render one approved horizontal brief**
 
-Use local `public/source.mp4`, local external `dima-grunge`, a short approved brief and `--frames` only if the render contract supports it without changing approved geometry. Verify with ffprobe: H.264, 1920x1080, source FPS, audio present.
+Use local `public/source.mp4`, the built-in `lesson-neutral` theme, a short approved brief and `--frames` only if the render contract supports it without changing approved geometry. Verify with ffprobe: H.264, 1920x1080, source FPS, audio present.
 
 - [x] **Step 4: Render one approved vertical still or short sample from the same horizontal source**
 

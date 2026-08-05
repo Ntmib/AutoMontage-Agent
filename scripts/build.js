@@ -6,7 +6,7 @@
 //                                 [--template lesson] [--no-transcribe] [--title "..."]
 // Опции шаблона/транскрипции:
 //   --template lesson : сначала собрать ТЗ из 7 готовых сцен, после утверждения
-//                       отрендерить его через ReelScenes. Тема по умолчанию: dima-grunge.
+//                       отрендерить его через ReelScenes. Тема по умолчанию: lesson-neutral.
 //   --aspect source|vertical|horizontal : формат lesson; по умолчанию как у исходника.
 //   --brief file.json : отрендерить утверждённый монтажный лист lesson.
 //   --no-transcribe   : пропустить whisper (не качать модель); транскрипт = пустой.
@@ -26,6 +26,7 @@ const { loadExtTheme } = require('./load-ext-theme');
 const { resolveOutputGeometry } = require('./lesson/aspect');
 const { REMOTION_AUDIO_ADVANCE_MS } = require('./finish-audio');
 const {
+  LESSON_DEFAULT_THEME,
   assertLessonOptions,
   buildGenBriefArgs,
   getLessonAction,
@@ -76,8 +77,8 @@ try {
   process.exit(1);
 }
 
-// тема по умолчанию зависит от шаблона: lesson → dima-grunge, иначе craft
-const theme = opt('theme', isLesson ? 'dima-grunge' : 'craft');
+// тема по умолчанию зависит от шаблона: lesson -> lesson-neutral, иначе craft
+const theme = opt('theme', isLesson ? LESSON_DEFAULT_THEME : 'craft');
 const id = opt('id', 'out');
 const outDir = opt('outdir', null);           // куда положить финал (по умолчанию out/ внутри пакета)
 const projectName = opt('project', null);

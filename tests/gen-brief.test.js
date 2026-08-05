@@ -5,11 +5,12 @@ const dictionary = require('../scripts/data/proofread-dictionary.json');
 const {
   applyDictionary,
   normalizeGeneratedBrief,
+  parseBriefOptions,
 } = require('../scripts/gen-brief');
 
 const context = {
   source: '/videos/source.mp4',
-  theme: 'dima-grunge',
+  theme: 'lesson-neutral',
   title: 'АГЕНТ ОТ А ДО Я',
   output: {
     aspect: 'vertical',
@@ -21,6 +22,11 @@ const context = {
   dictionaryCorrections: [],
   availableBroll: [],
 };
+
+test('brief CLI defaults to the public lesson theme', () => {
+  assert.equal(parseBriefOptions([]).theme, 'lesson-neutral');
+  assert.equal(parseBriefOptions(['--theme', 'private-brand-test']).theme, 'private-brand-test');
+});
 
 test('dictionary corrects transcript and records every replacement', () => {
   const result = applyDictionary([

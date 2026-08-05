@@ -12,7 +12,7 @@ function makeBrief(overrides = {}) {
     version: 1,
     status: 'draft',
     source: '/videos/source.mp4',
-    theme: 'dima-grunge',
+    theme: 'lesson-neutral',
     title: 'НЕЙРОАГЕНТЫ',
     output: {
       aspect: 'horizontal',
@@ -60,7 +60,7 @@ test('draft cannot produce render props', () => {
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join('\n'), /не утверждён/);
-  assert.throws(() => buildReelScenesProps({ brief: makeBrief(), theme: 'dima-grunge' }), /не утверждён/);
+  assert.throws(() => buildReelScenesProps({ brief: makeBrief(), theme: 'lesson-neutral' }), /не утверждён/);
 });
 
 test('experimental chart scene is rejected', () => {
@@ -122,7 +122,7 @@ test('approved speaker crop is preserved in render props', () => {
     faceZoom: 1.08,
   });
 
-  const props = buildReelScenesProps({ brief, theme: 'dima-grunge' });
+  const props = buildReelScenesProps({ brief, theme: 'lesson-neutral' });
 
   assert.deepEqual(props.facePos, { x: 0.25, y: 0.4 });
   assert.equal(props.faceZoom, 1.08);
@@ -148,7 +148,7 @@ test('approved lesson music is validated and becomes render props', () => {
   });
 
   assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
-  const props = buildReelScenesProps({ brief, theme: 'dima-grunge' });
+  const props = buildReelScenesProps({ brief, theme: 'lesson-neutral' });
 
   assert.equal(props.musicSrc, 'source-music.mp3');
   assert.equal(props.musicGainDb, -17);

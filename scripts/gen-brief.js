@@ -10,6 +10,7 @@ const {
   formatBriefMarkdown,
   validateLessonBrief,
 } = require('./lesson/brief');
+const { LESSON_DEFAULT_THEME } = require('./lesson/workflow');
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -283,6 +284,33 @@ function option(args, name, fallback) {
   return index >= 0 ? args[index + 1] : fallback;
 }
 
+function parseBriefOptions(args) {
+  return {
+    theme: option(args, 'theme', LESSON_DEFAULT_THEME),
+    title: option(args, 'title', 'ВИДЕО'),
+    aspect: option(args, 'aspect', 'source'),
+  };
+}
+
+function printHelp() {
+  console.log(`gen-brief.js <transcript.json> <brief.json> [options]
+
+Creates a draft lesson brief and a readable Markdown copy.
+
+Options:
+  --markdown <file>       Markdown output next to JSON by default
+  --theme <id>            lesson theme (default: ${LESSON_DEFAULT_THEME})
+  --title <text>          lesson title (default: ВИДЕО)
+  --aspect <mode>         source, vertical or horizontal (default: source)
+  --width <pixels>        approved output width
+  --height <pixels>       approved output height
+  --fps <number>          approved output FPS
+  --duration <seconds>    source duration
+  --source <file>         approved source reference
+  --max <count>           maximum scenes (default: 12)
+  --help                  show this help`);
+}
+
 function parseJsonResponse(raw) {
   const start = raw.indexOf('{');
   const end = raw.lastIndexOf('}');
@@ -292,10 +320,14 @@ function parseJsonResponse(raw) {
 
 async function main() {
   const args = process.argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    printHelp();
+    return;
+  }
   const inputPath = args[0];
   const outputPath = args[1];
   if (!inputPath || !outputPath) {
-    console.error('usage: gen-brief.js <transcript.json> <brief.json> [--markdown brief.md] [--aspect source|vertical|horizontal]');
+    printHelp();
     process.exit(1);
   }
   if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
@@ -321,12 +353,13 @@ async function main() {
     ? await callAnthropic(system, user)
     : await callOpenAI(system, user);
   const generated = parseJsonResponse(raw);
+  const briefOptions = parseBriefOptions(args);
   const brief = normalizeGeneratedBrief(generated, {
     source: option(args, 'source', 'source.mp4'),
-    theme: option(args, 'theme', 'dima-grunge'),
-    title: option(args, 'title', 'ВИДЕО'),
+    theme: briefOptions.theme,
+    title: briefOptions.title,
     output: {
-      aspect: option(args, 'aspect', 'source'),
+      aspect: briefOptions.aspect,
       width: Number(option(args, 'width', '1080')),
       height: Number(option(args, 'height', '1920')),
       fps,
@@ -354,6 +387,7 @@ module.exports = {
   applyDictionary,
   buildSystemPrompt,
   normalizeGeneratedBrief,
+  parseBriefOptions,
   parseJsonResponse,
 };
 

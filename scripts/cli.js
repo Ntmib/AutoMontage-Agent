@@ -23,7 +23,7 @@ function help() {
   automontage --help                  эта справка
 
 Частые опции:
-  --theme craft|cyber   стиль оформления (по умолчанию craft)
+  --theme <id>          тема: Dynamic по умолчанию craft, lesson — lesson-neutral
   --template lesson     создать черновик ТЗ из 7 готовых сцен и остановиться
   --aspect source       формат как у исходника (дефолт для lesson)
   --aspect vertical     вертикальный результат 1080x1920
@@ -44,6 +44,8 @@ function help() {
   --autopos             плашки автоматически мимо лица
   --reframe             перекадрировать Dynamic в вертикаль по лицу
   --outdir <путь>       куда положить результат (по умолчанию текущая папка)
+
+Внешние темы подключаются по id через каталог THEMES_EXT.
 
 Сначала проверь окружение: automontage doctor
 Требуется: Node.js (>=20), Python 3, ffmpeg (Chromium только для пересборки картинок).`);

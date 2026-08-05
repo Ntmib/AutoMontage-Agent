@@ -2,18 +2,23 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  LESSON_DEFAULT_THEME,
   assertLessonOptions,
   buildGenBriefArgs,
   getLessonAction,
   prepareLessonRender,
 } = require('../scripts/lesson/workflow');
 
+test('lesson workflow exposes one public default theme', () => {
+  assert.equal(LESSON_DEFAULT_THEME, 'lesson-neutral');
+});
+
 function makeBrief(status = 'approved') {
   return {
     version: 1,
     status,
     source: '/videos/source.mp4',
-    theme: 'dima-grunge',
+    theme: 'lesson-neutral',
     title: 'УРОК',
     output: {
       aspect: 'vertical',
@@ -42,7 +47,7 @@ test('draft brief is rejected before Remotion', () => {
   assert.throws(
     () => prepareLessonRender({
       brief: makeBrief('draft'),
-      theme: 'dima-grunge',
+      theme: 'lesson-neutral',
       sourceVideo: '/videos/source.mp4',
     }),
     /не утверждён/,
@@ -53,7 +58,7 @@ test('approved brief cannot be rendered against another source', () => {
   assert.throws(
     () => prepareLessonRender({
       brief: makeBrief(),
-      theme: 'dima-grunge',
+      theme: 'lesson-neutral',
       sourceVideo: '/videos/another.mp4',
     }),
     /другого исходника/,
@@ -94,7 +99,7 @@ test('approved lesson keeps music out of Remotion and prepares post-render ducki
 
   const prepared = prepareLessonRender({
     brief,
-    theme: 'dima-grunge',
+    theme: 'lesson-neutral',
     sourceVideo: '/videos/source.mp4',
   });
 
@@ -119,7 +124,7 @@ test('approved lesson keeps music out of Remotion and prepares post-render ducki
 test('frames override only shortens a local test render', () => {
   const prepared = prepareLessonRender({
     brief: makeBrief(),
-    theme: 'dima-grunge',
+    theme: 'lesson-neutral',
     sourceVideo: '/videos/source.mp4',
     framesOverride: 60,
   });
@@ -134,7 +139,7 @@ test('gen-brief arguments preserve paths and titles with spaces', () => {
     transcriptPath: 'src/data/transcript.json',
     briefPath: 'out/my lesson.json',
     markdownPath: 'out/my lesson.md',
-    theme: 'dima-grunge',
+    theme: 'lesson-neutral',
     title: 'МОЙ НОВЫЙ УРОК',
     geometry: { aspect: 'horizontal', width: 1920, height: 1080, fps: 25 },
     duration: 42.5,
@@ -147,7 +152,7 @@ test('gen-brief arguments preserve paths and titles with spaces', () => {
     'src/data/transcript.json',
     'out/my lesson.json',
     '--markdown', 'out/my lesson.md',
-    '--theme', 'dima-grunge',
+    '--theme', 'lesson-neutral',
     '--title', 'МОЙ НОВЫЙ УРОК',
     '--aspect', 'horizontal',
     '--width', '1920',
@@ -165,7 +170,7 @@ test('gen-brief arguments freeze an optional speaker position', () => {
     transcriptPath: 'transcript.json',
     briefPath: 'brief.json',
     markdownPath: 'brief.md',
-    theme: 'dima-grunge',
+    theme: 'lesson-neutral',
     title: 'УРОК',
     geometry: { aspect: 'vertical', width: 1080, height: 1920, fps: 25 },
     duration: 10,
@@ -182,7 +187,7 @@ test('gen-brief arguments freeze an optional speaker zoom', () => {
     transcriptPath: 'transcript.json',
     briefPath: 'brief.json',
     markdownPath: 'brief.md',
-    theme: 'dima-grunge',
+    theme: 'lesson-neutral',
     title: 'УРОК',
     geometry: { aspect: 'vertical', width: 1080, height: 1920, fps: 25 },
     duration: 10,

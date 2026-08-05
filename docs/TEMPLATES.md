@@ -22,6 +22,8 @@
 только после явного утверждения пользователем.
 
 - Композиция: `ReelScenes` · Публичная тема: `lesson-neutral`
+- Если `--theme` не задан, lesson автоматически использует `lesson-neutral`; Dynamic
+  по-прежнему использует `craft`.
 - По умолчанию `--aspect source`: ширина, высота и FPS равны исходнику.
 - `--aspect vertical`: 1080x1920 с FPS исходника.
 - `--aspect horizontal`: 1920x1080 с FPS исходника.
