@@ -17,7 +17,20 @@
   .bar{height:70px;background:#3D2E24;display:flex;align-items:center;padding:0 26px;gap:13px;}
   .dot{width:19px;height:19px;border-radius:50%;} .u{background:#CC785C}.m{background:#D8A05C}.g{background:#C9C2A8}
   .title{color:#EDE4D3;font-family:'JBM';font-size:24px;letter-spacing:1px;margin-left:18px;opacity:.85;}
-  .shot{display:block;width:100%;}
+  .shot{height:850px;position:relative;overflow:hidden;background:
+    linear-gradient(90deg,rgba(251,247,240,.06) 1px,transparent 1px),
+    linear-gradient(rgba(251,247,240,.06) 1px,transparent 1px),#171411;
+    background-size:48px 48px;display:grid;grid-template-columns:1.1fr .9fr;gap:30px;padding:76px 54px;}
+  .stage{position:relative;border-radius:28px;background:linear-gradient(145deg,#5A3127,#2A211B 58%,#141210);
+    box-shadow:0 26px 60px rgba(0,0,0,.38);overflow:hidden;}
+  .stage::before{content:'';position:absolute;width:260px;height:260px;border-radius:50%;
+    background:#D8A05C;right:-100px;top:-90px;opacity:.78;}
+  .stage::after{content:'AUTO\A MONTAGE';white-space:pre;position:absolute;left:42px;bottom:48px;
+    color:#FBF7F0;font-family:'Osw';font-weight:700;font-size:68px;line-height:.86;}
+  .panel{display:flex;flex-direction:column;gap:24px;justify-content:center;}
+  .card{height:150px;border-radius:20px;background:#2C2823;border:2px solid rgba(251,247,240,.08);
+    padding:28px;color:#FBF7F0;font-family:'JBM';font-size:24px;letter-spacing:1px;}
+  .card b{display:block;color:#CC785C;font-family:'Osw';font-size:42px;line-height:1;margin-top:12px;}
   .strip{background:#211E1A;padding:20px 24px;display:flex;gap:8px;align-items:center;}
   .clip{height:66px;border-radius:8px;flex:0 0 auto;}
   .badge{position:absolute;top:150px;right:80px;background:#CC785C;color:#FBF7F0;font-family:'Osw';
@@ -30,7 +43,14 @@
   <div class="win">
     <div class="bar"><span class="dot u"></span><span class="dot m"></span><span class="dot g"></span>
       <span class="title">монтаж — превью.mp4</span></div>
-    <img class="shot" src="shot_frame.jpg">
+    <div class="shot">
+      <div class="stage"></div>
+      <div class="panel">
+        <div class="card">СЦЕНА 01<b>ТИТРЫ</b></div>
+        <div class="card">СЦЕНА 02<b>B-ROLL</b></div>
+        <div class="card">СЦЕНА 03<b>CTA</b></div>
+      </div>
+    </div>
     <div class="strip">
       <div class="clip" style="flex-basis:120px;background:#CC785C"></div>
       <div class="clip" style="flex-basis:80px;background:#7c9a6d"></div>

@@ -40,6 +40,7 @@ assets/music/*.mp3
 
 # сгенерированные артефакты пайплайна
 props/placement_*.json
+scripts/*_frame.jpg
 
 # системное
 .DS_Store
