@@ -27,7 +27,7 @@ function runBuildWithIntercept(t, args, { ffprobeRates = ['30/1'] } = {}) {
     "const fs = require('node:fs');",
     "const path = require('node:path');",
     "const calls = process.env.AUTOMONTAGE_BUILD_CAPTURE;",
-    "const ffprobeRates = JSON.parse(process.env.AUTOMONTAGE_BUILD_FFPROBE_RATES);",
+    `const ffprobeRates = ${JSON.stringify(ffprobeRates)};`,
     'let ffprobeIndex = 0;',
     'childProcess.spawnSync = (command, args) => {',
     "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
@@ -55,7 +55,6 @@ function runBuildWithIntercept(t, args, { ffprobeRates = ['30/1'] } = {}) {
     env: {
       ...process.env,
       AUTOMONTAGE_BUILD_CAPTURE: calls,
-      AUTOMONTAGE_BUILD_FFPROBE_RATES: JSON.stringify(ffprobeRates),
       NODE_OPTIONS: `--require=${hook}`,
     },
   });
