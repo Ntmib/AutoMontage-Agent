@@ -2,6 +2,15 @@
   "name": "automontage-agent",
   "version": "1.2.0",
   "description": "Движок автомонтажа видео для ИИ-агента (Claude Code/Codex). Кросс-платформенный: Windows/macOS/Linux.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ntmib/AutoMontage-Agent.git"
+  },
+  "homepage": "https://github.com/Ntmib/AutoMontage-Agent#readme",
+  "bugs": {
+    "url": "https://github.com/Ntmib/AutoMontage-Agent/issues"
+  },
   "bin": {
     "automontage": "scripts/cli.js"
   },
