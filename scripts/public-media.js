@@ -111,7 +111,11 @@ function withPublicMediaLease(options, operation) {
     } catch (cleanupError) {
       if (!operationFailed) throw cleanupError;
       if (operationError && (typeof operationError === 'object' || typeof operationError === 'function')) {
-        Object.defineProperty(operationError, 'cleanupError', { value: cleanupError });
+        try {
+          Object.defineProperty(operationError, 'cleanupError', { value: cleanupError });
+        } catch (_) {
+          // Диагностика cleanup не должна маскировать исходную ошибку рендера.
+        }
       }
     }
   }

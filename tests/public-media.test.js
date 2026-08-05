@@ -67,6 +67,48 @@ test('withPublicMediaLease cleans up after a render error without masking it', (
   assert.equal(fs.existsSync(leasePath), false);
 });
 
+test('dual render and cleanup failures preserve the original error and retain diagnostics when possible', (t) => {
+  const root = makeRoot(t);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-public-media-dual-failure-'));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  const source = writeSource(root, 'source.mp4', 'source bytes');
+
+  for (const { id, error, expectedDiagnostic } of [
+    {
+      id: '66666666-6666-4666-8666-666666666666',
+      error: new Error('render failed with diagnostic'),
+      expectedDiagnostic: true,
+    },
+    {
+      id: '77777777-7777-4777-8777-777777777777',
+      error: Object.freeze(new Error('frozen render failure')),
+      expectedDiagnostic: false,
+    },
+  ]) {
+    const originalError = error;
+    let thrown;
+    try {
+      withPublicMediaLease({
+        root,
+        sourcePath: source,
+        namespace: 'lesson',
+        temporaryId: id,
+      }, (lease) => {
+        const leaseDirectory = path.dirname(lease.absolutePath);
+        fs.rmSync(leaseDirectory, { recursive: true, force: true });
+        fs.symlinkSync(outside, leaseDirectory, 'dir');
+        throw originalError;
+      });
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    assert.equal(thrown, originalError);
+    if (expectedDiagnostic) assert.match(thrown.cleanupError.message, /небезопасный путь/);
+    else assert.equal(thrown.cleanupError, undefined);
+  }
+});
+
 test('public media sanitizes an unsafe namespace before using it in a path', (t) => {
   const root = makeRoot(t);
   const lease = preparePublicMedia({
