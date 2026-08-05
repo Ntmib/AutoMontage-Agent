@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 
 const CYRILLIC_TO_LATIN = {
   а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh',
@@ -294,18 +295,57 @@ function recordRender(workspace, {
   return workspace;
 }
 
-function publishFinal(workspace, renderFinalPath) {
+function publishFinal(workspace, renderFinalPath, {
+  fileSystem = fs,
+  temporaryId = randomUUID,
+} = {}) {
   const sourcePath = path.resolve(renderFinalPath);
-  if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+  if (!fileSystem.existsSync(sourcePath) || !fileSystem.statSync(sourcePath).isFile()) {
     throw new Error(`финальный рендер не найден: ${sourcePath}`);
   }
   relativeProjectPath(workspace, sourcePath);
   const destination = path.join(workspace.dir, workspace.manifest.final);
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(sourcePath, destination);
-  workspace.manifest.updatedAt = new Date().toISOString();
-  writeProjectManifest(workspace.dir, workspace.manifest);
-  return destination;
+  const temporaryPath = `${destination}.tmp-${temporaryId()}`;
+  let temporaryHandle = null;
+  fileSystem.mkdirSync(path.dirname(destination), { recursive: true });
+  try {
+    fileSystem.copyFileSync(sourcePath, temporaryPath);
+    temporaryHandle = fileSystem.openSync(temporaryPath, 'r');
+    fileSystem.fsyncSync(temporaryHandle);
+    fileSystem.closeSync(temporaryHandle);
+    temporaryHandle = null;
+    fileSystem.renameSync(temporaryPath, destination);
+    return destination;
+  } finally {
+    if (temporaryHandle !== null) fileSystem.closeSync(temporaryHandle);
+    if (fileSystem.existsSync(temporaryPath)) fileSystem.unlinkSync(temporaryPath);
+  }
+}
+
+function runRenderLifecycle(workspace, render, operation, {
+  publish = publishFinal,
+} = {}) {
+  if (!workspace) return operation();
+  const metadata = {
+    version: render.version,
+    label: render.label,
+    dir: render.dir,
+    briefPath: render.briefPath || null,
+  };
+  recordRender(workspace, { ...metadata, status: 'started' });
+  try {
+    const renderFinalPath = operation();
+    const destination = publish(workspace, renderFinalPath);
+    recordRender(workspace, { ...metadata, status: 'complete' });
+    return destination;
+  } catch (error) {
+    try {
+      recordRender(workspace, { ...metadata, status: 'failed' });
+    } catch (manifestError) {
+      error.manifestError = manifestError;
+    }
+    throw error;
+  }
 }
 
 module.exports = {
@@ -318,6 +358,7 @@ module.exports = {
   readProjectManifest,
   recordBrief,
   recordRender,
+  runRenderLifecycle,
   slugifyProjectName,
   writeProjectManifest,
 };

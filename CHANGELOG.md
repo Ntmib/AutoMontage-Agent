@@ -41,6 +41,8 @@
   недопустимый id или повреждённый JSON останавливают сборку без раскрытия локального пути.
 - Центральный `build.js` больше не собирает shell-строки из пользовательских путей и
   заранее отклоняет недопустимые numeric/reframe параметры.
+- Сбой render, finish, music или публикации теперь фиксирует project-render как `failed`;
+  canonical final заменяется атомарно только после успешной обработки.
 - Транскрипты разных роликов больше не перезаписывают общий `src/data/transcript.json` в
   project-режиме.
 - Legacy-режим и `automontage demo` теперь хранят generated transcript/captions и demo MP4

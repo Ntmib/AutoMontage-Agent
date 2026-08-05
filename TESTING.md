@@ -20,6 +20,7 @@ npm test
 - музыкальный gain, fade, стартовый фрагмент и скорость;
 - создание project-папки, транслитерация, локальный транскрипт и повторное открытие;
 - версии draft/approved brief, render history и канонический final;
+- lifecycle `started → failed/complete`, сохранность прежнего final и атомарную публикацию;
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
 - process regression matrix: leading `-`, пробелы, кавычки, `$()`, `;`, newline и Unicode;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
@@ -81,6 +82,8 @@ node scripts/dynamic-gate.js path/to/scenario.json path/to/transcript.json
 6. Отдельно проверить, что draft, другой source, тема или аспект блокируются.
 7. Убедиться, что повторный рендер создаёт новый `renders/vNN-<label>/`, не стирая прошлый.
 8. Убедиться, что `final/<slug>.mp4` совпадает с последним успешным рендером.
+9. При искусственном сбое render/finish/music/publish проверить статус `failed`, прежние
+   `latestRender` и canonical final.
 
 Полные команды – в `docs/TEMPLATES.md`.
 

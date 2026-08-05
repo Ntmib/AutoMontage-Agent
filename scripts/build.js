@@ -43,9 +43,8 @@ const {
 } = require('./lesson/workflow');
 const { createBuildContext } = require('./project/build-context');
 const {
-  publishFinal,
   recordBrief,
-  recordRender,
+  runRenderLifecycle,
 } = require('./project/workspace');
 
 const args = process.argv.slice(2);
@@ -354,59 +353,48 @@ if (lessonAction === 'render') {
   const outMp4L = buildContext.paths.final;
   fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
   fs.writeFileSync(lessonPropsPath, JSON.stringify(prepared.props, null, 2));
-  if (buildContext.project) {
-    recordRender(buildContext.project, {
+  const lessonRender = buildContext.project
+    ? {
       version: buildContext.paths.render.version,
       label: buildContext.paths.render.label,
       dir: buildContext.paths.render.dir,
       briefPath,
-      status: 'started',
+    }
+    : null;
+  let finalL = runRenderLifecycle(buildContext.project, lessonRender, () => {
+    log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
+    const renderCommand = remotionRenderCommand(remotion, {
+      entry: 'src/index.js',
+      composition: prepared.composition,
+      output: rawMp4L,
+      props: lessonPropsPath,
     });
-  }
+    runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'lesson render' });
 
-  log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
-  const renderCommand = remotionRenderCommand(remotion, {
-    entry: 'src/index.js',
-    composition: prepared.composition,
-    output: rawMp4L,
-    props: lessonPropsPath,
-  });
-  runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'lesson render' });
-
-  log('финиш (громкость + картинка)…');
-  runNodeTool(path.join(ROOT, 'scripts/finish.js'), [
-    rawMp4L,
-    outMp4L,
-    '--hdrfix',
-    'auto',
-    '--audio-advance-ms',
-    String(REMOTION_AUDIO_ADVANCE_MS),
-  ], { cwd: ROOT, stage: 'lesson finish' });
-
-  if (prepared.music) {
-    log('подмешиваю слышимую музыку с ducking…');
-    const mixedMp4L = tmp(`${id}_lesson_music.mp4`);
-    runNodeTool(path.join(ROOT, 'scripts/mix-music.js'), [
+    log('финиш (громкость + картинка)…');
+    runNodeTool(path.join(ROOT, 'scripts/finish.js'), [
+      rawMp4L,
       outMp4L,
-      prepared.music.sourcePath,
-      mixedMp4L,
-      ...prepared.music.mixArgs,
-    ], { cwd: ROOT, stage: 'lesson music mix' });
-    fs.copyFileSync(mixedMp4L, outMp4L);
-    fs.unlinkSync(mixedMp4L);
-  }
+      '--hdrfix',
+      'auto',
+      '--audio-advance-ms',
+      String(REMOTION_AUDIO_ADVANCE_MS),
+    ], { cwd: ROOT, stage: 'lesson finish' });
 
-  let finalL = outMp4L;
-  if (buildContext.project) {
-    finalL = publishFinal(buildContext.project, outMp4L);
-    recordRender(buildContext.project, {
-      version: buildContext.paths.render.version,
-      label: buildContext.paths.render.label,
-      dir: buildContext.paths.render.dir,
-      briefPath,
-      status: 'complete',
-    });
-  }
+    if (prepared.music) {
+      log('подмешиваю слышимую музыку с ducking…');
+      const mixedMp4L = tmp(`${id}_lesson_music.mp4`);
+      runNodeTool(path.join(ROOT, 'scripts/mix-music.js'), [
+        outMp4L,
+        prepared.music.sourcePath,
+        mixedMp4L,
+        ...prepared.music.mixArgs,
+      ], { cwd: ROOT, stage: 'lesson music mix' });
+      fs.copyFileSync(mixedMp4L, outMp4L);
+      fs.unlinkSync(mixedMp4L);
+    }
+    return outMp4L;
+  });
   if (outDir) {
     const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
     const dest = path.resolve(process.cwd(), outDir, `${outputName}.mp4`);
@@ -534,88 +522,79 @@ try {
 // 8. рендер (порциями для длинных – Фаза 3.3)
 const rawMp4 = buildContext.paths.raw;
 const outMp4 = buildContext.paths.final;
-if (buildContext.project) {
-  recordRender(buildContext.project, {
+const dynamicRender = buildContext.project
+  ? {
     version: buildContext.paths.render.version,
     label: buildContext.paths.render.label,
     dir: buildContext.paths.render.dir,
     briefPath: activeScenarioPath,
-    status: 'started',
-  });
-}
-log(`рендер → ${rawMp4} …`);
-if (durF > 540) {
-  log('длинный ролик – рендерю порциями (resume при сбое)');
-  runNodeTool(path.join(ROOT, 'scripts/render-chunks.js'), [
-    'Dynamic',
-    propsPath,
-    rawMp4,
-    String(durF),
-    '--chunk',
-    '300',
-    '--audio',
-    'public/source.mp4',
-  ], { cwd: ROOT, stage: 'chunk render' });
-} else {
-  const renderCommand = remotionRenderCommand(remotion, {
-    entry: 'src/index.js',
-    composition: 'Dynamic',
-    output: rawMp4,
-    props: propsPath,
-  });
-  runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'dynamic render' });
-}
-
-// 9. финиш-проход: громкость -14 LUFS (+ авто HDR→SDR)
-log('финиш (громкость + картинка)…');
-runNodeTool(path.join(ROOT, 'scripts/finish.js'), [
-  rawMp4,
-  outMp4,
-  '--hdrfix',
-  'auto',
-], { cwd: ROOT, stage: 'dynamic finish' });
-
-// 10. (опц.) фоновая музыка с ducking (Фаза 2.2)
-if (props.audio && props.audio.music && props.audio.music.file) {
-  const m = props.audio.music;
-  const d = m.ducking || {};
-  const musPath = path.isAbsolute(m.file) ? m.file : path.join(ROOT, m.file);
-  if (fs.existsSync(musPath)) {
-    log('подмешиваю музыку (ducking)…');
-    const flags = [];
-    if (m.gain_db != null) flags.push('--gain', String(m.gain_db));
-    if (d.threshold_db != null) {
-      flags.push('--threshold', Math.pow(10, d.threshold_db / 20).toFixed(4));
-    }
-    if (d.reduction_db != null) {
-      flags.push('--ratio', String(Math.max(2, Math.min(20, Math.abs(d.reduction_db)))));
-    }
-    if (d.attack_ms != null) flags.push('--attack', String(d.attack_ms));
-    if (d.release_ms != null) flags.push('--release', String(d.release_ms));
-    const musTmp = tmp(`${id}_mus.mp4`);
-    runNodeTool(path.join(ROOT, 'scripts/mix-music.js'), [
-      outMp4,
-      musPath,
-      musTmp,
-      ...flags,
-    ], { cwd: ROOT, stage: 'dynamic music mix' });
-    fs.copyFileSync(musTmp, outMp4); fs.unlinkSync(musTmp);   // кросс-платформенно (без unix mv)
-  } else {
-    log(`⚠️ музыка не найдена: ${musPath} – пропускаю`);
   }
-}
+  : null;
+let finalPath = runRenderLifecycle(buildContext.project, dynamicRender, () => {
+  log(`рендер → ${rawMp4} …`);
+  if (durF > 540) {
+    log('длинный ролик – рендерю порциями (resume при сбое)');
+    runNodeTool(path.join(ROOT, 'scripts/render-chunks.js'), [
+      'Dynamic',
+      propsPath,
+      rawMp4,
+      String(durF),
+      '--chunk',
+      '300',
+      '--audio',
+      'public/source.mp4',
+    ], { cwd: ROOT, stage: 'chunk render' });
+  } else {
+    const renderCommand = remotionRenderCommand(remotion, {
+      entry: 'src/index.js',
+      composition: 'Dynamic',
+      output: rawMp4,
+      props: propsPath,
+    });
+    runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'dynamic render' });
+  }
 
-let finalPath = outMp4;
-if (buildContext.project) {
-  finalPath = publishFinal(buildContext.project, outMp4);
-  recordRender(buildContext.project, {
-    version: buildContext.paths.render.version,
-    label: buildContext.paths.render.label,
-    dir: buildContext.paths.render.dir,
-    briefPath: activeScenarioPath,
-    status: 'complete',
-  });
-}
+  // 9. финиш-проход: громкость -14 LUFS (+ авто HDR→SDR)
+  log('финиш (громкость + картинка)…');
+  runNodeTool(path.join(ROOT, 'scripts/finish.js'), [
+    rawMp4,
+    outMp4,
+    '--hdrfix',
+    'auto',
+  ], { cwd: ROOT, stage: 'dynamic finish' });
+
+  // 10. (опц.) фоновая музыка с ducking (Фаза 2.2)
+  if (props.audio && props.audio.music && props.audio.music.file) {
+    const m = props.audio.music;
+    const d = m.ducking || {};
+    const musPath = path.isAbsolute(m.file) ? m.file : path.join(ROOT, m.file);
+    if (fs.existsSync(musPath)) {
+      log('подмешиваю музыку (ducking)…');
+      const flags = [];
+      if (m.gain_db != null) flags.push('--gain', String(m.gain_db));
+      if (d.threshold_db != null) {
+        flags.push('--threshold', Math.pow(10, d.threshold_db / 20).toFixed(4));
+      }
+      if (d.reduction_db != null) {
+        flags.push('--ratio', String(Math.max(2, Math.min(20, Math.abs(d.reduction_db)))));
+      }
+      if (d.attack_ms != null) flags.push('--attack', String(d.attack_ms));
+      if (d.release_ms != null) flags.push('--release', String(d.release_ms));
+      const musTmp = tmp(`${id}_mus.mp4`);
+      runNodeTool(path.join(ROOT, 'scripts/mix-music.js'), [
+        outMp4,
+        musPath,
+        musTmp,
+        ...flags,
+      ], { cwd: ROOT, stage: 'dynamic music mix' });
+      fs.copyFileSync(musTmp, outMp4);
+      fs.unlinkSync(musTmp);
+    } else {
+      log(`⚠️ музыка не найдена: ${musPath} – пропускаю`);
+    }
+  }
+  return outMp4;
+});
 if (outDir) {   // глобальный запуск: положить результат рядом с пользователем
   const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
   const dest = path.resolve(process.cwd(), outDir, `${outputName}.mp4`);

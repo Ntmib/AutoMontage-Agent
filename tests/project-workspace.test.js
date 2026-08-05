@@ -14,6 +14,7 @@ const {
   readProjectManifest,
   recordBrief,
   recordRender,
+  runRenderLifecycle,
   slugifyProjectName,
 } = require('../scripts/project/workspace');
 
@@ -209,4 +210,114 @@ test('render status updates one manifest entry instead of duplicating a version'
   const manifest = readProjectManifest(workspace.dir);
   assert.equal(manifest.renders.length, 1);
   assert.equal(manifest.renders[0].status, 'complete');
+});
+
+test('render lifecycle publishes final only after successful work', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Lifecycle success',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const render = nextRenderPaths(workspace, 'First');
+
+  const destination = runRenderLifecycle(workspace, render, () => {
+    fs.writeFileSync(render.finalPath, 'new-final');
+    return render.finalPath;
+  });
+
+  const manifest = readProjectManifest(workspace.dir);
+  assert.equal(fs.readFileSync(destination, 'utf8'), 'new-final');
+  assert.equal(manifest.latestRender, 'renders/v01-first');
+  assert.equal(manifest.renders[0].status, 'complete');
+});
+
+test('render lifecycle records stage failures and retains the previous final', async (t) => {
+  for (const failedStage of ['render', 'finish', 'music']) {
+    await t.test(failedStage, () => {
+      const fixture = makeFixture(t);
+      const workspace = createOrOpenProject({
+        baseDir: path.join(fixture.dir, 'projects'),
+        name: `Failure ${failedStage}`,
+        sourcePath: fixture.sourcePath,
+        now: new Date('2026-08-05T12:00:00Z'),
+      });
+      const previous = nextRenderPaths(workspace, 'Previous');
+      fs.writeFileSync(previous.finalPath, 'previous-final');
+      recordRender(workspace, { ...previous, status: 'complete' });
+      const canonical = publishFinal(workspace, previous.finalPath);
+      const previousHash = fs.readFileSync(canonical, 'utf8');
+      const attempted = nextRenderPaths(workspace, 'Attempted');
+
+      assert.throws(() => runRenderLifecycle(workspace, attempted, () => {
+        throw new Error(`${failedStage} failed`);
+      }), new RegExp(`${failedStage} failed`));
+
+      const manifest = readProjectManifest(workspace.dir);
+      assert.equal(fs.readFileSync(canonical, 'utf8'), previousHash);
+      assert.equal(manifest.latestRender, 'renders/v01-previous');
+      assert.equal(manifest.renders.at(-1).status, 'failed');
+      assert.equal(manifest.renders.length, 2);
+    });
+  }
+});
+
+test('publish failure records failed and retains the previous final', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Publish failure',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const previous = nextRenderPaths(workspace, 'Previous');
+  fs.writeFileSync(previous.finalPath, 'previous-final');
+  recordRender(workspace, { ...previous, status: 'complete' });
+  const canonical = publishFinal(workspace, previous.finalPath);
+  const attempted = nextRenderPaths(workspace, 'Attempted');
+  fs.writeFileSync(attempted.finalPath, 'attempted-final');
+
+  assert.throws(() => runRenderLifecycle(
+    workspace,
+    attempted,
+    () => attempted.finalPath,
+    { publish: () => { throw new Error('publish failed'); } },
+  ), /publish failed/);
+
+  const manifest = readProjectManifest(workspace.dir);
+  assert.equal(fs.readFileSync(canonical, 'utf8'), 'previous-final');
+  assert.equal(manifest.latestRender, 'renders/v01-previous');
+  assert.equal(manifest.renders.at(-1).status, 'failed');
+});
+
+test('atomic final publish removes a failed temporary copy and preserves canonical final', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Atomic publish',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const render = nextRenderPaths(workspace, 'Attempt');
+  fs.writeFileSync(render.finalPath, 'replacement');
+  const canonical = path.join(workspace.dir, workspace.manifest.final);
+  fs.writeFileSync(canonical, 'previous-final');
+  const failingFs = {
+    ...fs,
+    renameSync() {
+      throw new Error('rename failed');
+    },
+  };
+
+  assert.throws(
+    () => publishFinal(workspace, render.finalPath, { fileSystem: failingFs }),
+    /rename failed/,
+  );
+
+  assert.equal(fs.readFileSync(canonical, 'utf8'), 'previous-final');
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(canonical)).filter((name) => name.includes('.tmp-')),
+    [],
+  );
 });
