@@ -222,6 +222,21 @@ push и pull request с полной историей репозитория. В
 включены GitHub Secret Scanning и Push Protection. Не обходи локальную проверку через
 `--no-verify`.
 
+### Проверка кандидата в релиз
+
+Release-checker читает выбранное committed Git-дерево, а не грязную рабочую папку. Поэтому
+локальные исходники и незакоммиченные transcript/captions не влияют на результат:
+
+```bash
+npm run check:release
+npm run check:release -- --tree HEAD --base origin/main
+```
+
+Первая команда безопасна для shallow CI и проверяет текущее дерево. Вторая дополнительно
+проверяет изменённые относительно базы публичные файлы. Перед публикацией локально запускай
+`npm run smoke:release`: он последовательно собирает короткий approved lesson и Dynamic
+project, полностью декодирует оба MP4 и оставляет пути к двум финалам в выводе.
+
 ---
 
 ## Демо

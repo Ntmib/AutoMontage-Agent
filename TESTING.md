@@ -121,12 +121,36 @@ project-папке. Старые артефакты в `out/` при мигра�
 
 ## 7. CI
 
-`.github/workflows/ci.yml` запускает `npm ci` и `npm test` на pull request и push в
-`main` под Node.js 20. Отдельный job Gitleaks сканирует полную Git-историю на секреты.
+`.github/workflows/ci.yml` запускает `npm ci`, `npm test` и `npm run check:release` на pull
+request и push в `main` под Node.js 20. Release-checker в CI проверяет committed current
+tree без base, поэтому работает и с shallow checkout. Отдельный job Gitleaks сканирует
+полную Git-историю на секреты.
 Полные рендеры в CI не запускаются: им нужны тяжёлые медиа, ffmpeg/Whisper-модели и
 иногда приватные темы. Их проверяют локально по разделам выше.
 
-## 8. Проверка секретов и зависимостей
+## 8. Release candidate
+
+```bash
+npm run check:release
+npm run check:release -- --tree HEAD --base origin/main
+npm run smoke:release
+```
+
+`check:release` читает файлы через `git ls-tree`/`git show`, поэтому проверяет точный
+Git-объект и игнорирует незакоммиченные пользовательские файлы. Current-tree правила
+сверяют версию, Node engines, env-декларации, локальные Markdown-ссылки, приватные id и
+полный бинарный инвентарь `ASSETS.md`. При наличии `--base` добавляется diff-проверка
+публичной пунктуации; если history/ref недоступен, ошибка содержит команду fetch.
+
+`smoke:release` с удалённым из дочернего окружения `THEMES_EXT` рендерит 75 кадров
+`examples/lesson-neutral-approved.json`, затем через project API создаёт отдельный Dynamic
+workspace и рендерит его через `--project-dir`. Для обоих финалов обязательны video/audio,
+A/V drift меньше 80 мс, ровно 75 кадров и полный decode. У project-финала SHA-256 должен
+совпасть с `renders[]`-версией, выбранной `latestRender`. Скрипт оставляет артефакты для
+осмотра, печатает два абсолютных final path и подтверждает неизменность защищённых
+`src/data/captions.js` и `src/data/transcript.json`.
+
+## 9. Проверка секретов и зависимостей
 
 ```bash
 gitleaks git --staged --redact=100      # что готовится в ближайший коммит

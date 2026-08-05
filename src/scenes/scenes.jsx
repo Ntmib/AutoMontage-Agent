@@ -110,7 +110,7 @@ const SpeakerCircleDiagram = ({ p, k, s, width, height, frame, fps }) => {
   const top = land ? s.top + 150 : s.top + 370;
   const enter = clip01(frame / (fps * 0.55));
   const ring = clip01((frame - fps * 0.45) / (fps * 0.65));
-  const handle = p.handle || '@MCDENIL';
+  const handle = p.handle || '@SPEAKER';
   return (
     <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
       <SceneBg />

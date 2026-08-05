@@ -166,7 +166,7 @@ test('bottom diagram accepts approved speaker circle and funnel variants', () =>
         start: 0,
         end: 2,
         variant: 'speaker-circle',
-        handle: '@MCDENIL',
+        handle: '@SPEAKER',
         headCream: 'СПИКЕР',
         headOrange: 'В КРУЖКЕ',
         steps: ['Кружок', 'Ободок', 'Ник'],

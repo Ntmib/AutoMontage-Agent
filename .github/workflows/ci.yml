@@ -41,3 +41,6 @@ jobs:
 
       - name: Запустить тесты
         run: npm test
+
+      - name: Проверить публичное release-дерево
+        run: npm run check:release

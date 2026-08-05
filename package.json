@@ -12,6 +12,8 @@
     "doctor": "node scripts/doctor.js",
     "demo": "node scripts/cli.js demo",
     "montage": "node scripts/build.js",
+    "check:release": "node scripts/check-release.js",
+    "smoke:release": "node scripts/smoke-release.js",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {

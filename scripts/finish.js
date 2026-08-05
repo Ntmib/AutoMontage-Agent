@@ -79,6 +79,7 @@ function finishEncodeCommand(input, output, options, isHDR) {
     '-af', buildFinishAudioFilter(options.audioAdvanceMs),
     '-c:a', 'aac',
     '-b:a', '160k',
+    '-shortest',
     '-movflags', '+faststart',
     hostPath(output),
   );

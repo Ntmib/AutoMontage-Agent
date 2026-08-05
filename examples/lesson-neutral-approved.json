@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "status": "approved",
+  "source": "examples/demo-source.mp4",
+  "theme": "lesson-neutral",
+  "title": "НЕЙТРАЛЬНЫЙ LESSON SMOKE",
+  "output": {
+    "aspect": "vertical",
+    "width": 1080,
+    "height": 1920,
+    "fps": 25,
+    "durationInFrames": 350
+  },
+  "corrections": [],
+  "scenes": [
+    {
+      "scene": "fullscreen",
+      "start": 0,
+      "end": 7,
+      "caption": "ПУБЛИЧНЫЙ LESSON SMOKE"
+    },
+    {
+      "scene": "text-only",
+      "start": 7,
+      "end": 14,
+      "quoteCream": "ПРОВЕРЯЕМ",
+      "quoteOrange": "РЕНДЕР",
+      "author": "AUTOMONTAGE"
+    }
+  ]
+}
