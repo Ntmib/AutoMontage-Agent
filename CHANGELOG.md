@@ -49,6 +49,8 @@
   временный filter script даже после ошибки ffmpeg; positional maxGap/pad читаются верно.
 - Порционный Remotion-рендер, покадровый concat и audio mux переведены на checked argv;
   незавершённый chunk больше не публикуется как готовый resume-файл.
+- Resume cache порционного рендера теперь content-addressed и проверяет manifest,
+  SHA-256, размер, диапазон и фактическое число кадров каждого chunk.
 - Транскрипты разных роликов больше не перезаписывают общий `src/data/transcript.json` в
   project-режиме.
 - Legacy-режим и `automontage demo` теперь хранят generated transcript/captions и demo MP4

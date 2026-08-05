@@ -41,6 +41,8 @@ FPS, bitrate и resolution имеют конечные диапазоны, а п
 ffmpeg filter script удаляется через `finally` и при успешном, и при аварийном завершении.
 Chunk-render проверяет positive integer `totalFrames/--chunk`, рендерит part во временный
 соседний MP4 и публикует его rename только после успешного Remotion exit.
+Resume cache адресуется SHA-256 от composition, props, source/audio identities, диапазонов
+и Remotion options. Manifest разрешает reuse только при совпадении range/hash/size/frames.
 
 ## 2. Проверка окружения
 

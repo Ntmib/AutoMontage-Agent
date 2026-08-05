@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Фаза 3.3 — рендер длинного ролика порциями с resume + склейка.
 //   node render-chunks.js <comp> <props.json> <out.mp4> <totalFrames> [--chunk 300]
-// Готовые порции (out/.chunks/<id>_N.mp4) не перерендериваются — resume после сбоя.
+// Готовые порции (out/.chunks/<job-sha256>/<from>-<to>.mp4) переиспользуются только
+// после проверки manifest, hash, size и фактического числа кадров.
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
@@ -9,6 +10,13 @@ const { randomUUID } = require('node:crypto');
 const { finiteNumber, optionValue } = require('./build-options');
 const { resolveRemotionCommand } = require('./env');
 const { hostPath, runTool } = require('./process');
+const {
+  createRenderJob,
+  isReusableChunk,
+  loadCacheManifest,
+  probeChunkFrames,
+  recordChunkComplete,
+} = require('./chunk-cache');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -143,18 +151,64 @@ function renderChunkAtomically({
   }
 }
 
+function resolveRenderSource(propsPath, root = ROOT) {
+  let props;
+  try {
+    props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
+  } catch {
+    throw new Error('chunk cache: props JSON недоступен или повреждён');
+  }
+  if (typeof props.source !== 'string' || props.source.length === 0) return null;
+  const publicDirectory = path.join(root, 'public');
+  const source = path.resolve(publicDirectory, props.source);
+  const relative = path.relative(publicDirectory, source);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('chunk cache: source должен находиться в public');
+  }
+  if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+    throw new Error('chunk cache: source из props не найден');
+  }
+  return source;
+}
+
 function main(args = process.argv.slice(2)) {
   const options = parseChunkOptions(args);
-  const id = path.basename(options.output).replace(/\.mp4$/i, '');
-  const directory = path.join(ROOT, 'out/.chunks');
+  if (!fs.existsSync(options.props) || !fs.statSync(options.props).isFile()) {
+    throw new Error('chunk cache: props file не найден');
+  }
+  if (options.audio && (!fs.existsSync(options.audio) || !fs.statSync(options.audio).isFile())) {
+    throw new Error('chunk cache: audio file не найден');
+  }
+  const source = resolveRenderSource(options.props);
+  const remotionPackage = JSON.parse(fs.readFileSync(
+    path.join(ROOT, 'node_modules/@remotion/cli/package.json'),
+    'utf8',
+  ));
+  const remotionOptions = {
+    entry: 'src/index.js',
+    codec: 'h264',
+    log: 'error',
+    cliVersion: remotionPackage.version,
+  };
+  const job = createRenderJob({
+    composition: options.composition,
+    props: options.props,
+    source,
+    audio: options.audio,
+    total: options.total,
+    chunk: options.chunk,
+    remotionOptions,
+  });
+  const directory = path.join(ROOT, 'out/.chunks', job.key);
   fs.mkdirSync(directory, { recursive: true });
+  const manifest = loadCacheManifest(directory, job);
   const resolvedRemotion = resolveRemotionCommand();
   const parts = [];
   let reused = 0;
   for (const { from, to } of chunkRanges(options.total, options.chunk)) {
-    const part = path.join(directory, `${id}_${from}-${to}.mp4`);
+    const part = path.join(directory, `${from}-${to}.mp4`);
     parts.push(part);
-    if (fs.existsSync(part) && fs.statSync(part).size > 1000) {
+    if (isReusableChunk({ directory, manifest, from, to })) {
       console.log(`· порция ${from}-${to}: уже есть, пропускаю (resume)`);
       reused++;
       continue;
@@ -168,13 +222,15 @@ function main(args = process.argv.slice(2)) {
       from,
       to,
     });
+    const frames = probeChunkFrames(part);
+    recordChunkComplete({ directory, manifest, part, from, to, frames });
   }
   console.log(`порций: ${parts.length} (переиспользовано ${reused})`);
 
-  const glued = path.join(directory, `${id}_v.mp4`);
+  const glued = path.join(directory, 'video.mp4');
   const concat = concatChunksCommand(parts, glued);
   runTool(concat.command, concat.args, { cwd: ROOT, stage: 'chunk concat' });
-  if (options.audio && fs.existsSync(options.audio)) {
+  if (options.audio) {
     const mux = muxAudioCommand(glued, options.audio, options.output);
     runTool(mux.command, mux.args, { cwd: ROOT, stage: 'chunk audio mux' });
     console.log(`✅ склеено с цельным аудио → ${options.output}`);
@@ -201,4 +257,5 @@ module.exports = {
   parseChunkOptions,
   remotionChunkCommand,
   renderChunkAtomically,
+  resolveRenderSource,
 };

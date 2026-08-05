@@ -13,6 +13,13 @@ const {
   remotionChunkCommand,
   renderChunkAtomically,
 } = require('../scripts/render-chunks');
+const {
+  createRenderJob,
+  fileIdentity,
+  isReusableChunk,
+  loadCacheManifest,
+  recordChunkComplete,
+} = require('../scripts/chunk-cache');
 
 const hostile = `- lead 'single' "double" $() ;\nЮникод`;
 
@@ -116,4 +123,100 @@ test('invalid chunk CLI values fail before Remotion and cannot execute a sentine
 test('chunk renderer contains no shell execution escape hatch', () => {
   const source = fs.readFileSync(path.join(ROOT, 'scripts/render-chunks.js'), 'utf8');
   assert.doesNotMatch(source, /\bexecSync\b|shell\s*:\s*true/);
+});
+
+test('render job key covers composition, props, source, audio and render options', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-chunk-job-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const props = path.join(dir, 'props.json');
+  const source = path.join(dir, 'source.mp4');
+  const audio = path.join(dir, 'audio.mp4');
+  fs.writeFileSync(props, '{"source":"source.mp4","value":1}');
+  fs.writeFileSync(source, 'source-a');
+  fs.writeFileSync(audio, 'audio-a');
+  const input = {
+    composition: 'Dynamic',
+    props,
+    source,
+    audio,
+    total: 75,
+    chunk: 30,
+    remotionOptions: { entry: 'src/index.js', codec: 'h264', log: 'error' },
+  };
+  const original = createRenderJob(input);
+  assert.equal(createRenderJob(input).key, original.key);
+
+  fs.writeFileSync(props, '{"source":"source.mp4","value":2}');
+  assert.notEqual(createRenderJob(input).key, original.key);
+  fs.writeFileSync(props, '{"source":"source.mp4","value":1}');
+  fs.writeFileSync(source, 'source-b');
+  assert.notEqual(createRenderJob(input).key, original.key);
+  fs.writeFileSync(source, 'source-a');
+  fs.writeFileSync(audio, 'audio-b');
+  assert.notEqual(createRenderJob(input).key, original.key);
+  fs.writeFileSync(audio, 'audio-a');
+  assert.notEqual(createRenderJob({ ...input, composition: 'ReelScenes' }).key, original.key);
+  assert.notEqual(createRenderJob({ ...input, total: 76 }).key, original.key);
+  assert.throws(
+    () => createRenderJob({ ...input, props: path.join(dir, 'missing private props.json') }),
+    (error) => !error.message.includes(dir),
+  );
+});
+
+test('chunk reuse requires matching manifest range, hash, size and frame count', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-chunk-resume-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const job = { key: 'job-key', descriptor: { total: 30, chunk: 30 } };
+  const manifest = loadCacheManifest(dir, job);
+  const part = path.join(dir, '0-29.mp4');
+  fs.writeFileSync(part, Buffer.alloc(1500, 1));
+  recordChunkComplete({
+    directory: dir,
+    manifest,
+    part,
+    from: 0,
+    to: 29,
+    frames: 30,
+  });
+
+  assert.equal(isReusableChunk({
+    directory: dir,
+    manifest,
+    from: 0,
+    to: 29,
+    probeFrames: () => 30,
+  }), true);
+  assert.equal(isReusableChunk({
+    directory: dir,
+    manifest,
+    from: 0,
+    to: 28,
+    probeFrames: () => 29,
+  }), false);
+  assert.equal(isReusableChunk({
+    directory: dir,
+    manifest,
+    from: 0,
+    to: 29,
+    probeFrames: () => 29,
+  }), false);
+
+  const originalIdentity = fileIdentity(part);
+  fs.writeFileSync(part, Buffer.alloc(1500, 2));
+  assert.notDeepEqual(fileIdentity(part), originalIdentity);
+  assert.equal(isReusableChunk({
+    directory: dir,
+    manifest,
+    from: 0,
+    to: 29,
+    probeFrames: () => 30,
+  }), false);
+  fs.writeFileSync(part, Buffer.alloc(10, 1));
+  assert.equal(isReusableChunk({
+    directory: dir,
+    manifest,
+    from: 0,
+    to: 29,
+    probeFrames: () => 30,
+  }), false);
 });
