@@ -45,6 +45,8 @@
   canonical final заменяется атомарно только после успешной обработки.
 - Finish, music mix и Telegram pack запускают ffmpeg без shell, валидируют filter/media
   параметры заранее; Telegram pack жёстко требует два потока и A/V drift меньше 80 мс.
+- Нарезка пауз и filler-слов больше не интерполирует пути/тайминги в shell и очищает
+  временный filter script даже после ошибки ffmpeg; positional maxGap/pad читаются верно.
 - Транскрипты разных роликов больше не перезаписывают общий `src/data/transcript.json` в
   project-режиме.
 - Legacy-режим и `automontage demo` теперь хранят generated transcript/captions и demo MP4

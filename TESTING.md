@@ -37,6 +37,8 @@ ffprobe/JSON-результатов с явным `maxBuffer`.
 `--frames`, `--max`, `--beatSec`, `--brandLock` и `--reframe` проверяются до ffprobe.
 Та же граница действует для `finish.js`, `mix-music.js` и `pack-tg.js`: filter values,
 FPS, bitrate и resolution имеют конечные диапазоны, а пути остаются отдельными argv.
+`tighten.js` и `cut-pauses.js` дополнительно валидируют word/keep intervals; временный
+ffmpeg filter script удаляется через `finally` и при успешном, и при аварийном завершении.
 
 ## 2. Проверка окружения
 
