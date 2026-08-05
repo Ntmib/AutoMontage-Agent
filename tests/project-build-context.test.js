@@ -72,7 +72,7 @@ test('project rendering resolves briefs inside the project and allocates a rende
   assert.throws(() => context.resolveBrief('../outside.json'), /внутри проекта/);
 });
 
-test('legacy builds retain the flat out paths', (t) => {
+test('legacy builds isolate generated data under out', (t) => {
   const fixture = makeFixture(t);
   const context = createBuildContext({
     root: fixture.dir,
@@ -88,8 +88,8 @@ test('legacy builds retain the flat out paths', (t) => {
   assert.equal(context.paths.briefJson, path.join(fixture.dir, 'out/demo.lesson.json'));
   assert.equal(context.paths.raw, path.join(fixture.dir, 'out/demo.raw.mp4'));
   assert.equal(context.paths.final, path.join(fixture.dir, 'out/demo.mp4'));
-  assert.equal(context.paths.transcript, path.join(fixture.dir, 'src/data/transcript.json'));
-  assert.equal(context.paths.captions, path.join(fixture.dir, 'src/data/captions.js'));
+  assert.equal(context.paths.transcript, path.join(fixture.dir, 'out/demo.transcript.json'));
+  assert.equal(context.paths.captions, path.join(fixture.dir, 'out/demo.captions.js'));
 });
 
 test('project continuation rejects a different input video', (t) => {

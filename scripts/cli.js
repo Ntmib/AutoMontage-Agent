@@ -8,7 +8,7 @@
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
-const { ensureOutputDestination } = require('./project/cli-options');
+const { buildDemoArgs, ensureOutputDestination } = require('./project/cli-options');
 
 const ROOT = path.join(__dirname, '..');
 const argv = process.argv.slice(2);
@@ -65,14 +65,14 @@ const buildJs = path.join(ROOT, 'scripts', 'build.js');
 let forward;
 if (argv[0] === 'demo') {
   // демо из коробки: лёгкое тест-видео + готовый монтажный лист, без whisper и ключей
-  const demoSrc = path.join(ROOT, 'examples', 'demo-source.mp4');
-  const demoList = path.join(ROOT, 'examples', 'scenario-demo.json');
+  forward = buildDemoArgs(ROOT, process.cwd());
+  const demoSrc = forward[0];
+  const demoList = forward[2];
   if (!fs.existsSync(demoSrc) || !fs.existsSync(demoList)) {
     console.error('Демо-файлы не найдены (examples/demo-source.mp4 + examples/scenario-demo.json).');
     console.error('Смонтируй своё: automontage <видео.mp4>');
     process.exit(1);
   }
-  forward = [demoSrc, '--scenario', demoList, '--no-transcribe', '--id', 'demo'];
 } else {
   forward = argv.slice();
 }

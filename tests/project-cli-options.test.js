@@ -1,7 +1,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 
-const { ensureOutputDestination } = require('../scripts/project/cli-options');
+const { buildDemoArgs, ensureOutputDestination } = require('../scripts/project/cli-options');
+
+test('demo output and generated data stay in the ignored out directory', () => {
+  const root = path.resolve('repo/automontage');
+  const cwd = root;
+  assert.deepEqual(buildDemoArgs(root, cwd), [
+    path.join(root, 'examples/demo-source.mp4'),
+    '--scenario', path.join(root, 'examples/scenario-demo.json'),
+    '--no-transcribe', '--id', 'demo',
+    '--outdir', path.join(root, 'out'),
+  ]);
+});
 
 test('legacy CLI keeps copying the result to the current directory', () => {
   assert.deepEqual(
