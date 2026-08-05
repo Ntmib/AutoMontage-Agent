@@ -5,7 +5,7 @@ const { captureTool } = require('./process');
 const ROOT = path.resolve(__dirname, '..');
 const MAX_GIT_OUTPUT = 128 * 1024 * 1024;
 const EM_DASH = String.fromCodePoint(0x2014);
-const BINARY_ASSET = /\.(?:png|jpe?g|svg|mp4|ttf|otf|woff2?)$/i;
+const BINARY_ASSET = /\.(?:png|jpe?g|gif|webp|avif|svg|mp4|mov|m4v|webm|mp3|wav|m4a|aac|flac|ogg|woff2?|ttf|otf)$/i;
 const TEXT_FILE = /(?:^|\/)(?:[^/]+\.(?:c?js|jsx|mjs|json|md|html|css|py|sh|toml|ya?ml|txt)|\.env\.example)$/i;
 const CANONICAL_MARKDOWN = new Set([
   'AGENTS.md',
@@ -125,6 +125,19 @@ function keyLine(source, key) {
   return index < 0 ? 1 : lineNumber(source, index);
 }
 
+function parseUtcCalendarDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const [, year, month, day] = match.map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day) {
+    return null;
+  }
+  return date;
+}
+
 function checkPackageMetadata(read, issues) {
   const packageSource = read('package.json');
   const lockSource = read('package-lock.json');
@@ -197,6 +210,7 @@ function checkSecurityException(files, read, issues, now) {
   }
   const requiredStrings = [
     'ghsa', 'cve', 'severity', 'package', 'fixedIn', 'exposure', 'mitigation', 'decision', 'revisitBy',
+    'reviewedAt', 'reviewedFor',
   ];
   const missing = requiredStrings.filter((key) => (
     typeof exception[key] !== 'string' || !exception[key].trim()
@@ -209,6 +223,9 @@ function checkSecurityException(files, read, issues, now) {
     severity: 'moderate',
     package: 'file-type@16.5.4',
     fixedIn: 'file-type@21.3.1',
+    exposure: 'Optional --autotheme passes only ffmpeg-generated PNG frames to Jimp/Vibrant, not raw ASF input.',
+    mitigation: 'Local-only CLI path, at most 20 scaled PNG frames, no direct untrusted-image upload into file-type.',
+    decision: 'Keep node-vibrant@4.0.4; do not force-fix, override the major chain, or downgrade to 3.x.',
   };
   const incorrect = Object.entries(expected)
     .filter(([key, value]) => exception[key] !== value)
@@ -234,6 +251,8 @@ function checkSecurityException(files, read, issues, now) {
     && requiredTriggers.some((entry) => !exception.triggers.includes(entry))) {
     incorrect.push('triggers');
   }
+  if (!parseUtcCalendarDate(exception.reviewedAt || '')) incorrect.push('reviewedAt');
+  if (exception.reviewedFor !== pkg.version) incorrect.push('reviewedFor');
   if (missing.length || incorrect.length) {
     issues.push(issue(
       'security-exception', 'SECURITY.md', line,
@@ -242,11 +261,9 @@ function checkSecurityException(files, read, issues, now) {
     ));
     return;
   }
-  const revisit = /^\d{4}-\d{2}-\d{2}$/.test(exception.revisitBy)
-    ? new Date(`${exception.revisitBy}T00:00:00Z`)
-    : new Date(Number.NaN);
+  const revisit = parseUtcCalendarDate(exception.revisitBy);
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const days = (revisit.getTime() - today.getTime()) / 86_400_000;
+  const days = revisit ? (revisit.getTime() - today.getTime()) / 86_400_000 : Number.NaN;
   if (!Number.isFinite(days) || days < 0 || days > 30) {
     issues.push(issue(
       'security-exception', 'SECURITY.md', line,
@@ -269,36 +286,65 @@ function checkReleaseNotes(files, read, issues) {
   const pkg = jsonValue(packageSource, 'package.json', issues, 'package.json');
   if (!pkg || typeof pkg.version !== 'string') return;
   const source = read('CHANGELOG.md');
-  const escapedVersion = pkg.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const heading = new RegExp(`^## \\[${escapedVersion}\\](?:\\s+-\\s+\\d{4}-\\d{2}-\\d{2})?\\s*$`, 'm');
-  const match = heading.exec(source);
-  if (!match) {
+  const headings = [...source.matchAll(/^## \[([^\]]+)\](?:\s+-\s+(.+?))?\s*$/gm)];
+  const sectionBody = (heading) => {
+    const next = headings.find((candidate) => candidate.index > heading.index);
+    const start = heading.index + heading[0].length;
+    return source.slice(start, next ? next.index : undefined);
+  };
+  const unreleased = headings.filter((heading) => heading[1] === 'Unreleased' && !heading[2]);
+  if (unreleased.length !== 1) {
     issues.push(issue(
       'release-notes', 'CHANGELOG.md', 1,
-      `release section [${pkg.version}] is missing`,
-      `add a dated ## [${pkg.version}] section with the final public changes.`,
+      'exactly one undated [Unreleased] section is required',
+      'keep one ## [Unreleased] heading before the current release section.',
+    ));
+  } else if (sectionBody(unreleased[0]).trim()) {
+    issues.push(issue(
+      'release-notes', 'CHANGELOG.md', lineNumber(source, unreleased[0].index),
+      '[Unreleased] must be whitespace-empty for a release candidate',
+      'move every pending bullet into the dated current-version section.',
+    ));
+  }
+  const releases = headings.filter((heading) => heading[1] === pkg.version);
+  if (releases.length !== 1) {
+    issues.push(issue(
+      'release-notes', 'CHANGELOG.md', 1,
+      `exactly one release section [${pkg.version}] is required`,
+      `add one dated ## [${pkg.version}] section with the final public changes.`,
     ));
     return;
   }
-  const rest = source.slice(match.index + match[0].length);
-  const nextSection = rest.search(/^## \[/m);
-  const section = nextSection < 0 ? rest : rest.slice(0, nextSection);
-  const required = [
-    ['lesson-neutral', /lesson-neutral/i],
-    ['shell hardening', /shell/i],
-    ['generated-data isolation', /out\//i],
-    ['failed render lifecycle', /failed/i],
-    ['atomic final', /atomic|атом/i],
-    ['private demo cleanup', /demo-preview/i],
-    ['asset provenance', /ASSETS\.md/],
-    ['temporary security exception', /SECURITY\.md/],
-  ];
-  const missing = required.filter(([, pattern]) => !pattern.test(section)).map(([label]) => label);
-  if (missing.length) {
+  const [release] = releases;
+  const date = parseUtcCalendarDate(release[2] || '');
+  if (!date) {
     issues.push(issue(
-      'release-notes', 'CHANGELOG.md', lineNumber(source, match.index),
-      `release ${pkg.version} omits: ${missing.join(', ')}`,
-      'move every shipped public change from Unreleased into the versioned release section.',
+      'release-notes', 'CHANGELOG.md', lineNumber(source, release.index),
+      `release ${pkg.version} requires a dated valid UTC calendar date in YYYY-MM-DD form`,
+      `use ## [${pkg.version}] - YYYY-MM-DD with a real calendar date.`,
+    ));
+  }
+  const section = sectionBody(release);
+  if (!/^###\s+\S/m.test(section)) {
+    issues.push(issue(
+      'release-notes', 'CHANGELOG.md', lineNumber(source, release.index),
+      `release ${pkg.version} requires at least one ### subsection`,
+      'add a release-note subsection such as ### Исправлено.',
+    ));
+  }
+  if (!/^\s*[-*+]\s+\S/m.test(section)) {
+    issues.push(issue(
+      'release-notes', 'CHANGELOG.md', lineNumber(source, release.index),
+      `release ${pkg.version} requires at least one bullet`,
+      'add a bullet that describes a shipped public change.',
+    ));
+  }
+  const patch = /^(\d+)\.(\d+)\.(\d+)$/.exec(pkg.version);
+  if (patch && Number(patch[3]) > 0 && !/^### Исправлено\s*$/m.test(section)) {
+    issues.push(issue(
+      'release-notes', 'CHANGELOG.md', lineNumber(source, release.index),
+      `patch release ${pkg.version} requires a ### Исправлено subsection`,
+      'summarize the backward-compatible fixes under ### Исправлено.',
     ));
   }
 }
@@ -345,12 +391,17 @@ function parseAssetRows(source) {
   });
 }
 
+function normalizeRepoPath(file) {
+  return path.posix.normalize(file.replace(/\\/g, '/').replace(/^\.\//, ''));
+}
+
 function checkAssets(files, read, issues) {
   const source = read('ASSETS.md');
   const rows = parseAssetRows(source);
-  const inventory = files.filter((file) => BINARY_ASSET.test(file));
+  const inventory = files.filter((file) => BINARY_ASSET.test(file)).map(normalizeRepoPath);
   const byPath = new Map();
   for (const row of rows) {
+    const assetPath = normalizeRepoPath(row.path);
     if (row.cells.length !== 6 || row.cells.some((cell) => !cell)) {
       issues.push(issue(
         'asset-provenance', 'ASSETS.md', row.line,
@@ -358,14 +409,14 @@ function checkAssets(files, read, issues) {
         'complete origin, author/license, generator/source, and redistribution basis.',
       ));
     }
-    if (byPath.has(row.path)) {
+    if (byPath.has(assetPath)) {
       issues.push(issue(
         'asset-provenance', 'ASSETS.md', row.line,
         `duplicate provenance row for ${row.path}`,
         'keep exactly one row for each tracked binary.',
       ));
     }
-    byPath.set(row.path, row);
+    byPath.set(assetPath, row);
   }
   for (const file of inventory) {
     if (!byPath.has(file)) {
