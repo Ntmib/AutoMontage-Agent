@@ -1,4 +1,4 @@
-import { AbsoluteFill, Img, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
 import { useTheme } from '../theme';
 import { tk, safeFor, safeWidth } from './safezone';
 import { SceneBg, FaceLayer, Chip, FitHeading, useRise } from './parts';
@@ -90,11 +90,11 @@ const AnimatedSplitGradient = ({ k, frame, fps }) => {
   );
 };
 
-const SOCIAL_LOGOS = {
-  telegram: { label: 'TELEGRAM', file: 'brand-logos/telegram.svg', width: 128, height: 128 },
-  instagram: { label: 'INSTAGRAM', file: 'brand-logos/instagram.png', width: 128, height: 128 },
-  youtube: { label: 'YOUTUBE', file: 'brand-logos/youtube.png', width: 150, height: 106 },
-  zoom: { label: 'ZOOM', file: 'brand-logos/zoom.png', width: 220, height: 72 },
+const SOCIAL_CHANNELS = {
+  telegram: { label: 'TELEGRAM', mark: 'TG' },
+  instagram: { label: 'INSTAGRAM', mark: 'IG' },
+  youtube: { label: 'YOUTUBE', mark: 'YT' },
+  zoom: { label: 'ZOOM', mark: 'ZM' },
 };
 
 const PersonGlyph = ({ color, size = 34 }) => (
@@ -315,8 +315,8 @@ export const SceneBlurOverlay = (p) => {
 
   if (p.variant === 'social-logos') {
     const logos = (p.logos || ['telegram', 'instagram', 'youtube', 'zoom'])
-      .map((id) => ({ id, ...SOCIAL_LOGOS[id] }))
-      .filter((logo) => logo.file);
+      .map((id) => ({ id, ...SOCIAL_CHANNELS[id] }))
+      .filter((channel) => channel.label);
     const cardWidth = land ? 320 : 390;
     const cardHeight = land ? 210 : 280;
     const gap = land ? 28 : 30;
@@ -332,7 +332,7 @@ export const SceneBlurOverlay = (p) => {
           {logos.map((logo, index) => {
             const enter = getLogoEntrance(frame, index, fps);
             return <div key={logo.id} style={{ height: cardHeight, borderRadius: 28, border: `1px solid ${k.cream}30`, background: 'rgba(18,14,11,.78)', boxShadow: k.cardShadow, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, opacity: enter.opacity, transform: `translateY(${enter.y}px) scale(${enter.scale})` }}>
-              <Img src={staticFile(logo.file)} style={{ width: logo.width, height: logo.height, objectFit: 'contain' }} />
+              <div style={{ width: land ? 112 : 132, height: land ? 112 : 132, borderRadius: 30, border: `3px solid ${k.orange}`, color: k.orange, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: k.fonts.display, fontSize: land ? 48 : 56, fontWeight: 700 }}>{logo.mark}</div>
               <div style={{ fontFamily: k.fonts.mono, fontSize: land ? 22 : 26, fontWeight: 700, letterSpacing: 3, color: k.cream }}>{logo.label}</div>
             </div>;
           })}

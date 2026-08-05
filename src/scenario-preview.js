@@ -21,7 +21,7 @@ export const scenarioPreview = {
     { type: 'InfoCard', start: 9.5, end: 13.5, tag: '// АГЕНТ', title: 'МОНТАЖЁР В КАРМАНЕ', pills: ['без программ', 'без монтажёра'] },
 
     // готовый ролик за минуты → врезка «экран монтажки»
-    { type: 'BrollFullscreen', start: 15.5, end: 19.0, image: 'broll/realC.png', caption: 'готовый ролик за минуты' },
+    { type: 'BrollFullscreen', start: 15.5, end: 19.0, image: 'broll/screenshot.png', caption: 'готовый ролик за минуты' },
 
     // субтитры слово в слово
     { type: 'SubtitleCard', start: 25.2, end: 28.0, text: 'Субтитры слово в слово', accent: true },
@@ -33,12 +33,12 @@ export const scenarioPreview = {
     // подписи в нужный момент
     { type: 'SubtitleCard', start: 45.5, end: 48.5, text: 'Подписи в момент', accent: false },
 
-    // картинку сгенерирует по смыслу → врезка монтаж-стол
-    { type: 'BrollFullscreen', start: 51.0, end: 55.5, image: 'broll/realA.png', caption: 'сгенерирует картинку под смысл' },
+    // картинку сгенерирует по смыслу → нейтральная врезка
+    { type: 'BrollFullscreen', start: 51.0, end: 55.5, image: 'broll/growth.png', caption: 'сгенерирует картинку под смысл' },
 
-    // реалистичная фотография на весь экран → врезка realC
+    // нейтральная иллюстрация на весь экран
     { type: 'SubtitleCard', start: 62.0, end: 65.0, text: 'Реалистичное фото', accent: true, sub: 'на весь экран' },
-    { type: 'BrollFullscreen', start: 65.5, end: 69.5, image: 'broll/realC.png', caption: 'настоящая фотография' },
+    { type: 'BrollFullscreen', start: 65.5, end: 69.5, image: 'broll/screenshot.png', caption: 'визуальная врезка' },
 
     // «сделай скриншот» → скриншот его кадра в редакторе
     { type: 'BrollFullscreen', start: 73.0, end: 79.0, image: 'broll/screenshot.png', caption: 'скриншот твоего кадра' },

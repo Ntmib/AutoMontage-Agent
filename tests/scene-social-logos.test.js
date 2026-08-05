@@ -25,7 +25,7 @@ function loadScenes() {
   return compiled.exports;
 }
 
-test('social logos enter in two groups after the background is ready', () => {
+test('social channel markers enter in two groups after the background is ready', () => {
   const { getLogoEntrance } = loadScenes();
 
   assert.equal(typeof getLogoEntrance, 'function');
@@ -35,4 +35,10 @@ test('social logos enter in two groups after the background is ready', () => {
   assert.deepEqual(visibleAt(0), []);
   assert.deepEqual(visibleAt(25), [0, 1]);
   assert.deepEqual(visibleAt(70), [0, 1, 2, 3]);
+});
+
+test('social channel scene has no redistributed third-party logo files', () => {
+  const source = require('node:fs').readFileSync(path.join(ROOT, 'src/scenes/scenes.jsx'), 'utf8');
+  assert.doesNotMatch(source, /brand-logos\//);
+  assert.doesNotMatch(source, /\bstaticFile\b|<Img\b/);
 });

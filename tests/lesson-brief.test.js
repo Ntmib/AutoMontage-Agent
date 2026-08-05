@@ -186,7 +186,7 @@ test('bottom diagram accepts approved speaker circle and funnel variants', () =>
   assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
 });
 
-test('blur overlay accepts staged official social logos', () => {
+test('blur overlay accepts approved social channel marker ids', () => {
   const brief = makeBrief({
     scenes: [
       {

@@ -62,7 +62,7 @@ export const RemotionRoot = () => {
           fps: props.fps || 25,
         })}
       />
-      {/* Боевой ролик — вертикальная версия (reframe + реалистичные broll) */}
+      {/* Боевой ролик — вертикальная версия (reframe + нейтральные broll) */}
       <Composition
         id="Job1V"
         component={Timeline}
