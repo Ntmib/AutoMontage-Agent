@@ -5,6 +5,7 @@ const {
   createOrOpenProject,
   nextBriefPaths,
   nextRenderPaths,
+  resolveProjectPath,
 } = require('./workspace');
 
 function legacyPaths(root, id, kind) {
@@ -87,8 +88,14 @@ function createBuildContext({
     raw: renderPaths ? renderPaths.rawPath : null,
     final: renderPaths ? renderPaths.finalPath : null,
     render: renderPaths,
-    transcript: path.join(project.dir, project.manifest.transcript.words),
-    captions: path.join(project.dir, project.manifest.transcript.captions),
+    transcript: resolveProjectPath(project.dir, project.manifest.transcript.words, {
+      label: 'manifest.transcript.words',
+      mustExist: false,
+    }),
+    captions: resolveProjectPath(project.dir, project.manifest.transcript.captions, {
+      label: 'manifest.transcript.captions',
+      mustExist: false,
+    }),
   };
 
   return {

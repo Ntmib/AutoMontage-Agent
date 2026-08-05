@@ -7,6 +7,7 @@ const { captureTool, runNodeTool, runTool } = require('./process');
 const {
   createOrOpenProject,
   readProjectManifest,
+  resolveProjectPath,
 } = require('./project/workspace');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -101,12 +102,26 @@ function assertProjectFinal(projectDir) {
   if (!manifest.final || !manifest.latestRender || !Array.isArray(manifest.renders)) {
     throw new Error('project manifest lacks final, latestRender, or renders[]');
   }
-  const selected = manifest.renders.find((render) => render.dir === manifest.latestRender);
+  const selectedIndex = manifest.renders.findIndex((render) => render.dir === manifest.latestRender);
+  const selected = manifest.renders[selectedIndex];
   if (!selected || selected.status !== 'complete') {
     throw new Error('latestRender does not select a complete renders[] entry');
   }
-  const finalPath = path.join(projectDir, manifest.final);
-  const renderFinalPath = path.join(projectDir, selected.dir, 'final.mp4');
+  const finalPath = resolveProjectPath(projectDir, manifest.final, {
+    label: 'manifest.final',
+    mustExist: true,
+    type: 'file',
+  });
+  resolveProjectPath(projectDir, selected.dir, {
+    label: `manifest.renders[${selectedIndex}].dir`,
+    mustExist: true,
+    type: 'directory',
+  });
+  const renderFinalPath = resolveProjectPath(projectDir, path.posix.join(selected.dir, 'final.mp4'), {
+    label: `manifest.renders[${selectedIndex}].dir/final.mp4`,
+    mustExist: true,
+    type: 'file',
+  });
   if (!fs.existsSync(finalPath) || !fs.existsSync(renderFinalPath)) {
     throw new Error('project final or selected render final is missing');
   }

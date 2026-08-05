@@ -130,6 +130,63 @@ test('manifest migration adds the canonical transcript paths before validation',
   });
 });
 
+test('manifest rejects traversal in every workspace-owned path field', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Every manifest path',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const brief = {
+    revision: 1,
+    jsonPath: 'brief/v01.lesson.json',
+    markdownPath: 'brief/v01.lesson.md',
+    status: 'draft',
+    theme: null,
+    aspect: null,
+  };
+  const render = {
+    version: 1,
+    label: 'complete',
+    dir: 'renders/v01-complete',
+    briefPath: 'brief/v01.lesson.json',
+    status: 'complete',
+  };
+  const cases = [
+    ['manifest.source.localPath', (manifest) => { manifest.source.localPath = '../../sentinel.mp4'; }],
+    ['manifest.transcript.words', (manifest) => { manifest.transcript.words = '../../sentinel.mp4'; }],
+    ['manifest.transcript.captions', (manifest) => { manifest.transcript.captions = '../../sentinel.mp4'; }],
+    ['manifest.briefs[0].jsonPath', (manifest) => {
+      manifest.briefs = [{ ...brief, jsonPath: '../../sentinel.mp4' }];
+    }],
+    ['manifest.briefs[0].markdownPath', (manifest) => {
+      manifest.briefs = [{ ...brief, markdownPath: '../../sentinel.mp4' }];
+    }],
+    ['manifest.currentBrief', (manifest) => {
+      manifest.briefs = [{ ...brief, jsonPath: '../../sentinel.mp4' }];
+      manifest.currentBrief = '../../sentinel.mp4';
+    }],
+    ['manifest.renders[0].dir', (manifest) => {
+      manifest.renders = [{ ...render, dir: '../../sentinel.mp4' }];
+    }],
+    ['manifest.renders[0].briefPath', (manifest) => {
+      manifest.renders = [{ ...render, briefPath: '../../sentinel.mp4' }];
+    }],
+    ['manifest.latestRender', (manifest) => {
+      manifest.renders = [{ ...render, dir: '../../sentinel.mp4' }];
+      manifest.latestRender = '../../sentinel.mp4';
+    }],
+    ['manifest.final', (manifest) => { manifest.final = '../../sentinel.mp4'; }],
+  ];
+
+  for (const [label, mutate] of cases) {
+    const manifest = JSON.parse(JSON.stringify(workspace.manifest));
+    mutate(manifest);
+    assert.throws(() => writeProjectManifest(workspace.dir, manifest), new RegExp(label.replace(/[.[\]]/g, '\\$&')));
+  }
+});
+
 test('project creation copies one source and creates the full workspace', (t) => {
   const fixture = makeFixture(t);
   const baseDir = path.join(fixture.dir, 'projects');
@@ -413,4 +470,67 @@ test('atomic final publish removes a failed temporary copy and preserves canonic
     fs.readdirSync(path.dirname(canonical)).filter((name) => name.includes('.tmp-')),
     [],
   );
+});
+
+test('manifest requires currentBrief to match a registered brief and latestRender to match a complete render', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Manifest cross references',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+
+  assert.throws(() => writeProjectManifest(workspace.dir, {
+    ...workspace.manifest,
+    currentBrief: 'brief/unregistered.lesson.json',
+  }), /currentBrief.*briefs\[\]/);
+
+  assert.throws(() => writeProjectManifest(workspace.dir, {
+    ...workspace.manifest,
+    renders: [{
+      version: 1,
+      label: 'unfinished',
+      dir: 'renders/v01-unfinished',
+      briefPath: null,
+      status: 'started',
+    }],
+    latestRender: 'renders/v01-unfinished',
+  }), /latestRender.*complete/);
+});
+
+test('publish final rejects an in-memory traversal manifest and leaves the outside sentinel unchanged', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Traversal publish',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const render = nextRenderPaths(workspace, 'Contained');
+  fs.writeFileSync(render.finalPath, 'contained-render');
+  const sentinelPath = path.join(fixture.dir, 'sentinel.mp4');
+  fs.writeFileSync(sentinelPath, 'outside-must-survive');
+  const maliciousWorkspace = {
+    ...workspace,
+    manifest: { ...workspace.manifest, final: '../../sentinel.mp4' },
+  };
+
+  let caught;
+  try {
+    publishFinal(maliciousWorkspace, render.finalPath);
+  } catch (error) {
+    caught = error;
+  }
+
+  assert.match(caught && caught.message, /manifest\.final/);
+  assert.equal(fs.readFileSync(sentinelPath, 'utf8'), 'outside-must-survive');
+
+  const containedWorkspace = {
+    ...workspace,
+    manifest: { ...workspace.manifest, final: 'renders/final/final.mp4' },
+  };
+  const published = publishFinal(containedWorkspace, render.finalPath);
+  assert.equal(published, path.join(workspace.dir, 'renders/final/final.mp4'));
+  assert.equal(fs.readFileSync(published, 'utf8'), 'contained-render');
 });

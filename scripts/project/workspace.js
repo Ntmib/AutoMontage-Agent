@@ -121,6 +121,16 @@ function validateProjectManifest(manifest, { projectDir, fileSystem = fs } = {})
       .map(formatProjectManifestSchemaError)
       .join('\n'));
   }
+  if (migratedManifest.currentBrief !== null
+    && !migratedManifest.briefs.some((brief) => brief.jsonPath === migratedManifest.currentBrief)) {
+    throw new Error('manifest.currentBrief must match one manifest.briefs[].jsonPath entry');
+  }
+  if (migratedManifest.latestRender !== null
+    && !migratedManifest.renders.some((render) => (
+      render.dir === migratedManifest.latestRender && render.status === 'complete'
+    ))) {
+    throw new Error('manifest.latestRender must match one complete manifest.renders[].dir entry');
+  }
   if (!projectDir) return migratedManifest;
 
   const paths = [
@@ -188,7 +198,11 @@ function asWorkspace(projectDir, manifest) {
   return {
     dir: projectDir,
     manifestPath: path.join(projectDir, 'project.json'),
-    sourcePath: path.join(projectDir, manifest.source.localPath),
+    sourcePath: resolveProjectPath(projectDir, manifest.source.localPath, {
+      label: 'manifest.source.localPath',
+      mustExist: true,
+      type: 'file',
+    }),
     manifest,
   };
 }
@@ -197,7 +211,11 @@ function assertMatchingSource(projectDir, manifest, sourcePath) {
   if (!sourcePath) return;
   const resolvedSource = path.resolve(sourcePath);
   const originalSource = path.resolve(manifest.source.originalPath);
-  const localSource = path.resolve(projectDir, manifest.source.localPath);
+  const localSource = resolveProjectPath(projectDir, manifest.source.localPath, {
+    label: 'manifest.source.localPath',
+    mustExist: true,
+    type: 'file',
+  });
   if (resolvedSource !== originalSource && resolvedSource !== localSource) {
     throw new Error('проект уже использует другой исходник');
   }
@@ -226,9 +244,6 @@ function createOrOpenProject({
     }
     assertMatchingSource(resolvedProjectDir, manifest, sourcePath);
     ensureProjectDirectories(resolvedProjectDir);
-    if (!fs.existsSync(path.join(resolvedProjectDir, manifest.source.localPath))) {
-      throw new Error('локальная копия исходника проекта не найдена');
-    }
     return asWorkspace(resolvedProjectDir, manifest);
   }
 
@@ -267,7 +282,11 @@ function createOrOpenProject({
   };
 
   ensureProjectDirectories(resolvedProjectDir);
-  fs.copyFileSync(originalPath, path.join(resolvedProjectDir, localPath), fs.constants.COPYFILE_EXCL);
+  const localSourcePath = resolveProjectPath(resolvedProjectDir, localPath, {
+    label: 'manifest.source.localPath',
+    mustExist: false,
+  });
+  fs.copyFileSync(originalPath, localSourcePath, fs.constants.COPYFILE_EXCL);
   writeProjectManifest(resolvedProjectDir, manifest);
   return asWorkspace(resolvedProjectDir, manifest);
 }
@@ -322,12 +341,16 @@ function recordBrief(workspace, {
 }
 
 function approveBrief(workspace, draftJsonPath) {
-  const draftPath = path.resolve(draftJsonPath);
-  const draftRelativePath = relativeProjectPath(workspace, draftPath);
+  const draftRelativePath = relativeProjectPath(workspace, path.resolve(draftJsonPath));
   const draftEntry = workspace.manifest.briefs.find(
     (brief) => brief.jsonPath === draftRelativePath,
   );
   if (!draftEntry) throw new Error('черновик не зарегистрирован в project.json');
+  const draftPath = resolveProjectPath(workspace.dir, draftEntry.jsonPath, {
+    label: 'manifest.briefs[].jsonPath',
+    mustExist: true,
+    type: 'file',
+  });
   if (!/-draft\.[^.]+\.json$/i.test(draftPath)) {
     throw new Error('имя черновика должно содержать -draft');
   }
@@ -335,16 +358,31 @@ function approveBrief(workspace, draftJsonPath) {
   if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
 
   const approvedJsonPath = draftPath.replace(/-draft(\.[^.]+\.json)$/i, '-approved$1');
-  const approvedMarkdownPath = draftEntry.markdownPath
-    ? path.join(workspace.dir, draftEntry.markdownPath).replace(
-      /-draft(\.[^.]+\.md)$/i,
-      '-approved$1',
-    )
+  const approvedJsonRelativePath = relativeProjectPath(workspace, approvedJsonPath);
+  resolveProjectPath(workspace.dir, approvedJsonRelativePath, {
+    label: 'approved brief JSON path',
+    mustExist: false,
+  });
+  const draftMarkdownPath = draftEntry.markdownPath
+    ? resolveProjectPath(workspace.dir, draftEntry.markdownPath, {
+      label: 'manifest.briefs[].markdownPath',
+      mustExist: true,
+      type: 'file',
+    })
     : null;
+  const approvedMarkdownPath = draftMarkdownPath
+    ? draftMarkdownPath.replace(/-draft(\.[^.]+\.md)$/i, '-approved$1')
+    : null;
+  if (approvedMarkdownPath) {
+    resolveProjectPath(workspace.dir, relativeProjectPath(workspace, approvedMarkdownPath), {
+      label: 'approved brief Markdown path',
+      mustExist: false,
+    });
+  }
   fs.writeFileSync(approvedJsonPath, `${JSON.stringify({ ...draft, status: 'approved' }, null, 2)}\n`);
 
   if (approvedMarkdownPath) {
-    const markdown = fs.readFileSync(path.join(workspace.dir, draftEntry.markdownPath), 'utf8');
+    const markdown = fs.readFileSync(draftMarkdownPath, 'utf8');
     fs.writeFileSync(approvedMarkdownPath, markdown.replace(/Статус:\s*draft/i, 'Статус: approved'));
   }
 
@@ -421,12 +459,18 @@ function publishFinal(workspace, renderFinalPath, {
   fileSystem = fs,
   temporaryId = randomUUID,
 } = {}) {
-  const sourcePath = path.resolve(renderFinalPath);
-  if (!fileSystem.existsSync(sourcePath) || !fileSystem.statSync(sourcePath).isFile()) {
-    throw new Error(`финальный рендер не найден: ${sourcePath}`);
-  }
-  relativeProjectPath(workspace, sourcePath);
-  const destination = path.join(workspace.dir, workspace.manifest.final);
+  const sourceRelativePath = relativeProjectPath(workspace, path.resolve(renderFinalPath));
+  const sourcePath = resolveProjectPath(workspace.dir, sourceRelativePath, {
+    label: 'render final path',
+    fileSystem,
+    mustExist: true,
+    type: 'file',
+  });
+  const destination = resolveProjectPath(workspace.dir, workspace.manifest.final, {
+    label: 'manifest.final',
+    fileSystem,
+    mustExist: false,
+  });
   const temporaryPath = `${destination}.tmp-${temporaryId()}`;
   let temporaryHandle = null;
   fileSystem.mkdirSync(path.dirname(destination), { recursive: true });

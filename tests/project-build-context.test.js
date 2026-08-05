@@ -135,3 +135,37 @@ test('dynamic project keeps its scenario and render in the same workspace', (t) 
   );
   assert.equal(path.basename(context.paths.render.dir), 'v01-auto-edit');
 });
+
+test('project context exposes only contained source and transcript paths from the manifest', (t) => {
+  const fixture = makeFixture(t);
+  const planned = createBuildContext({
+    root: fixture.dir,
+    cwd: fixture.dir,
+    video: fixture.source,
+    projectName: 'Manifest consumers',
+    action: 'plan',
+    kind: 'lesson',
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const manifestPath = path.join(planned.project.dir, 'project.json');
+  const originalManifest = fs.readFileSync(manifestPath, 'utf8');
+  const cases = [
+    ['source.localPath', (manifest) => { manifest.source.localPath = '../../outside-source.mp4'; }],
+    ['transcript.words', (manifest) => { manifest.transcript.words = '../../outside-words.json'; }],
+    ['transcript.captions', (manifest) => { manifest.transcript.captions = '../../outside-captions.js'; }],
+  ];
+
+  for (const [field, mutate] of cases) {
+    const manifest = JSON.parse(originalManifest);
+    mutate(manifest);
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    assert.throws(() => createBuildContext({
+      root: fixture.dir,
+      cwd: fixture.dir,
+      video: fixture.source,
+      projectDir: planned.project.dir,
+      action: 'plan',
+      kind: 'lesson',
+    }), new RegExp(field.replace('.', '\\.')));
+  }
+});
