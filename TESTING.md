@@ -172,8 +172,9 @@ Git-объект и игнорирует незакоммиченные поль
 `## [X.Y.Z] - YYYY-MM-DD` с реальной UTC-календарной датой; `[Unreleased]` в этот момент полностью пуст.
 В version section нужны хотя бы один `###` подраздел и bullet, а для patch-версии — `### Исправлено`.
 Каждый tracked public binary (изображение, видео, аудио или шрифт) требует полную строку с repo-relative
-путём в `ASSETS.md`. Исключение `node-vibrant` должно содержать проверяемые `reviewedAt` (реальная календарная
-дата) и `reviewedFor`, в точности равный текущей версии `package.json`.
+путём в `ASSETS.md`. Исключение `node-vibrant` должно содержать ровно один machine-readable
+`json security-exception` fence с проверяемыми `reviewedAt` (реальная календарная дата) и `reviewedFor`,
+в точности равным текущей версии `package.json`.
 При наличии `--base` добавляется diff-проверка
 публичной пунктуации; если history/ref недоступен, ошибка содержит команду fetch.
 

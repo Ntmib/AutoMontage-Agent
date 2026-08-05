@@ -252,6 +252,22 @@ test('release notes require a subsection with at least one bullet', () => {
   assert.match(result.issues.find((entry) => entry.rule === 'release-notes').message, /bullet/i);
 });
 
+test('patch release notes require the exact Исправлено subsection', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Добавлено\n\n- Validate release metadata before publication.',
+  });
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'patch release without fixed subsection']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'release-notes' && /Исправлено/.test(entry.message)
+  )));
+});
+
 test('release notes reject impossible UTC calendar dates', () => {
   const root = makeRepository();
   updateReleaseVersion(root, {
@@ -302,6 +318,27 @@ test('release checker accepts provenance rows using repo-relative binary paths',
   const result = checkRelease({ cwd: root, tree: 'HEAD' });
 
   assert.equal(result.issues.some((entry) => entry.rule === 'asset-provenance'), false);
+});
+
+test('release checker normalizes provenance paths before stale-row comparison', () => {
+  for (const documentedPath of ['./public/card.webp', 'public\\card.webp']) {
+    const root = makeRepository();
+    write(root, 'public/card.webp', 'fixture binary');
+    write(root, 'ASSETS.md', [
+      '# Public asset provenance',
+      '',
+      '| Path | Kind | Origin | Author / license | Source or generator | Redistribution basis |',
+      '|---|---|---|---|---|---|',
+      assetRow(documentedPath),
+      '',
+    ].join('\n'));
+    git(root, ['add', '.']);
+    git(root, ['commit', '-qm', 'normalized provenance path']);
+
+    const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+    assert.equal(result.issues.some((entry) => entry.rule === 'asset-provenance'), false, documentedPath);
+  }
 });
 
 test('node-vibrant audit exception requires complete and time-bounded evidence', () => {
@@ -427,6 +464,37 @@ test('node-vibrant exception rejects an advisory changed without review evidence
 
   assert.ok(result.issues.some((entry) => (
     entry.rule === 'security-exception' && /ghsa/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception requires exactly one parseable security-exception fence', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  pkg.dependencies = { 'node-vibrant': '4.0.4' };
+  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  write(root, 'SECURITY.md', [
+    '# Security',
+    '',
+    '```json security-exception',
+    JSON.stringify(securityException()),
+    '```',
+    '',
+    '```json security-exception',
+    '{"ghsa":',
+    '```',
+    '',
+  ].join('\n'));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'duplicate security exception fences']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T00:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /exactly one/.test(entry.message)
   )));
 });
 

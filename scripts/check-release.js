@@ -187,15 +187,16 @@ function checkSecurityException(files, read, issues, now) {
     return;
   }
   const source = read('SECURITY.md');
-  const marker = /```json security-exception\s*\n([\s\S]*?)\n```/.exec(source);
-  if (!marker) {
+  const markers = [...source.matchAll(/```json security-exception\s*\n([\s\S]*?)\n```/g)];
+  if (markers.length !== 1) {
     issues.push(issue(
       'security-exception', 'SECURITY.md', 1,
-      'machine-readable security-exception JSON block is missing',
-      'add one fenced `json security-exception` block with the required evidence.',
+      `exactly one machine-readable security-exception JSON block is required (found ${markers.length})`,
+      'keep one fenced `json security-exception` block with the required evidence.',
     ));
     return;
   }
+  const [marker] = markers;
   const line = lineNumber(source, marker.index);
   let exception;
   try {
@@ -428,7 +429,8 @@ function checkAssets(files, read, issues) {
     }
   }
   for (const row of rows) {
-    if (row.path && !inventory.includes(row.path)) {
+    const assetPath = normalizeRepoPath(row.path);
+    if (row.path && !inventory.includes(assetPath)) {
       issues.push(issue(
         'asset-provenance', 'ASSETS.md', row.line,
         `${row.path} is documented but is not a tracked binary`,
