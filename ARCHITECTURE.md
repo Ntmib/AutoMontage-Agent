@@ -68,9 +68,16 @@ FPS, включая NTSC `30000/1001` и `24000/1001`, вычисляет `durat
 затем AJV-схема запрещает неизвестные поля, а resolver проверяет каждый project-путь.
 Даже schema-valid manifest не получает доверия к путям: resolver принимает только канонический
 относительный путь внутри workspace, отвергает
-absolute/Windows/traversal-варианты и проверяет `realpath` существующего предка, чтобы
-symlink не вывел операцию за пределы проекта. Единственное исключение –
+absolute/Windows/traversal-варианты, проверяет `lstat` каждого уже существующего компонента,
+включая dangling symlink, и затем подтверждает containment через `realpath`. Slug ограничен
+каноническим lowercase token. Legacy `--id` отдельно ограничен безопасным filename token,
+а экспорт через `--outdir` повторно проверяет итоговый destination. Единственное исключение –
 `source.originalPath`: это provenance исходника, а не workspace-путь.
+
+`project.json` записывается через непредсказуемый соседний temp, открытый с exclusive и
+no-follow flags там, где платформа их поддерживает. Temp-файл проверяется как regular file,
+синхронизируется и атомарно переименовывается; cleanup удаляет его только при совпадении
+file identity с созданным процессом.
 
 Containment защищает от вредоносного manifest и symlink, существующих на момент проверки.
 Соперничающий локальный процесс с правом записи в workspace может заменить предка между
@@ -99,6 +106,12 @@ flowchart LR
 `scripts/gen-brief.js` выбирает только официальные сцены и создаёт draft.
 `scripts/lesson/brief.js` валидирует данные и превращает approved brief в props.
 `schema/lesson-brief.schema.json` фиксирует контракт.
+
+Approval сначала готовит owned sibling temp для JSON, Markdown, нового manifest и rollback-копии.
+Commit идёт в порядке manifest, Markdown, JSON: renderable approved JSON появляется последним.
+Сбой до этого шага удаляет опубликованный Markdown, возвращает прежний manifest и очищает только
+owned temps. При рендере точный legacy `faceSrc: "source.mp4"` внутри сцены переводится на
+текущий source lease вместе с top-level `faceSrc` и `audioSrc`.
 
 Brief замораживает исходник, тему, аспект, размеры, FPS, длительность, сцены и проверенное
 кадрирование лица. Это защищает от ситуации, когда утверждали один монтаж, а рендерится другой.
@@ -149,9 +162,11 @@ Brief замораживает исходник, тему, аспект, раз�
 composition, канонизированные props, identities source/audio, диапазоны и Remotion options,
 а также identity реализации рендера: всего `src/`, `package.json` и `package-lock.json`. Для каждого реально
 упомянутого в props файла из `public/` сохраняются JSON pointer, размер и SHA-256; остальные
-ресурсы `public/` на key не влияют. Канонические props заменяют media path его content identity,
-поэтому новый временный lease с теми же байтами продолжает resume, но сохраняют исходный порядок
-ключей props, наблюдаемый Remotion. Общий resolver public media отклоняет symlink на любом
+ресурсы `public/` на key не влияют. Канонические props убирают volatile path только у generated
+`.automontage/<lease>/source.<ext>`, поэтому новый lease с теми же байтами продолжает resume.
+Обычные asset paths и произвольные видимые строки сохраняются: два разных b-roll path с
+одинаковыми байтами дают разные keys. Также сохраняется исходный порядок ключей props, наблюдаемый
+Remotion. Общий resolver public media отклоняет symlink на любом
 сегменте и любой realpath escape. Обход `src/` сортирует POSIX-relative paths и не следует
 symlink; symlink прерывает построение cache key.
 
@@ -215,7 +230,8 @@ Node не предоставляет portable descriptor-relative `unlinkat`/`op
 - Release checker читает committed Git-объект, а не рабочую папку; smoke подтверждает оба
   публичных render path и после них сверяет hashes защищённых transcript/captions fixtures.
 - Временное принятие dependency advisory допустимо только через неистёкшую машинно
-  проверяемую запись в `SECURITY.md`.
+  проверяемую запись в `SECURITY.md`: review date совпадает с датой текущего release, не лежит
+  в будущем, а документированная цепочка точно совпадает с candidate `package-lock.json`.
 
 ## 10. Как расширять
 

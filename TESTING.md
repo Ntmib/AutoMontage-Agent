@@ -20,8 +20,10 @@ npm test
 - музыкальный gain, fade, стартовый фрагмент и скорость;
 - создание project-папки, транслитерация, локальный транскрипт и повторное открытие;
 - schema-контракт project manifest, миграция legacy `transcript`, traversal/Windows-path
-  payload и symlink-escape: каждый сохранённый project-путь обязан остаться внутри workspace;
-- версии draft/approved brief, render history и канонический final;
+  payload, dangling symlink на final/intermediate component и safe slug/id: каждый сохранённый
+  или generated путь обязан остаться внутри своего workspace/outdir;
+- exclusive unpredictable temp для manifest; версии draft/approved brief, rollback JSON/Markdown/
+  manifest при I/O failure, render history и канонический final;
 - lifecycle `started → failed/complete`, сохранность прежнего final и атомарную публикацию;
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
 - process regression matrix: leading `-`, пробелы, кавычки, `$()`, `;`, newline и Unicode;
@@ -30,7 +32,8 @@ npm test
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;
 - повторный ffprobe после reframe и tighten обновляет FPS, по которому строятся props;
 - уникальный public media lease каждого render, его cleanup и запрет symlink-escape;
-- cache identity: изменение Remotion-кода, lockfile или используемого public resource отменяет reuse;
+- cache identity: изменение Remotion-кода, lockfile, обычного public resource path или его bytes
+  отменяет reuse; меняющийся generated source lease с теми же bytes сохраняет key;
 - safe-zone длинных денежных подписей;
 - анимации CTA, воронки, градиента и маркеров соцсетей.
 
@@ -71,7 +74,8 @@ identities, диапазонов, Remotion options, всего `src/`, `package.
 contained regular files, отсортированные по JSON pointer; traversal не читается, symlink в
 `src/` или на любом сегменте public media отклоняется. Descriptor сохраняет порядок ключей,
 который получает Remotion, поэтому перестановка props тоже меняет key. Одинаковые bytes в разных
-временных lease-path дают одинаковый resume key.
+generated `.automontage/<lease>/source.<ext>` дают одинаковый resume key, но byte-identical
+обычные b-roll A и B сохраняют разную наблюдаемую path identity.
 Manifest разрешает reuse только при совпадении range/hash/size/frames.
 
 ## 2. Проверка окружения
@@ -183,7 +187,9 @@ Git-объект и игнорирует незакоммиченные поль
 Каждый tracked public binary (изображение, видео, аудио или шрифт) требует полную строку с repo-relative
 путём в `ASSETS.md`. Исключение `node-vibrant` должно содержать ровно один machine-readable
 `json security-exception` fence с проверяемыми `reviewedAt` (реальная календарная дата) и `reviewedFor`,
-в точности равным текущей версии `package.json`.
+в точности равным текущей версии `package.json`. `reviewedAt` не может быть будущей или перенесённой
+со старой даты релиза; chain содержит ровно пять записей и выводится повторно из candidate
+`package-lock.json`, а не принимается только со слов `SECURITY.md`.
 При наличии `--base` добавляется diff-проверка
 публичной пунктуации; если history/ref недоступен, ошибка содержит команду fetch.
 

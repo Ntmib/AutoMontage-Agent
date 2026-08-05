@@ -9,12 +9,18 @@
 
 ### Исправлено
 
-- Закрыт выход manifest-controlled путей за пределы project workspace, включая symlink escape.
-- Исходник каждого render получает отдельную public media lease вместо общего `public/source.mp4`.
-- Chunk cache инвалидируется при изменении Remotion-кода, lockfile и используемых публичных ресурсов.
+- Закрыт выход manifest-controlled путей, небезопасных slug/legacy id и `--outdir`-финала
+  за разрешённые каталоги; path resolver отклоняет также dangling symlink на любом компоненте.
+- `project.json` публикуется через непредсказуемый exclusive temp, а утверждение brief атомарно
+  согласует JSON, Markdown и manifest с cleanup/rollback при ошибке записи.
+- Исходник каждого render получает отдельную public media lease вместо общего `public/source.mp4`;
+  legacy scene-level `faceSrc` переводится на тот же lease, что top-level video/audio.
+- Chunk cache инвалидируется при изменении Remotion-кода, lockfile, обычного public asset path
+  или его байтов; случайный путь нормализуется только для generated source lease.
 - Дробные FPS исходника, включая 30000/1001 и 24000/1001, передаются в Remotion без округления.
 - Утверждённый Markdown brief регенерируется из approved JSON и больше не сохраняет статус draft.
-- Release checker проверяет актуальную секцию версии, расширенный provenance бинарных файлов и повторную оценку security exception.
+- Release checker проверяет актуальную секцию версии, расширенный provenance бинарных файлов,
+  свежую не будущую дату security review и точную dependency chain из candidate `package-lock.json`.
 
 ## [1.2.0] - 2026-08-05
 

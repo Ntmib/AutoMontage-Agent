@@ -115,8 +115,9 @@ Lesson-процесс разделён на `draft` и `approved`. До явно
 
 `project.json` – сохранённые данные, а не полномочие на доступ к файловой системе. Каждый
 manifest-controlled путь проходит schema validation, канонизацию и containment в project
-workspace; существующие родители проверяются через `realpath`, чтобы symlink не вывел операцию
-наружу.
+workspace; каждый существующий компонент проверяется через `lstat`, включая dangling symlink,
+после чего `realpath` подтверждает containment. Slug, legacy id и внешний final имеют отдельные
+token/containment-проверки.
 
 Отклонены варианты «доверять schema-valid относительному пути» и «проверять только строковый
 prefix»: оба пропускают symlink escape. Descriptor-relative `openat` мог бы сузить локальное
@@ -132,6 +133,24 @@ Resume cache учитывает не только props и media, но и вес
 `package-lock.json` и реально используемые public resources. Поэтому chunk, собранный другой
 версией Remotion-кода или lockfile, не выдаётся за совместимый.
 
+Content-only нормализация path разрешена только для generated
+`.automontage/<lease>/source.<ext>`. Обычные public paths и видимые строки остаются частью props
+identity, поэтому два разных b-roll с одинаковыми байтами не считаются одним наблюдаемым входом.
+
 Отклонены cache key только от props/source и полный hash всей `public/` папки: первый даёт
 устаревший результат после изменения реализации, второй инвалидирует cache от неиспользуемого
 ресурса и делает resume непредсказуемо дорогим.
+
+## D-012 – Approved brief публикуется как rollback-транзакция
+
+**Дата:** 2026-08-06
+**Статус:** принято
+
+JSON, Markdown и `project.json` нельзя атомарно заменить одной portable filesystem-операцией.
+Поэтому approval сначала полностью записывает и синхронизирует непредсказуемые owned sibling
+temps, сохраняет rollback-копию manifest, затем публикует manifest, Markdown и только последним
+renderable approved JSON. Сбой до последнего шага удаляет свой Markdown, возвращает прежний
+manifest и очищает temps по file identity.
+
+Отклонены прямые последовательные `writeFile` и порядок JSON до manifest: при ошибке они
+оставляют approved JSON, который можно передать рендеру без зарегистрированного approval.
