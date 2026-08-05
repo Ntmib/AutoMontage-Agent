@@ -58,6 +58,15 @@ flowchart LR
 не меняя `latestRender`; новый canonical final сначала копируется во временный соседний
 файл, синхронизируется и только затем атомарно заменяет предыдущий.
 
+`project.json` — недоверенная граница между сохранёнными метаданными и файловой системой:
+`project.json → schema/project.schema.json → resolveProjectPath() → filesystem`.
+Перед чтением и записью старый manifest без `transcript` мигрируется к каноническим путям,
+затем AJV-схема запрещает неизвестные поля, а resolver проверяет каждый project-путь.
+Resolver принимает только канонический относительный путь внутри workspace, отвергает
+absolute/Windows/traversal-варианты и проверяет `realpath` существующего предка, чтобы
+symlink не вывел операцию за пределы проекта. Единственное исключение —
+`source.originalPath`: это provenance исходника, а не workspace-путь.
+
 ### 3.2 Lesson – ТЗ до рендера
 
 ```mermaid

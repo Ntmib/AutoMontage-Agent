@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://automontage.local/schema/project.schema.json",
+  "title": "AutoMontage Project Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "id", "name", "slug", "createdAt", "updatedAt", "source", "transcript", "briefs", "renders", "currentBrief", "latestRender", "final"],
+  "properties": {
+    "version": {"const": 1},
+    "id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "slug": {"type": "string", "minLength": 1},
+    "createdAt": {"type": "string", "minLength": 1},
+    "updatedAt": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["originalPath", "localPath"],
+      "properties": {
+        "originalPath": {"type": "string", "minLength": 1},
+        "localPath": {"$ref": "#/definitions/projectPath"}
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["words", "captions"],
+      "properties": {
+        "words": {"$ref": "#/definitions/projectPath"},
+        "captions": {"$ref": "#/definitions/projectPath"}
+      }
+    },
+    "briefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["revision", "jsonPath", "markdownPath", "status", "theme", "aspect"],
+        "properties": {
+          "revision": {"type": "integer", "minimum": 1},
+          "status": {"enum": ["draft", "approved"]},
+          "jsonPath": {"$ref": "#/definitions/projectPath"},
+          "markdownPath": {"anyOf": [{"$ref": "#/definitions/projectPath"}, {"type": "null"}]},
+          "theme": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+          "aspect": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
+        }
+      }
+    },
+    "currentBrief": {"anyOf": [{"$ref": "#/definitions/projectPath"}, {"type": "null"}]},
+    "renders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "label", "dir", "briefPath", "status"],
+        "properties": {
+          "version": {"type": "integer", "minimum": 1},
+          "label": {"type": "string", "minLength": 1},
+          "dir": {"$ref": "#/definitions/projectPath"},
+          "briefPath": {"anyOf": [{"$ref": "#/definitions/projectPath"}, {"type": "null"}]},
+          "status": {"enum": ["started", "complete", "failed"]}
+        }
+      }
+    },
+    "latestRender": {"anyOf": [{"$ref": "#/definitions/projectPath"}, {"type": "null"}]},
+    "final": {"$ref": "#/definitions/projectPath"}
+  },
+  "definitions": {
+    "projectPath": {"type": "string", "minLength": 1}
+  }
+}

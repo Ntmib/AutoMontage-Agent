@@ -16,6 +16,7 @@ const {
   recordRender,
   runRenderLifecycle,
   slugifyProjectName,
+  writeProjectManifest,
 } = require('../scripts/project/workspace');
 
 function makeFixture(t) {
@@ -35,6 +36,99 @@ test('project id uses a full dotted date and latin slug', () => {
 
 test('project slug rejects a name with no letters or digits', () => {
   assert.throws(() => slugifyProjectName('...'), /названи/);
+});
+
+test('manifest rejects traversal and non-canonical final paths without touching an outside file', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Manifest paths',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const sentinelPath = path.join(fixture.dir, 'outside.mp4');
+  fs.writeFileSync(sentinelPath, 'do-not-touch');
+  const maliciousPaths = [
+    '../../outside.mp4',
+    '../outside.mp4',
+    '/tmp/outside.mp4',
+    'C:\\temp\\outside.mp4',
+    'C:outside.mp4',
+    '..\\..\\outside.mp4',
+    'renders/../outside.mp4',
+    'renders//final.mp4',
+  ];
+
+  for (const maliciousPath of maliciousPaths) {
+    const manifest = { ...workspace.manifest, final: maliciousPath };
+    fs.writeFileSync(
+      path.join(workspace.dir, 'project.json'),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+    );
+
+    assert.throws(
+      () => readProjectManifest(workspace.dir),
+      /final/,
+      `read rejects ${JSON.stringify(maliciousPath)} with the field name`,
+    );
+    assert.throws(
+      () => writeProjectManifest(workspace.dir, manifest),
+      /final/,
+      `write rejects ${JSON.stringify(maliciousPath)} with the field name`,
+    );
+    assert.equal(fs.readFileSync(sentinelPath, 'utf8'), 'do-not-touch');
+  }
+
+  const validManifest = { ...workspace.manifest, final: 'renders/final/final.mp4' };
+  fs.writeFileSync(
+    path.join(workspace.dir, 'project.json'),
+    `${JSON.stringify(validManifest, null, 2)}\n`,
+  );
+  assert.equal(readProjectManifest(workspace.dir).final, 'renders/final/final.mp4');
+});
+
+test('manifest rejects a final path that escapes through a symbolic link', (t) => {
+  const fixture = makeFixture(t);
+  const projectDir = path.join(fixture.dir, 'project');
+  const workspace = createOrOpenProject({
+    projectDir,
+    name: 'Symbolic link',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const outsideDir = path.join(fixture.dir, 'outside');
+  fs.mkdirSync(outsideDir);
+  fs.writeFileSync(path.join(outsideDir, 'final.mp4'), 'outside-render');
+  fs.symlinkSync('../../outside', path.join(workspace.dir, 'renders', 'link'), 'dir');
+  const manifest = { ...workspace.manifest, final: 'renders/link/final.mp4' };
+  fs.writeFileSync(
+    path.join(workspace.dir, 'project.json'),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+
+  assert.throws(() => readProjectManifest(workspace.dir), /final.*symbolic link/i);
+  assert.equal(fs.readFileSync(path.join(outsideDir, 'final.mp4'), 'utf8'), 'outside-render');
+});
+
+test('manifest migration adds the canonical transcript paths before validation', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Legacy manifest',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const legacyManifest = { ...workspace.manifest };
+  delete legacyManifest.transcript;
+  fs.writeFileSync(
+    path.join(workspace.dir, 'project.json'),
+    `${JSON.stringify(legacyManifest, null, 2)}\n`,
+  );
+
+  assert.deepEqual(readProjectManifest(workspace.dir).transcript, {
+    words: 'transcript/words.json',
+    captions: 'transcript/captions.js',
+  });
 });
 
 test('project creation copies one source and creates the full workspace', (t) => {

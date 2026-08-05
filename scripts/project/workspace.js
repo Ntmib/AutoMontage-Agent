@@ -1,6 +1,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const Ajv = require('ajv');
+
+const projectSchema = require('../../schema/project.schema.json');
+const projectManifestValidator = new Ajv({ allErrors: true }).compile(projectSchema);
 
 const CYRILLIC_TO_LATIN = {
   а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh',
@@ -31,18 +35,136 @@ function formatProjectId({ date, name }) {
   return `${year}.${month}.${day}_${slugifyProjectName(name)}`;
 }
 
+function migrateProjectManifest(manifest) {
+  if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)
+    && !Object.hasOwn(manifest, 'transcript')) {
+    manifest.transcript = {
+      words: 'transcript/words.json',
+      captions: 'transcript/captions.js',
+    };
+  }
+  return manifest;
+}
+
+function formatProjectManifestSchemaError(error) {
+  const location = error.instancePath || '';
+  const missingProperty = error.keyword === 'required'
+    ? `.${error.params.missingProperty}`
+    : '';
+  const extraProperty = error.keyword === 'additionalProperties'
+    ? `.${error.params.additionalProperty}`
+    : '';
+  return `manifest${location}${missingProperty}${extraProperty}: ${error.message}`;
+}
+
+function isInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`)
+    && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function resolveProjectPath(projectDir, storedPath, options = {}) {
+  const label = options.label || 'project path';
+  const fileSystem = options.fileSystem || fs;
+  if (typeof storedPath !== 'string' || storedPath.length === 0 || storedPath.includes('\0')) {
+    throw new Error(`${label} must be a non-empty relative path`);
+  }
+  if (path.isAbsolute(storedPath)
+    || path.win32.isAbsolute(storedPath)
+    || path.win32.parse(storedPath).root !== '') {
+    throw new Error(`${label} must stay inside the project workspace`);
+  }
+  const segments = storedPath.split(/[\\/]/);
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    throw new Error(`${label} must be a canonical relative path`);
+  }
+
+  const root = path.resolve(projectDir);
+  const candidate = path.resolve(root, ...segments);
+  if (!isInside(root, candidate)) {
+    throw new Error(`${label} escapes the project workspace`);
+  }
+
+  const rootReal = fileSystem.realpathSync(root);
+  let ancestor = candidate;
+  while (!fileSystem.existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  const ancestorReal = fileSystem.realpathSync(ancestor);
+  if (!isInside(rootReal, ancestorReal)) {
+    throw new Error(`${label} escapes through a symbolic link`);
+  }
+
+  if (options.mustExist && !fileSystem.existsSync(candidate)) {
+    throw new Error(`${label} does not exist`);
+  }
+  if (fileSystem.existsSync(candidate)) {
+    const candidateReal = fileSystem.realpathSync(candidate);
+    if (!isInside(rootReal, candidateReal)) {
+      throw new Error(`${label} escapes through a symbolic link`);
+    }
+    const stat = fileSystem.statSync(candidateReal);
+    if (options.type === 'file' && !stat.isFile()) throw new Error(`${label} must be a file`);
+    if (options.type === 'directory' && !stat.isDirectory()) {
+      throw new Error(`${label} must be a directory`);
+    }
+  }
+  return candidate;
+}
+
+function validateProjectManifest(manifest, { projectDir, fileSystem = fs } = {}) {
+  const migratedManifest = migrateProjectManifest(manifest);
+  if (!projectManifestValidator(migratedManifest)) {
+    throw new Error((projectManifestValidator.errors || [])
+      .map(formatProjectManifestSchemaError)
+      .join('\n'));
+  }
+  if (!projectDir) return migratedManifest;
+
+  const paths = [
+    ['manifest.source.localPath', migratedManifest.source.localPath],
+    ['manifest.transcript.words', migratedManifest.transcript.words],
+    ['manifest.transcript.captions', migratedManifest.transcript.captions],
+    ['manifest.currentBrief', migratedManifest.currentBrief],
+    ['manifest.latestRender', migratedManifest.latestRender],
+    ['manifest.final', migratedManifest.final],
+  ];
+  migratedManifest.briefs.forEach((brief, index) => {
+    paths.push([`manifest.briefs[${index}].jsonPath`, brief.jsonPath]);
+    if (brief.markdownPath !== null) {
+      paths.push([`manifest.briefs[${index}].markdownPath`, brief.markdownPath]);
+    }
+  });
+  migratedManifest.renders.forEach((render, index) => {
+    paths.push([`manifest.renders[${index}].dir`, render.dir]);
+    if (render.briefPath !== null) {
+      paths.push([`manifest.renders[${index}].briefPath`, render.briefPath]);
+    }
+  });
+  for (const [label, storedPath] of paths) {
+    if (storedPath !== null) {
+      resolveProjectPath(projectDir, storedPath, { label, fileSystem });
+    }
+  }
+  return migratedManifest;
+}
+
 function readProjectManifest(projectDir) {
   const manifestPath = path.join(path.resolve(projectDir), 'project.json');
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`project.json не найден: ${manifestPath}`);
   }
-  return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  return validateProjectManifest(manifest, { projectDir });
 }
 
 function writeProjectManifest(projectDir, manifest) {
   const manifestPath = path.join(path.resolve(projectDir), 'project.json');
   const temporaryPath = `${manifestPath}.tmp`;
-  fs.writeFileSync(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const validatedManifest = validateProjectManifest(manifest, { projectDir });
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(validatedManifest, null, 2)}\n`);
   fs.renameSync(temporaryPath, manifestPath);
 }
 
@@ -358,7 +480,9 @@ module.exports = {
   readProjectManifest,
   recordBrief,
   recordRender,
+  resolveProjectPath,
   runRenderLifecycle,
   slugifyProjectName,
+  validateProjectManifest,
   writeProjectManifest,
 };

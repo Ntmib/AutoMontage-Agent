@@ -19,6 +19,8 @@ npm test
 - глобальный таймкод видео между сценами;
 - музыкальный gain, fade, стартовый фрагмент и скорость;
 - создание project-папки, транслитерация, локальный транскрипт и повторное открытие;
+- schema-контракт project manifest, миграция legacy `transcript`, traversal/Windows-path
+  payload и symlink-escape: каждый сохранённый project-путь обязан остаться внутри workspace;
 - версии draft/approved brief, render history и канонический final;
 - lifecycle `started → failed/complete`, сохранность прежнего final и атомарную публикацию;
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
