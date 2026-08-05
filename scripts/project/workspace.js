@@ -405,10 +405,11 @@ function approveBrief(workspace, draftJsonPath) {
     });
   }
   const approvedBrief = { ...draft, status: 'approved' };
+  const approvedMarkdown = approvedMarkdownPath ? formatBriefMarkdown(approvedBrief) : null;
   fs.writeFileSync(approvedJsonPath, `${JSON.stringify(approvedBrief, null, 2)}\n`);
 
   if (approvedMarkdownPath) {
-    fs.writeFileSync(approvedMarkdownPath, formatBriefMarkdown(approvedBrief));
+    fs.writeFileSync(approvedMarkdownPath, approvedMarkdown);
   }
 
   recordBrief(workspace, {

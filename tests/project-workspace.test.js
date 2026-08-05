@@ -350,6 +350,36 @@ test('approval freezes a reviewed draft under an approved filename', (t) => {
   );
 });
 
+test('approval leaves no outputs when approved Markdown generation fails', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Malformed approved brief',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const draft = nextBriefPaths(workspace);
+  fs.writeFileSync(draft.jsonPath, JSON.stringify({ status: 'draft', scenes: [] }));
+  fs.writeFileSync(draft.markdownPath, 'Статус: `draft`\n');
+  recordBrief(workspace, {
+    revision: draft.revision,
+    jsonPath: draft.jsonPath,
+    markdownPath: draft.markdownPath,
+    status: 'draft',
+  });
+
+  assert.throws(() => approveBrief(workspace, draft.jsonPath), /aspect/);
+
+  const approvedJsonPath = draft.jsonPath.replace('-draft.lesson.json', '-approved.lesson.json');
+  const approvedMarkdownPath = draft.markdownPath.replace('-draft.lesson.md', '-approved.lesson.md');
+  assert.equal(fs.existsSync(approvedJsonPath), false);
+  assert.equal(fs.existsSync(approvedMarkdownPath), false);
+  const manifest = readProjectManifest(workspace.dir);
+  assert.equal(manifest.briefs.length, 1);
+  assert.equal(manifest.briefs[0].status, 'draft');
+  assert.equal(manifest.currentBrief, 'brief/v01-draft.lesson.json');
+});
+
 test('render versions keep history and publish one canonical final', (t) => {
   const fixture = makeFixture(t);
   const workspace = createOrOpenProject({
