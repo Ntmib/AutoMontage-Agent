@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const { formatBriefMarkdown } = require('../scripts/lesson/brief');
+
 const {
   approveBrief,
   createOrOpenProject,
@@ -309,8 +311,23 @@ test('approval freezes a reviewed draft under an approved filename', (t) => {
     now: new Date('2026-08-05T12:00:00Z'),
   });
   const draft = nextBriefPaths(workspace);
-  fs.writeFileSync(draft.jsonPath, JSON.stringify({ status: 'draft', scenes: [] }));
-  fs.writeFileSync(draft.markdownPath, 'Статус: draft\n');
+  const draftBrief = {
+    version: 1,
+    status: 'draft',
+    source: fixture.sourcePath,
+    title: 'Утверждённый brief',
+    output: {
+      aspect: 'horizontal',
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      durationInFrames: 240,
+    },
+    corrections: [],
+    scenes: [],
+  };
+  fs.writeFileSync(draft.jsonPath, JSON.stringify(draftBrief));
+  fs.writeFileSync(draft.markdownPath, formatBriefMarkdown(draftBrief));
   recordBrief(workspace, {
     revision: draft.revision,
     jsonPath: draft.jsonPath,
@@ -323,7 +340,10 @@ test('approval freezes a reviewed draft under an approved filename', (t) => {
   assert.equal(path.basename(approved.jsonPath), 'v01-approved.lesson.json');
   assert.equal(path.basename(approved.markdownPath), 'v01-approved.lesson.md');
   assert.equal(JSON.parse(fs.readFileSync(approved.jsonPath, 'utf8')).status, 'approved');
-  assert.match(fs.readFileSync(approved.markdownPath, 'utf8'), /Статус: approved/);
+  const markdown = fs.readFileSync(approved.markdownPath, 'utf8');
+  assert.match(markdown, /^Статус: `approved`$/m);
+  assert.equal((markdown.match(/^Статус:/gm) || []).length, 1);
+  assert.doesNotMatch(markdown, /^Статус: `draft`$/m);
   assert.equal(
     readProjectManifest(workspace.dir).currentBrief,
     'brief/v01-approved.lesson.json',

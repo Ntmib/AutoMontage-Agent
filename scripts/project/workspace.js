@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto');
 const Ajv = require('ajv');
 
 const projectSchema = require('../../schema/project.schema.json');
+const { formatBriefMarkdown } = require('../lesson/brief');
 const projectManifestValidator = new Ajv({ allErrors: true }).compile(projectSchema);
 
 const CYRILLIC_TO_LATIN = {
@@ -403,11 +404,11 @@ function approveBrief(workspace, draftJsonPath) {
       mustExist: false,
     });
   }
-  fs.writeFileSync(approvedJsonPath, `${JSON.stringify({ ...draft, status: 'approved' }, null, 2)}\n`);
+  const approvedBrief = { ...draft, status: 'approved' };
+  fs.writeFileSync(approvedJsonPath, `${JSON.stringify(approvedBrief, null, 2)}\n`);
 
   if (approvedMarkdownPath) {
-    const markdown = fs.readFileSync(draftMarkdownPath, 'utf8');
-    fs.writeFileSync(approvedMarkdownPath, markdown.replace(/Статус:\s*draft/i, 'Статус: approved'));
+    fs.writeFileSync(approvedMarkdownPath, formatBriefMarkdown(approvedBrief));
   }
 
   recordBrief(workspace, {
