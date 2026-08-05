@@ -31,6 +31,7 @@ function runBuildWithIntercept(t, args, {
     "const path = require('node:path');",
     "const calls = process.env.AUTOMONTAGE_BUILD_CAPTURE;",
     `const ffprobeRates = ${JSON.stringify(ffprobeRates)};`,
+    `const materializeFinish = ${JSON.stringify(materializeFinish)};`,
     'let ffprobeIndex = 0;',
     'childProcess.spawnSync = (command, args) => {',
     "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
@@ -47,7 +48,7 @@ function runBuildWithIntercept(t, args, {
     "    fs.writeFileSync(args[2], 'module.exports = { CAPTIONS: [] };\\n');",
     "    return { status: 0, stdout: 'captions ready' };",
     '  }',
-    "  if (process.env.AUTOMONTAGE_BUILD_FINISH_FILE && command === process.execPath && path.basename(args[0]) === 'finish.js') {",
+    "  if (materializeFinish && command === process.execPath && path.basename(args[0]) === 'finish.js') {",
     "    fs.mkdirSync(path.dirname(args[2]), { recursive: true });",
     "    fs.writeFileSync(args[2], 'finished-dynamic');",
     "    return { status: 0, stdout: '' };",
@@ -63,7 +64,6 @@ function runBuildWithIntercept(t, args, {
     env: {
       ...process.env,
       AUTOMONTAGE_BUILD_CAPTURE: calls,
-      AUTOMONTAGE_BUILD_FINISH_FILE: materializeFinish ? '1' : '',
       NODE_OPTIONS: `--require=${hook}`,
     },
   });
