@@ -38,11 +38,15 @@ const { REMOTION_AUDIO_ADVANCE_MS } = require('./finish-audio');
 const {
   LESSON_DEFAULT_THEME,
   assertLessonOptions,
+  bindLessonSourceLease,
   buildGenBriefArgs,
   getLessonAction,
   prepareLessonRender,
 } = require('./lesson/workflow');
-const { createBuildContext } = require('./project/build-context');
+const {
+  createBuildContext,
+  resolveOutputDestination,
+} = require('./project/build-context');
 const {
   recordBrief,
   runRenderLifecycle,
@@ -358,8 +362,7 @@ if (lessonAction === 'render') {
     sourcePath: srcVideo,
     namespace: buildContext.project ? buildContext.project.manifest.slug : 'dynamic',
   }, (lease) => {
-    prepared.props.faceSrc = lease.publicPath;
-    prepared.props.audioSrc = lease.publicPath;
+    bindLessonSourceLease(prepared.props, lease.publicPath);
     const lessonPropsPath = buildContext.paths.props;
     const rawMp4L = buildContext.paths.raw;
     const outMp4L = buildContext.paths.final;
@@ -409,7 +412,11 @@ if (lessonAction === 'render') {
     });
     if (outDir) {
       const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
-      const dest = path.resolve(process.cwd(), outDir, `${outputName}.mp4`);
+      const dest = resolveOutputDestination({
+        cwd: process.cwd(),
+        outdir: outDir,
+        outputName,
+      });
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.copyFileSync(final, dest);
       final = dest;
@@ -613,7 +620,11 @@ const finalPath = withPublicMediaLease({
   });
   if (outDir) {   // глобальный запуск: положить результат рядом с пользователем
     const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
-    const dest = path.resolve(process.cwd(), outDir, `${outputName}.mp4`);
+    const dest = resolveOutputDestination({
+      cwd: process.cwd(),
+      outdir: outDir,
+      outputName,
+    });
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(final, dest);
     final = dest;

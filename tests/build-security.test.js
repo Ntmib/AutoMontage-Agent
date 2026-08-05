@@ -18,7 +18,7 @@ const { parseBuildOptions } = require('../scripts/build-options');
 const ROOT = path.resolve(__dirname, '..');
 const HOSTILE = path.resolve(ROOT, `tmp/- clip ' " $() ;\nЮникод.mp4`);
 
-function runBuildWithIntercept(t, args) {
+function runBuildWithIntercept(t, args, { ffprobeRates = ['30/1'] } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-build-intercept-'));
   const hook = path.join(directory, 'hook.js');
   const calls = path.join(directory, 'calls.jsonl');
@@ -27,10 +27,18 @@ function runBuildWithIntercept(t, args) {
     "const fs = require('node:fs');",
     "const path = require('node:path');",
     "const calls = process.env.AUTOMONTAGE_BUILD_CAPTURE;",
+    "const ffprobeRates = JSON.parse(process.env.AUTOMONTAGE_BUILD_FFPROBE_RATES);",
+    'let ffprobeIndex = 0;',
     'childProcess.spawnSync = (command, args) => {',
     "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
-    "  if (command === 'ffprobe') return { status: 0, stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1080, height: 1920, r_frame_rate: '30/1' }], format: { duration: '20' } }) };",
+    "  if (command === 'ffprobe') {",
+    '    const rate = ffprobeRates[Math.min(ffprobeIndex, ffprobeRates.length - 1)];',
+    '    ffprobeIndex += 1;',
+    "    return { status: 0, stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1080, height: 1920, r_frame_rate: rate }], format: { duration: '20' } }) };",
+    '  }',
     "  if (args[0] === '--version') return { status: 0, stdout: 'Python 3.12.0' };",
+    "  if (path.basename(args[0]) === 'reframe.py') { fs.writeFileSync(args[2], 'reframed'); return { status: 0, stdout: '' }; }",
+    "  if (command === process.execPath && path.basename(args[0]) === 'tighten.js') { fs.writeFileSync(args[3], 'tightened'); return { status: 0, stdout: '' }; }",
     "  if (command === process.execPath && path.basename(args[0]) === 'build-captions.js') {",
     "    fs.mkdirSync(path.dirname(args[2]), { recursive: true });",
     "    fs.writeFileSync(args[2], 'module.exports = { CAPTIONS: [] };\\n');",
@@ -47,6 +55,7 @@ function runBuildWithIntercept(t, args) {
     env: {
       ...process.env,
       AUTOMONTAGE_BUILD_CAPTURE: calls,
+      AUTOMONTAGE_BUILD_FFPROBE_RATES: JSON.stringify(ffprobeRates),
       NODE_OPTIONS: `--require=${hook}`,
     },
   });
@@ -127,12 +136,28 @@ test('central build contains no shell execution escape hatch', () => {
   assert.doesNotMatch(source, /shell\s*:\s*true/);
 });
 
-test('build preserves probed fractional FPS through derived source videos', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'scripts/build.js'), 'utf8');
-  assert.doesNotMatch(source, /Math\.round\(sourceProbe\.fps\)/);
-  assert.match(source, /let FPS = sourceProbe\.fps;/);
-  assert.match(source, /FPS = reframed\.fps;/);
-  assert.match(source, /FPS = tightened\.fps;/);
+test('build preserves the final fractional ffprobe rate through props and render invocation', (t) => {
+  const id = `fractional-derived-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.props.json`);
+  t.after(() => fs.rmSync(propsPath, { force: true }));
+
+  const { result, invocations } = runBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--scenario', 'examples/scenario-demo.json',
+    '--reframe', 'static',
+    '--tighten',
+    '--frames', '25',
+    '--id', id,
+  ], {
+    ffprobeRates: ['25/1', '24000/1001', '30000/1001'],
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
+  assert.equal(props.fps, 30000 / 1001);
+  const render = invocations.find((entry) => entry.args.includes('Dynamic'));
+  assert.ok(render, 'Dynamic Remotion render should be invoked');
+  assert.equal(render.args[render.args.indexOf('--props') + 1], propsPath);
 });
 
 test('invalid build values fail before ffprobe or sentinel execution', () => {

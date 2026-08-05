@@ -16,10 +16,12 @@ const {
   readProjectManifest,
   recordBrief,
   recordRender,
+  resolveProjectPath,
   runRenderLifecycle,
   slugifyProjectName,
   writeProjectManifest,
 } = require('../scripts/project/workspace');
+const { prepareLessonRender } = require('../scripts/lesson/workflow');
 
 function makeFixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-project-'));
@@ -109,6 +111,74 @@ test('manifest rejects a final path that escapes through a symbolic link', (t) =
 
   assert.throws(() => readProjectManifest(workspace.dir), /final.*symbolic link/i);
   assert.equal(fs.existsSync(path.join(outsideDir, 'final.mp4')), false);
+});
+
+test('project paths reject dangling final and intermediate symlinks before creating outside data', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    projectDir: path.join(fixture.dir, 'project'),
+    name: 'Dangling links',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const outsideFinal = path.join(fixture.dir, 'outside-final.json');
+  const outsideDirectory = path.join(fixture.dir, 'outside-directory');
+  fs.symlinkSync(outsideFinal, path.join(workspace.dir, 'brief', 'dangling-final.json'));
+  fs.symlinkSync(outsideDirectory, path.join(workspace.dir, 'renders', 'dangling-dir'));
+
+  assert.throws(
+    () => resolveProjectPath(workspace.dir, 'brief/dangling-final.json', { mustExist: false }),
+    /symbolic link/i,
+  );
+  assert.throws(
+    () => resolveProjectPath(workspace.dir, 'renders/dangling-dir/owned.json', { mustExist: false }),
+    /symbolic link/i,
+  );
+  assert.equal(fs.existsSync(outsideFinal), false);
+  assert.equal(fs.existsSync(outsideDirectory), false);
+});
+
+test('manifest write ignores a predictable temp symlink and publishes a regular manifest', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    projectDir: path.join(fixture.dir, 'project'),
+    name: 'Safe manifest temp',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const sentinel = path.join(fixture.dir, 'manifest-sentinel.json');
+  fs.writeFileSync(sentinel, 'outside-must-survive');
+  fs.symlinkSync(sentinel, path.join(workspace.dir, 'project.json.tmp'));
+
+  const updated = { ...workspace.manifest, updatedAt: '2026-08-06T00:00:00.000Z' };
+  writeProjectManifest(workspace.dir, updated);
+
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'outside-must-survive');
+  assert.equal(fs.lstatSync(path.join(workspace.dir, 'project.json')).isFile(), true);
+  assert.equal(fs.lstatSync(path.join(workspace.dir, 'project.json')).isSymbolicLink(), false);
+  assert.equal(readProjectManifest(workspace.dir).updatedAt, updated.updatedAt);
+});
+
+test('manifest rejects non-canonical slugs and accepts canonical lowercase tokens', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    projectDir: path.join(fixture.dir, 'project'),
+    name: 'Canonical slug',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+
+  for (const slug of ['../outside', 'nested/slug', 'Uppercase', 'two--hyphens', '-leading']) {
+    assert.throws(
+      () => writeProjectManifest(workspace.dir, { ...workspace.manifest, slug }),
+      /manifest\/slug/,
+      slug,
+    );
+  }
+  assert.doesNotThrow(() => writeProjectManifest(workspace.dir, {
+    ...workspace.manifest,
+    slug: 'safe-project-01',
+  }));
 });
 
 test('manifest migration adds the canonical transcript paths before validation', (t) => {
@@ -378,6 +448,148 @@ test('approval leaves no outputs when approved Markdown generation fails', (t) =
   assert.equal(manifest.briefs.length, 1);
   assert.equal(manifest.briefs[0].status, 'draft');
   assert.equal(manifest.currentBrief, 'brief/v01-draft.lesson.json');
+});
+
+function makeApprovalFailureFixture(t, name) {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    projectDir: path.join(fixture.dir, `project-${name}`),
+    name,
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const draft = nextBriefPaths(workspace);
+  const brief = {
+    version: 1,
+    status: 'draft',
+    source: fixture.sourcePath,
+    theme: 'lesson-neutral',
+    title: 'Atomic approval',
+    output: {
+      aspect: 'horizontal',
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      durationInFrames: 240,
+    },
+    corrections: [],
+    scenes: [{ scene: 'fullscreen', start: 0, end: 8, caption: 'SAFE' }],
+  };
+  fs.writeFileSync(draft.jsonPath, `${JSON.stringify(brief, null, 2)}\n`);
+  fs.writeFileSync(draft.markdownPath, formatBriefMarkdown(brief));
+  recordBrief(workspace, {
+    revision: draft.revision,
+    jsonPath: draft.jsonPath,
+    markdownPath: draft.markdownPath,
+    status: 'draft',
+    theme: 'lesson-neutral',
+    aspect: 'horizontal',
+  });
+  return {
+    fixture,
+    workspace,
+    draft,
+    approvedJson: draft.jsonPath.replace('-draft.lesson.json', '-approved.lesson.json'),
+    approvedMarkdown: draft.markdownPath.replace('-draft.lesson.md', '-approved.lesson.md'),
+  };
+}
+
+test('approval rolls back manifest and outputs when a destination commit fails', async (t) => {
+  for (const destination of ['project.json', 'approved Markdown', 'approved JSON']) {
+    await t.test(destination, () => {
+      const state = makeApprovalFailureFixture(t, destination.replace(' ', '-'));
+      const failedPath = destination === 'project.json'
+        ? path.join(state.workspace.dir, 'project.json')
+        : destination === 'approved Markdown'
+          ? state.approvedMarkdown
+          : state.approvedJson;
+      const failingFs = {
+        ...fs,
+        renameSync(source, target) {
+          if (path.resolve(target) === path.resolve(failedPath)) {
+            throw new Error(`simulated ${destination} failure`);
+          }
+          return fs.renameSync(source, target);
+        },
+      };
+
+      assert.throws(
+        () => approveBrief(state.workspace, state.draft.jsonPath, {
+          fileSystem: failingFs,
+          temporaryId: () => '12345678-1234-4123-8123-123456789abc',
+        }),
+        new RegExp(`simulated ${destination}`),
+      );
+
+      assert.equal(fs.existsSync(state.approvedJson), false);
+      assert.equal(fs.existsSync(state.approvedMarkdown), false);
+      const manifest = readProjectManifest(state.workspace.dir);
+      assert.equal(manifest.currentBrief, 'brief/v01-draft.lesson.json');
+      assert.deepEqual(manifest.briefs.map((entry) => entry.status), ['draft']);
+      assert.deepEqual(
+        fs.readdirSync(path.join(state.workspace.dir, 'brief')).filter((entry) => entry.includes('.tmp-')),
+        [],
+      );
+      assert.deepEqual(
+        fs.readdirSync(state.workspace.dir).filter((entry) => entry.includes('.tmp-')),
+        [],
+      );
+      assert.throws(() => {
+        const leaked = JSON.parse(fs.readFileSync(state.approvedJson, 'utf8'));
+        return prepareLessonRender({
+          brief: leaked,
+          theme: 'lesson-neutral',
+          sourceVideo: state.fixture.sourcePath,
+        });
+      }, /ENOENT/);
+    });
+  }
+});
+
+test('approval cleans owned temps when staging a manifest or Markdown write fails', async (t) => {
+  for (const purpose of ['approval-manifest', 'approval-markdown']) {
+    await t.test(purpose, () => {
+      const state = makeApprovalFailureFixture(t, `stage-${purpose}`);
+      const handles = new Map();
+      const failingFs = {
+        ...fs,
+        openSync(target, flags, mode) {
+          const handle = fs.openSync(target, flags, mode);
+          handles.set(handle, target);
+          return handle;
+        },
+        writeFileSync(target, data, options) {
+          if (typeof target === 'number' && handles.get(target).includes(`.tmp-${purpose}-`)) {
+            throw new Error(`simulated ${purpose} stage write failure`);
+          }
+          return fs.writeFileSync(target, data, options);
+        },
+        closeSync(handle) {
+          handles.delete(handle);
+          return fs.closeSync(handle);
+        },
+      };
+
+      assert.throws(
+        () => approveBrief(state.workspace, state.draft.jsonPath, {
+          fileSystem: failingFs,
+          temporaryId: () => '12345678-1234-4123-8123-123456789abc',
+        }),
+        new RegExp(`simulated ${purpose}`),
+      );
+      assert.equal(fs.existsSync(state.approvedJson), false);
+      assert.equal(fs.existsSync(state.approvedMarkdown), false);
+      assert.deepEqual(
+        fs.readdirSync(state.workspace.dir).filter((entry) => entry.includes('.tmp-')),
+        [],
+      );
+      assert.deepEqual(
+        fs.readdirSync(path.join(state.workspace.dir, 'brief')).filter((entry) => entry.includes('.tmp-')),
+        [],
+      );
+      assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v01-draft.lesson.json');
+    });
+  }
 });
 
 test('render versions keep history and publish one canonical final', (t) => {

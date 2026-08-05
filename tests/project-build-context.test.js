@@ -4,7 +4,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createBuildContext } = require('../scripts/project/build-context');
+const {
+  createBuildContext,
+  resolveOutputDestination,
+} = require('../scripts/project/build-context');
 
 function makeFixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-context-'));
@@ -121,6 +124,54 @@ test('legacy builds isolate generated data under out', (t) => {
   assert.equal(context.paths.final, path.join(fixture.dir, 'out/demo.mp4'));
   assert.equal(context.paths.transcript, path.join(fixture.dir, 'out/demo.transcript.json'));
   assert.equal(context.paths.captions, path.join(fixture.dir, 'out/demo.captions.js'));
+});
+
+test('legacy ids cannot escape out and canonical ids keep every generated path contained', (t) => {
+  const fixture = makeFixture(t);
+  const sentinel = path.join(fixture.dir, 'outside', 'owned');
+  fs.mkdirSync(path.dirname(sentinel), { recursive: true });
+  fs.writeFileSync(sentinel, 'outside-must-survive');
+
+  assert.throws(() => createBuildContext({
+    root: fixture.dir,
+    cwd: fixture.dir,
+    video: fixture.source,
+    action: 'render',
+    kind: 'lesson',
+    id: '../outside/owned',
+  }), /--id/);
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'outside-must-survive');
+
+  for (const id of ['demo', 'clip_01', 'Reel-2']) {
+    const context = createBuildContext({
+      root: fixture.dir,
+      cwd: fixture.dir,
+      video: fixture.source,
+      action: 'render',
+      kind: 'lesson',
+      id,
+    });
+    for (const generated of Object.values(context.paths).filter((value) => typeof value === 'string')) {
+      const relative = path.relative(path.join(fixture.dir, 'out'), generated);
+      assert.equal(relative.startsWith('..') || path.isAbsolute(relative), false, generated);
+    }
+  }
+});
+
+test('explicit output destination remains beneath outdir independently of its filename token', () => {
+  const cwd = path.join(os.tmpdir(), 'automontage-output-root');
+  const outdir = 'exports';
+  assert.equal(
+    resolveOutputDestination({ cwd, outdir, outputName: 'safe-project-01' }),
+    path.join(cwd, outdir, 'safe-project-01.mp4'),
+  );
+  for (const outputName of ['../outside/owned', 'nested/owned', '/tmp/owned']) {
+    assert.throws(
+      () => resolveOutputDestination({ cwd, outdir, outputName }),
+      /output name|outdir/i,
+      outputName,
+    );
+  }
 });
 
 test('project continuation rejects a different input video', (t) => {

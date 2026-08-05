@@ -279,6 +279,37 @@ test('approved lesson props use one temporary public lease and remove it after r
   assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
 });
 
+test('approved lesson rebinds legacy scene faceSrc to the same temporary source lease', (t) => {
+  const id = `lease-scene-${process.pid}-${Date.now()}`;
+  const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);
+  const briefPath = path.join(ROOT, 'out', `${id}.approved.lesson.json`);
+  const brief = JSON.parse(fs.readFileSync(
+    path.join(ROOT, 'examples/lesson-neutral-approved.json'),
+    'utf8',
+  ));
+  brief.scenes[0].faceSrc = 'source.mp4';
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  t.after(() => {
+    fs.rmSync(propsPath, { force: true });
+    fs.rmSync(briefPath, { force: true });
+  });
+
+  const { result } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--brief', briefPath,
+    '--frames', '25',
+    '--id', id,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
+  assert.equal(props.scenes[0].faceSrc, props.faceSrc);
+  assert.equal(props.audioSrc, props.faceSrc);
+  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/source\.mp4$/);
+  assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
+});
+
 test('failed lesson render still removes its temporary public lease', (t) => {
   const id = `lease-lesson-failed-${process.pid}-${Date.now()}`;
   const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);

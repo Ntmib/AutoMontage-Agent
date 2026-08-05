@@ -138,6 +138,52 @@ function parseUtcCalendarDate(value) {
   return date;
 }
 
+function releaseDateForVersion(source, version) {
+  const escapedVersion = String(version).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches = [...String(source || '').matchAll(
+    new RegExp(`^## \\[${escapedVersion}\\] - (\\d{4}-\\d{2}-\\d{2})\\s*$`, 'gm'),
+  )];
+  return matches.length === 1 ? parseUtcCalendarDate(matches[0][1]) : null;
+}
+
+function resolveInstalledDependency(packages, parentPath, dependencyName) {
+  let base = parentPath;
+  while (true) {
+    const candidate = base
+      ? `${base}/node_modules/${dependencyName}`
+      : `node_modules/${dependencyName}`;
+    if (packages[candidate]) return candidate;
+    if (!base) return null;
+    const marker = base.lastIndexOf('/node_modules/');
+    base = marker >= 0 ? base.slice(0, marker) : '';
+  }
+}
+
+function installedNodeVibrantChain(lock) {
+  const names = [
+    'node-vibrant',
+    '@vibrant/image-node',
+    '@jimp/custom',
+    '@jimp/core',
+    'file-type',
+  ];
+  const packages = lock && lock.packages;
+  if (!packages || !packages['']) return null;
+  const chain = [];
+  let parentPath = '';
+  let parent = packages[''];
+  for (const name of names) {
+    if (!parent.dependencies || typeof parent.dependencies[name] !== 'string') return null;
+    const installedPath = resolveInstalledDependency(packages, parentPath, name);
+    const installed = installedPath && packages[installedPath];
+    if (!installed || typeof installed.version !== 'string' || !installed.version) return null;
+    chain.push(`${name}@${installed.version}`);
+    parentPath = installedPath;
+    parent = installed;
+  }
+  return chain;
+}
+
 function checkPackageMetadata(read, issues) {
   const packageSource = read('package.json');
   const lockSource = read('package-lock.json');
@@ -178,6 +224,7 @@ function checkPackageMetadata(read, issues) {
 function checkSecurityException(files, read, issues, now) {
   const pkg = jsonValue(read('package.json'), 'package.json', issues, 'package.json');
   if (!pkg || !pkg.dependencies || !pkg.dependencies['node-vibrant']) return;
+  const lock = jsonValue(read('package-lock.json'), 'package-lock.json', issues, 'package-lock.json');
   if (!files.includes('SECURITY.md')) {
     issues.push(issue(
       'security-exception', 'SECURITY.md', 1,
@@ -239,7 +286,16 @@ function checkSecurityException(files, read, issues, now) {
     'file-type@16.5.4',
   ];
   if (Array.isArray(exception.chain)
-    && expectedChain.some((entry, index) => exception.chain[index] !== entry)) {
+    && (exception.chain.length !== expectedChain.length
+      || expectedChain.some((entry, index) => exception.chain[index] !== entry))) {
+    incorrect.push('chain');
+  }
+  const installedChain = installedNodeVibrantChain(lock);
+  if (!installedChain
+    || installedChain.length !== expectedChain.length
+    || expectedChain.some((entry, index) => installedChain[index] !== entry)
+    || (Array.isArray(exception.chain)
+      && installedChain.some((entry, index) => exception.chain[index] !== entry))) {
     incorrect.push('chain');
   }
   const requiredTriggers = [
@@ -252,7 +308,13 @@ function checkSecurityException(files, read, issues, now) {
     && requiredTriggers.some((entry) => !exception.triggers.includes(entry))) {
     incorrect.push('triggers');
   }
-  if (!parseUtcCalendarDate(exception.reviewedAt || '')) incorrect.push('reviewedAt');
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const reviewedAt = parseUtcCalendarDate(exception.reviewedAt || '');
+  const releaseDate = releaseDateForVersion(read('CHANGELOG.md'), pkg.version);
+  if (!reviewedAt || reviewedAt.getTime() > today.getTime()
+    || !releaseDate || reviewedAt.getTime() !== releaseDate.getTime()) {
+    incorrect.push('reviewedAt');
+  }
   if (exception.reviewedFor !== pkg.version) incorrect.push('reviewedFor');
   if (missing.length || incorrect.length) {
     issues.push(issue(
@@ -263,7 +325,6 @@ function checkSecurityException(files, read, issues, now) {
     return;
   }
   const revisit = parseUtcCalendarDate(exception.revisitBy);
-  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const days = revisit ? (revisit.getTime() - today.getTime()) / 86_400_000 : Number.NaN;
   if (!Number.isFinite(days) || days < 0 || days > 30) {
     issues.push(issue(

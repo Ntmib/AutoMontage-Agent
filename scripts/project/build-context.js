@@ -8,7 +8,31 @@ const {
   resolveProjectPath,
 } = require('./workspace');
 
+const SAFE_LEGACY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+function assertSafeLegacyId(id) {
+  if (typeof id !== 'string' || !SAFE_LEGACY_ID.test(id)) {
+    throw new Error('--id должен быть безопасным token: буквы, цифры, _ или -');
+  }
+  return id;
+}
+
+function resolveOutputDestination({ cwd, outdir, outputName }) {
+  if (typeof outputName !== 'string' || !SAFE_LEGACY_ID.test(outputName)) {
+    throw new Error('output name должен быть безопасным token');
+  }
+  const outputRoot = path.resolve(cwd, outdir);
+  const destination = path.resolve(outputRoot, `${outputName}.mp4`);
+  const relative = path.relative(outputRoot, destination);
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..'
+    || path.isAbsolute(relative)) {
+    throw new Error('output destination должен оставаться внутри outdir');
+  }
+  return destination;
+}
+
 function legacyPaths(root, id, kind) {
+  assertSafeLegacyId(id);
   const out = path.join(root, 'out');
   const briefStem = kind === 'scenario' ? `${id}.scenario` : `${id}.lesson`;
   const propsName = kind === 'lesson' ? `${id}.lesson.props.json` : `${id}.props.json`;
@@ -56,6 +80,7 @@ function createBuildContext({
   const resolvedCwd = path.resolve(cwd);
   const resolvedVideo = path.resolve(resolvedCwd, video);
   const isProjectMode = Boolean(projectName || projectDir);
+  assertSafeLegacyId(id);
 
   if (!isProjectMode) {
     const paths = legacyPaths(resolvedRoot, id, kind);
@@ -118,6 +143,8 @@ function createBuildContext({
 }
 
 module.exports = {
+  assertSafeLegacyId,
   createBuildContext,
   legacyPaths,
+  resolveOutputDestination,
 };

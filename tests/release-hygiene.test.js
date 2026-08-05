@@ -94,6 +94,35 @@ function writeSecurityException(root, exception) {
   ].join('\n'));
 }
 
+function enableNodeVibrant(root) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  pkg.dependencies = { ...(pkg.dependencies || {}), 'node-vibrant': '^4.0.4' };
+  lock.packages[''].dependencies = {
+    ...(lock.packages[''].dependencies || {}),
+    'node-vibrant': '^4.0.4',
+  };
+  lock.packages['node_modules/node-vibrant'] = {
+    version: '4.0.4',
+    dependencies: { '@vibrant/image-node': '^4.0.4' },
+  };
+  lock.packages['node_modules/@vibrant/image-node'] = {
+    version: '4.0.4',
+    dependencies: { '@jimp/custom': '^0.22.12' },
+  };
+  lock.packages['node_modules/@jimp/custom'] = {
+    version: '0.22.12',
+    dependencies: { '@jimp/core': '^0.22.12' },
+  };
+  lock.packages['node_modules/@jimp/core'] = {
+    version: '0.22.12',
+    dependencies: { 'file-type': '^16.5.4' },
+  };
+  lock.packages['node_modules/file-type'] = { version: '16.5.4' };
+  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  write(root, 'package-lock.json', `${JSON.stringify(lock, null, 2)}\n`);
+}
+
 function makeRepository() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-release-check-'));
   git(root, ['init', '-q']);
@@ -343,9 +372,7 @@ test('release checker normalizes provenance paths before stale-row comparison', 
 
 test('node-vibrant audit exception requires complete and time-bounded evidence', () => {
   const root = makeRepository();
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  pkg.dependencies = { 'node-vibrant': '4.0.4' };
-  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  enableNodeVibrant(root);
   write(root, 'SECURITY.md', [
     '# Security',
     '',
@@ -413,9 +440,7 @@ test('node-vibrant exception rejects an invalid reviewedAt calendar date', () =>
     version: '1.2.1',
     section: '### Исправлено\n\n- Validate release metadata before publication.',
   });
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  pkg.dependencies = { 'node-vibrant': '4.0.4' };
-  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  enableNodeVibrant(root);
   writeSecurityException(root, securityException({ reviewedAt: '2026-02-30' }));
   git(root, ['add', '.']);
   git(root, ['commit', '-qm', 'invalid exception review date']);
@@ -433,9 +458,7 @@ test('node-vibrant exception requires reviewedFor to match package.json version'
     version: '1.2.1',
     section: '### Исправлено\n\n- Validate release metadata before publication.',
   });
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  pkg.dependencies = { 'node-vibrant': '4.0.4' };
-  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  enableNodeVibrant(root);
   writeSecurityException(root, securityException({ reviewedFor: '1.2.0' }));
   git(root, ['add', '.']);
   git(root, ['commit', '-qm', 'mismatched exception review version']);
@@ -453,9 +476,7 @@ test('node-vibrant exception rejects an advisory changed without review evidence
     version: '1.2.1',
     section: '### Исправлено\n\n- Validate release metadata before publication.',
   });
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  pkg.dependencies = { 'node-vibrant': '4.0.4' };
-  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  enableNodeVibrant(root);
   writeSecurityException(root, securityException({ ghsa: 'GHSA-0000-0000-0000' }));
   git(root, ['add', '.']);
   git(root, ['commit', '-qm', 'changed advisory without review']);
@@ -473,9 +494,7 @@ test('node-vibrant exception requires exactly one parseable security-exception f
     version: '1.2.1',
     section: '### Исправлено\n\n- Validate release metadata before publication.',
   });
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  pkg.dependencies = { 'node-vibrant': '4.0.4' };
-  write(root, 'package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+  enableNodeVibrant(root);
   write(root, 'SECURITY.md', [
     '# Security',
     '',
@@ -495,6 +514,85 @@ test('node-vibrant exception requires exactly one parseable security-exception f
 
   assert.ok(result.issues.some((entry) => (
     entry.rule === 'security-exception' && /exactly one/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception rejects a future review date', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    date: '2026-08-06',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({ reviewedAt: '2026-08-06' }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'future exception review']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T23:59:59Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /reviewedAt/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception rejects a stale review carried into a new release date', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    date: '2026-08-06',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({ reviewedAt: '2026-08-05' }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'stale exception review']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-06T12:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /reviewedAt/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception requires exactly the documented five chain entries', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException({
+    chain: [...securityException().chain, 'unexpected-extra@1.0.0'],
+  }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'extra exception chain entry']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T12:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /chain/.test(entry.message)
+  )));
+});
+
+test('node-vibrant exception is compared with the installed candidate lockfile chain', () => {
+  const root = makeRepository();
+  updateReleaseVersion(root, {
+    version: '1.2.1',
+    section: '### Исправлено\n\n- Validate release metadata before publication.',
+  });
+  enableNodeVibrant(root);
+  writeSecurityException(root, securityException());
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  lock.packages['node_modules/file-type'].version = '16.5.5';
+  write(root, 'package-lock.json', `${JSON.stringify(lock, null, 2)}\n`);
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'changed installed exception chain']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD', now: new Date('2026-08-05T12:00:00Z') });
+
+  assert.ok(result.issues.some((entry) => (
+    entry.rule === 'security-exception' && /chain/.test(entry.message)
   )));
 });
 

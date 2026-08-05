@@ -6,6 +6,7 @@ const Ajv = require('ajv');
 const projectSchema = require('../../schema/project.schema.json');
 const { formatBriefMarkdown } = require('../lesson/brief');
 const projectManifestValidator = new Ajv({ allErrors: true }).compile(projectSchema);
+const TEMPORARY_ID = /^[A-Za-z0-9_-]+$/;
 
 const CYRILLIC_TO_LATIN = {
   а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh',
@@ -64,6 +65,31 @@ function isInside(root, candidate) {
     && relative !== '..' && !path.isAbsolute(relative));
 }
 
+function lstatIfPresent(fileSystem, target) {
+  try {
+    return fileSystem.lstatSync(target);
+  } catch (error) {
+    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
+    throw error;
+  }
+}
+
+function assertNoProjectSymlink(root, segments, fileSystem, label) {
+  const rootStat = fileSystem.lstatSync(root);
+  if (rootStat.isSymbolicLink()) {
+    throw new Error(`${label} escapes through a symbolic link`);
+  }
+  let current = root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const stat = lstatIfPresent(fileSystem, current);
+    if (!stat) break;
+    if (stat.isSymbolicLink()) {
+      throw new Error(`${label} escapes through a symbolic link`);
+    }
+  }
+}
+
 function resolveProjectPath(projectDir, storedPath, options = {}) {
   const label = options.label || 'project path';
   const fileSystem = options.fileSystem || fs;
@@ -86,6 +112,7 @@ function resolveProjectPath(projectDir, storedPath, options = {}) {
     throw new Error(`${label} escapes the project workspace`);
   }
 
+  assertNoProjectSymlink(root, segments, fileSystem, label);
   const rootReal = fileSystem.realpathSync(root);
   let ancestor = candidate;
   while (!fileSystem.existsSync(ancestor)) {
@@ -113,6 +140,63 @@ function resolveProjectPath(projectDir, storedPath, options = {}) {
     }
   }
   return candidate;
+}
+
+function safeTemporaryId(temporaryId) {
+  const value = String(temporaryId());
+  if (!TEMPORARY_ID.test(value)) throw new Error('temporary file id is unsafe');
+  return value;
+}
+
+function sameFileIdentity(left, right) {
+  return left && right && left.dev === right.dev && left.ino === right.ino;
+}
+
+function stageOwnedSiblingFile(destination, data, {
+  fileSystem = fs,
+  temporaryId = randomUUID,
+  purpose = 'write',
+} = {}) {
+  const temporaryPath = `${destination}.tmp-${purpose}-${safeTemporaryId(temporaryId)}`;
+  const constants = fileSystem.constants || fs.constants;
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+    | (constants.O_NOFOLLOW || 0);
+  let handle = null;
+  let identity = null;
+  try {
+    handle = fileSystem.openSync(temporaryPath, flags, 0o600);
+    identity = fileSystem.fstatSync(handle);
+    if (!identity.isFile()) throw new Error('temporary project file must be regular');
+    fileSystem.writeFileSync(handle, data, { encoding: 'utf8' });
+    fileSystem.fsyncSync(handle);
+  } catch (error) {
+    if (handle !== null) fileSystem.closeSync(handle);
+    const current = lstatIfPresent(fileSystem, temporaryPath);
+    if (identity && current && sameFileIdentity(identity, current)) {
+      fileSystem.unlinkSync(temporaryPath);
+    }
+    throw error;
+  }
+  fileSystem.closeSync(handle);
+
+  let committedPath = null;
+  return {
+    path: temporaryPath,
+    commit(target = destination) {
+      fileSystem.renameSync(temporaryPath, target);
+      committedPath = target;
+    },
+    cleanupTemp() {
+      const current = lstatIfPresent(fileSystem, temporaryPath);
+      if (current && sameFileIdentity(identity, current)) fileSystem.unlinkSync(temporaryPath);
+    },
+    removeCommitted() {
+      if (!committedPath) return;
+      const current = lstatIfPresent(fileSystem, committedPath);
+      if (current && sameFileIdentity(identity, current)) fileSystem.unlinkSync(committedPath);
+      committedPath = null;
+    },
+  };
 }
 
 function validateProjectManifest(manifest, { projectDir, fileSystem = fs } = {}) {
@@ -163,20 +247,44 @@ function validateProjectManifest(manifest, { projectDir, fileSystem = fs } = {})
 }
 
 function readProjectManifest(projectDir) {
-  const manifestPath = path.join(path.resolve(projectDir), 'project.json');
+  const resolvedProjectDir = path.resolve(projectDir);
+  const manifestPath = resolveProjectPath(resolvedProjectDir, 'project.json', {
+    label: 'project.json',
+    mustExist: false,
+    type: 'file',
+  });
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`project.json не найден: ${manifestPath}`);
   }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  return validateProjectManifest(manifest, { projectDir });
+  return validateProjectManifest(manifest, { projectDir: resolvedProjectDir });
 }
 
-function writeProjectManifest(projectDir, manifest) {
-  const manifestPath = path.join(path.resolve(projectDir), 'project.json');
-  const temporaryPath = `${manifestPath}.tmp`;
-  const validatedManifest = validateProjectManifest(manifest, { projectDir });
-  fs.writeFileSync(temporaryPath, `${JSON.stringify(validatedManifest, null, 2)}\n`);
-  fs.renameSync(temporaryPath, manifestPath);
+function writeProjectManifest(projectDir, manifest, {
+  fileSystem = fs,
+  temporaryId = randomUUID,
+} = {}) {
+  const resolvedProjectDir = path.resolve(projectDir);
+  const manifestPath = resolveProjectPath(resolvedProjectDir, 'project.json', {
+    label: 'project.json',
+    fileSystem,
+    mustExist: false,
+    type: 'file',
+  });
+  const validatedManifest = validateProjectManifest(manifest, {
+    projectDir: resolvedProjectDir,
+    fileSystem,
+  });
+  const staged = stageOwnedSiblingFile(
+    manifestPath,
+    `${JSON.stringify(validatedManifest, null, 2)}\n`,
+    { fileSystem, temporaryId, purpose: 'manifest' },
+  );
+  try {
+    staged.commit();
+  } finally {
+    staged.cleanupTemp();
+  }
 }
 
 function ensureProjectDirectories(projectDir) {
@@ -365,7 +473,10 @@ function recordBrief(workspace, {
   return workspace;
 }
 
-function approveBrief(workspace, draftJsonPath) {
+function approveBrief(workspace, draftJsonPath, {
+  fileSystem = fs,
+  temporaryId = randomUUID,
+} = {}) {
   const draftRelativePath = relativeProjectPath(workspace, path.resolve(draftJsonPath));
   const draftEntry = workspace.manifest.briefs.find(
     (brief) => brief.jsonPath === draftRelativePath,
@@ -373,24 +484,27 @@ function approveBrief(workspace, draftJsonPath) {
   if (!draftEntry) throw new Error('черновик не зарегистрирован в project.json');
   const draftPath = resolveProjectPath(workspace.dir, draftEntry.jsonPath, {
     label: 'manifest.briefs[].jsonPath',
+    fileSystem,
     mustExist: true,
     type: 'file',
   });
   if (!/-draft\.[^.]+\.json$/i.test(draftPath)) {
     throw new Error('имя черновика должно содержать -draft');
   }
-  const draft = JSON.parse(fs.readFileSync(draftPath, 'utf8'));
+  const draft = JSON.parse(fileSystem.readFileSync(draftPath, 'utf8'));
   if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
 
   const approvedJsonPath = draftPath.replace(/-draft(\.[^.]+\.json)$/i, '-approved$1');
   const approvedJsonRelativePath = relativeProjectPath(workspace, approvedJsonPath);
   resolveProjectPath(workspace.dir, approvedJsonRelativePath, {
     label: 'approved brief JSON path',
+    fileSystem,
     mustExist: false,
   });
   const draftMarkdownPath = draftEntry.markdownPath
     ? resolveProjectPath(workspace.dir, draftEntry.markdownPath, {
       label: 'manifest.briefs[].markdownPath',
+      fileSystem,
       mustExist: true,
       type: 'file',
     })
@@ -401,25 +515,104 @@ function approveBrief(workspace, draftJsonPath) {
   if (approvedMarkdownPath) {
     resolveProjectPath(workspace.dir, relativeProjectPath(workspace, approvedMarkdownPath), {
       label: 'approved brief Markdown path',
+      fileSystem,
       mustExist: false,
     });
   }
+  for (const [label, destination] of [
+    ['approved brief JSON path', approvedJsonPath],
+    ['approved brief Markdown path', approvedMarkdownPath],
+  ]) {
+    if (destination && lstatIfPresent(fileSystem, destination)) {
+      throw new Error(`${label} already exists`);
+    }
+  }
   const approvedBrief = { ...draft, status: 'approved' };
   const approvedMarkdown = approvedMarkdownPath ? formatBriefMarkdown(approvedBrief) : null;
-  fs.writeFileSync(approvedJsonPath, `${JSON.stringify(approvedBrief, null, 2)}\n`);
-
-  if (approvedMarkdownPath) {
-    fs.writeFileSync(approvedMarkdownPath, approvedMarkdown);
-  }
-
-  recordBrief(workspace, {
+  const entry = {
     revision: draftEntry.revision,
-    jsonPath: approvedJsonPath,
-    markdownPath: approvedMarkdownPath,
+    jsonPath: approvedJsonRelativePath,
+    markdownPath: approvedMarkdownPath
+      ? relativeProjectPath(workspace, approvedMarkdownPath)
+      : null,
     status: 'approved',
     theme: draftEntry.theme,
     aspect: draftEntry.aspect,
+  };
+  const nextManifest = JSON.parse(JSON.stringify(workspace.manifest));
+  nextManifest.briefs.push(entry);
+  nextManifest.currentBrief = entry.jsonPath;
+  nextManifest.updatedAt = new Date().toISOString();
+  const validatedManifest = validateProjectManifest(nextManifest, {
+    projectDir: workspace.dir,
+    fileSystem,
   });
+  const manifestPath = resolveProjectPath(workspace.dir, 'project.json', {
+    label: 'project.json',
+    fileSystem,
+    mustExist: true,
+    type: 'file',
+  });
+  const oldManifest = fileSystem.readFileSync(manifestPath, 'utf8');
+  const stages = [];
+  let manifestStage;
+  let rollbackStage;
+  let markdownStage = null;
+  let jsonStage;
+  let manifestCommitted = false;
+  try {
+    manifestStage = stageOwnedSiblingFile(
+      manifestPath,
+      `${JSON.stringify(validatedManifest, null, 2)}\n`,
+      { fileSystem, temporaryId, purpose: 'approval-manifest' },
+    );
+    stages.push(manifestStage);
+    rollbackStage = stageOwnedSiblingFile(manifestPath, oldManifest, {
+      fileSystem,
+      temporaryId,
+      purpose: 'approval-rollback',
+    });
+    stages.push(rollbackStage);
+    if (approvedMarkdownPath) {
+      markdownStage = stageOwnedSiblingFile(approvedMarkdownPath, approvedMarkdown, {
+        fileSystem,
+        temporaryId,
+        purpose: 'approval-markdown',
+      });
+      stages.push(markdownStage);
+    }
+    jsonStage = stageOwnedSiblingFile(
+      approvedJsonPath,
+      `${JSON.stringify(approvedBrief, null, 2)}\n`,
+      { fileSystem, temporaryId, purpose: 'approval-json' },
+    );
+    stages.push(jsonStage);
+
+    manifestStage.commit();
+    manifestCommitted = true;
+    if (markdownStage) markdownStage.commit();
+    jsonStage.commit();
+  } catch (error) {
+    const rollbackErrors = [];
+    try {
+      if (markdownStage) markdownStage.removeCommitted();
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    if (manifestCommitted) {
+      try {
+        rollbackStage.commit(manifestPath);
+        manifestCommitted = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length) error.rollbackErrors = rollbackErrors;
+    throw error;
+  } finally {
+    for (const stage of stages) stage.cleanupTemp();
+  }
+  workspace.manifest = validatedManifest;
   return {
     revision: draftEntry.revision,
     jsonPath: approvedJsonPath,

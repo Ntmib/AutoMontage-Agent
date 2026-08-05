@@ -9,7 +9,7 @@
     "version": {"const": 1},
     "id": {"type": "string", "minLength": 1},
     "name": {"type": "string", "minLength": 1},
-    "slug": {"type": "string", "minLength": 1},
+    "slug": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
     "createdAt": {"type": "string", "minLength": 1},
     "updatedAt": {"type": "string", "minLength": 1},
     "source": {

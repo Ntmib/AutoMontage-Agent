@@ -152,6 +152,11 @@ function escapeJsonPointerSegment(segment) {
   return segment.replaceAll('~', '~0').replaceAll('/', '~1');
 }
 
+function isGeneratedSourceLease(value) {
+  return /^\.automontage\/[A-Za-z0-9_-]+-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/source\.[A-Za-z0-9]+$/i
+    .test(value);
+}
+
 function collectReferencedPublicAssets(props, publicDir, fileSystem = fs) {
   const assets = [];
   function visit(value, pointer) {
@@ -181,6 +186,7 @@ function canonicalizeRenderProps(props, publicAssets) {
     if (asset && typeof value === 'string') {
       return {
         publicAsset: {
+          ...(isGeneratedSourceLease(value) ? {} : { path: value }),
           size: asset.size,
           sha256: asset.sha256,
         },

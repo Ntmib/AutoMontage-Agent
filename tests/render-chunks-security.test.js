@@ -270,15 +270,48 @@ test('render cache key preserves observable props key order', (t) => {
 
 test('render cache key ignores random public lease paths when media bytes match', (t) => {
   const { root, publicDir } = cacheFixture(t);
-  const firstLease = path.join(publicDir, 'lease-a.mp4');
-  const secondLease = path.join(publicDir, 'lease-b.mp4');
+  const firstLease = path.join(
+    publicDir,
+    '.automontage/dynamic-11111111-1111-4111-8111-111111111111/source.mp4',
+  );
+  const secondLease = path.join(
+    publicDir,
+    '.automontage/dynamic-22222222-2222-4222-8222-222222222222/source.mp4',
+  );
+  fs.mkdirSync(path.dirname(firstLease), { recursive: true });
+  fs.mkdirSync(path.dirname(secondLease), { recursive: true });
   fs.writeFileSync(firstLease, 'same-source-bytes');
   fs.writeFileSync(secondLease, 'same-source-bytes');
 
-  const first = jobFor(root, { source: 'lease-a.mp4', title: 'same' }, firstLease);
-  const second = jobFor(root, { source: 'lease-b.mp4', title: 'same' }, secondLease);
+  const first = jobFor(root, {
+    source: '.automontage/dynamic-11111111-1111-4111-8111-111111111111/source.mp4',
+    title: 'same',
+  }, firstLease);
+  const second = jobFor(root, {
+    source: '.automontage/dynamic-22222222-2222-4222-8222-222222222222/source.mp4',
+    title: 'same',
+  }, secondLease);
 
   assert.equal(second.key, first.key);
+});
+
+test('render cache key preserves ordinary public path identity even when asset bytes match', (t) => {
+  const { root, publicDir } = cacheFixture(t);
+  const firstPath = path.join(publicDir, 'broll', 'a.mp4');
+  const secondPath = path.join(publicDir, 'broll', 'b.mp4');
+  fs.writeFileSync(firstPath, 'same-visible-bytes');
+  fs.writeFileSync(secondPath, 'same-visible-bytes');
+
+  const first = jobFor(root, {
+    broll: 'broll/a.mp4',
+    observableLabel: 'broll/a.mp4',
+  });
+  const second = jobFor(root, {
+    broll: 'broll/b.mp4',
+    observableLabel: 'broll/b.mp4',
+  });
+
+  assert.notEqual(second.key, first.key);
 });
 
 test('chunk reuse requires matching manifest range, hash, size and frame count', (t) => {
