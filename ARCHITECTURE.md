@@ -49,6 +49,10 @@ flowchart LR
 `scripts/build.js` является границей пользовательского ввода: пути сначала разрешаются
 как host paths, затем ffprobe, ffmpeg, Python и Remotion получают их отдельными argv через
 `scripts/process.js`. Числовые CLI-параметры проходят конечные диапазоны до первого spawn.
+После исходного и каждого производного видео (reframe/tighten) build берёт геометрию, FPS и
+длительность из соответствующего ffprobe. `scripts/source-timing.js` сохраняет точный numeric
+FPS, включая NTSC `30000/1001` и `24000/1001`, вычисляет `durationInFrames` через `ceil` и
+не даёт положительному целому `--frames` увеличить доступную длину.
 
 Точка оркестрации – `scripts/build.js`. Без `--scenario` он создаёт черновой монтажный
 лист; смысловую расстановку блоков агент затем правит и запускает повторно с готовым JSON.
@@ -129,7 +133,7 @@ Brief замораживает исходник, тему, аспект, раз�
 | Область | Основные файлы |
 |---|---|
 | Пользовательский CLI | `scripts/cli.js`, `scripts/doctor.js` |
-| Оркестрация и процессы | `scripts/build.js`, `scripts/env.js`, `scripts/process.js`, `scripts/media-probe.js` |
+| Оркестрация и процессы | `scripts/build.js`, `scripts/env.js`, `scripts/process.js`, `scripts/media-probe.js`, `scripts/source-timing.js` |
 | Папки и версии роликов | `scripts/project/workspace.js`, `scripts/project/build-context.js` |
 | Транскрипция и субтитры | `scripts/transcribe.py`, `scripts/build-captions.js` |
 | Lesson brief | `scripts/gen-brief.js`, `scripts/lesson/*` |

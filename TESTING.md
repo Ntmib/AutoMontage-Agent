@@ -26,6 +26,9 @@ npm test
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
 - process regression matrix: leading `-`, пробелы, кавычки, `$()`, `;`, newline и Unicode;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
+- timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
+  считается через `ceil`, а положительный целый `--frames` не превышает длину source;
+- повторный ffprobe после reframe и tighten обновляет FPS, по которому строятся props;
 - safe-zone длинных денежных подписей;
 - анимации CTA, воронки, градиента и маркеров соцсетей.
 

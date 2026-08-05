@@ -30,6 +30,7 @@ const {
 } = require('./build-commands');
 const { finiteNumber, parseBuildOptions } = require('./build-options');
 const { parseVideoProbe } = require('./media-probe');
+const { resolveSourceTiming } = require('./source-timing');
 const { captureTool, runNodeTool, runTool } = require('./process');
 const { loadExtTheme } = require('./load-ext-theme');
 const { resolveOutputGeometry } = require('./lesson/aspect');
@@ -158,7 +159,7 @@ const sourceProbe = parseVideoProbe(captureTool(
   sourceProbeCommand.args,
   { cwd: ROOT, stage: 'source ffprobe', maxBuffer: 4 * 1024 * 1024 },
 ), 'source ffprobe');
-const FPS = Math.round(sourceProbe.fps);
+let FPS = sourceProbe.fps;
 let W = sourceProbe.width;
 let H = sourceProbe.height;
 let DUR2 = sourceProbe.duration;
@@ -181,6 +182,7 @@ if (buildOptions.reframeMode) {
   ), 'reframe ffprobe');
   W = reframed.width;
   H = reframed.height;
+  FPS = reframed.fps;
   DUR2 = reframed.duration;
 }
 
@@ -229,10 +231,14 @@ if (args.includes('--tighten') && noTranscribe) {
     probeCommand.args,
     { cwd: ROOT, stage: 'tighten ffprobe', maxBuffer: 4 * 1024 * 1024 },
   ), 'tighten ffprobe');
+  FPS = tightened.fps;
   DUR2 = tightened.duration;
 }
-const totalFrames2 = Math.ceil(DUR2 * FPS);
-const durF = framesOverride ? Math.min(framesOverride, totalFrames2) : totalFrames2;
+const { durationInFrames: durF } = resolveSourceTiming({
+  fps: FPS,
+  duration: DUR2,
+  framesOverride,
+});
 
 // ── общий резолвер темы (строка встроенной темы или объект внешнего бренд-пака) ──
 function resolveTheme(name) {

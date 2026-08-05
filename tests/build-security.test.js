@@ -127,6 +127,14 @@ test('central build contains no shell execution escape hatch', () => {
   assert.doesNotMatch(source, /shell\s*:\s*true/);
 });
 
+test('build preserves probed fractional FPS through derived source videos', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'scripts/build.js'), 'utf8');
+  assert.doesNotMatch(source, /Math\.round\(sourceProbe\.fps\)/);
+  assert.match(source, /let FPS = sourceProbe\.fps;/);
+  assert.match(source, /FPS = reframed\.fps;/);
+  assert.match(source, /FPS = tightened\.fps;/);
+});
+
 test('invalid build values fail before ffprobe or sentinel execution', () => {
   const sentinel = path.join(ROOT, 'tmp', 'build-option-sentinel');
   const result = spawnSync(process.execPath, [
