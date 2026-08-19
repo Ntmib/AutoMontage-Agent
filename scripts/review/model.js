@@ -94,7 +94,7 @@ function loadReviewState({ root, projectDir, briefPath, editable = false } = {})
   );
   const brief = readJson(briefFilePath, 'brief');
   const validation = validateLessonBrief(brief);
-  if (!validation.ok) throw new Error(`review brief is invalid: ${validation.errors.join('; ')}`);
+  if (!validation.ok) throw new Error('review brief is invalid');
   if (brief.status !== entry.status) {
     throw new Error('review brief status does not match the project manifest');
   }

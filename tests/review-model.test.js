@@ -130,3 +130,21 @@ test('review state strips path-bearing scene fields before browser serialization
   assert.equal(state.brief.scenes[1].brollSrc, undefined);
   assert.doesNotMatch(JSON.stringify(state), /\/Users\/|C:\\Users\\/);
 });
+
+test('invalid review briefs expose a fixed public error', (t) => {
+  const { projectDir, briefPath } = makeReviewProject(t);
+  const hostileValue = '/Users/person/private-invalid-scene';
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[0].scene = hostileValue;
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+
+  assert.throws(
+    () => loadReviewState({ root: ROOT, projectDir }),
+    (error) => {
+      assert.equal(error.message, 'review brief is invalid');
+      assert.doesNotMatch(error.message, new RegExp(hostileValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.doesNotMatch(error.message, /\/Users\/|C:\\Users\\/);
+      return true;
+    },
+  );
+});
