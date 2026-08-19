@@ -36,6 +36,19 @@ test('review state exposes scenes and words without host paths', (t) => {
   assert.deepEqual(JSON.parse(JSON.stringify(state)), state);
 });
 
+test('review state exposes only the fixed waveform media handle when available', (t) => {
+  const { projectDir } = makeReviewProject(t);
+
+  const state = loadReviewState({
+    root: ROOT,
+    projectDir,
+    waveformAvailable: true,
+  });
+
+  assert.deepEqual(state.waveform, { url: '/media/waveform' });
+  assert.doesNotMatch(JSON.stringify(state.waveform), /previews|review-waveform|\/Users\/|C:\\Users\\/);
+});
+
 test('review rejects an unregistered brief and escaping asset path', (t) => {
   const { projectDir, workspace } = makeReviewProject(t);
 

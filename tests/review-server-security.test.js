@@ -216,6 +216,68 @@ test('review media requires authentication and resolves only opaque handles', as
   })).status, 404);
 });
 
+test('review waveform is optional, token-protected, and exposes no cache path', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startReviewServer({
+    root: ROOT,
+    projectDir,
+    open: false,
+    runToolImpl: (_command, args) => fs.writeFileSync(args.at(-1), 'waveform fixture'),
+  });
+  t.after(() => closeServer(session.server));
+
+  const stateResponse = await request(session, '/api/state', { token: session.token });
+  const stateBody = stateResponse.body.toString('utf8');
+  assert.deepEqual(JSON.parse(stateBody).waveform, { url: '/media/waveform' });
+  assert.doesNotMatch(JSON.stringify(JSON.parse(stateBody).waveform), /previews|review-waveform-[a-f0-9]|\.png/);
+  assert.equal((await request(session, '/media/waveform')).status, 401);
+  const waveform = await request(session, '/media/waveform', { token: session.token });
+  assert.equal(waveform.status, 200);
+  assert.equal(waveform.headers['content-type'], 'image/png');
+  assert.equal(waveform.body.toString('utf8'), 'waveform fixture');
+});
+
+test('review starts with null waveform when generation fails', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startReviewServer({
+    root: ROOT,
+    projectDir,
+    open: false,
+    runToolImpl: () => {
+      throw new Error('ffmpeg unavailable');
+    },
+  });
+  t.after(() => closeServer(session.server));
+
+  const stateResponse = await request(session, '/api/state', { token: session.token });
+  assert.equal(stateResponse.status, 200);
+  assert.equal(JSON.parse(stateResponse.body.toString('utf8')).waveform, null);
+  assert.equal((await request(session, '/media/waveform', { token: session.token })).status, 404);
+});
+
+test('review waveform fails closed if its cache file is replaced after startup', async (t) => {
+  const { root, projectDir, workspace } = makeReviewProject(t);
+  const session = await startReviewServer({
+    root: ROOT,
+    projectDir,
+    open: false,
+    runToolImpl: (_command, args) => fs.writeFileSync(args.at(-1), 'waveform fixture'),
+  });
+  t.after(() => closeServer(session.server));
+  const waveformName = fs.readdirSync(path.join(workspace.dir, 'previews'))
+    .find((name) => /^review-waveform-[a-f0-9]{64}\.png$/.test(name));
+  assert.ok(waveformName);
+  const waveformPath = path.join(workspace.dir, 'previews', waveformName);
+  const outsidePath = path.join(root, 'private-waveform.png');
+  fs.writeFileSync(outsidePath, 'private fixture');
+  fs.unlinkSync(waveformPath);
+  fs.symlinkSync(outsidePath, waveformPath);
+
+  const response = await request(session, '/media/waveform', { token: session.token });
+  assert.equal(response.status, 404);
+  assert.doesNotMatch(response.body.toString('utf8'), /private fixture/);
+});
+
 test('review advertises and serves only explicit non-hidden media types', async (t) => {
   const { projectDir, workspace } = makeReviewProject(t);
   const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-root-'));

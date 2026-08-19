@@ -29,6 +29,8 @@ npm test
 - lifecycle `started → failed/complete`, сохранность прежнего final и атомарную публикацию;
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
 - process regression matrix: leading `-`, пробелы, кавычки, `$()`, `;`, newline и Unicode;
+- Review waveform: буквальный ffmpeg argv, cache reuse/invalidation, очистка partial temp,
+  отказ от regular/symlink/dangling-symlink подмен и неизменность manifest/approved brief;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;
@@ -41,6 +43,13 @@ npm test
 - анимации CTA, воронки, градиента и маркеров соцсетей.
 
 Любое исправление бага должно добавлять регрессионный тест его причины.
+
+Для waveform и защищённого process boundary отдельно можно запустить:
+
+```bash
+node --test tests/review-waveform.test.js tests/process-security.test.js
+npx playwright test tests/review-ui.spec.js --project=chromium
+```
 
 Для золотого пути свежего клона отдельно проверь:
 

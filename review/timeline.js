@@ -61,10 +61,50 @@ function setCurrent(elements, activeIndex) {
   });
 }
 
-function renderSource(track, video, duration) {
+function safeWaveformUrl(waveform, video) {
+  if (!waveform || waveform.url !== '/media/waveform') return null;
+  try {
+    const sourceUrl = new URL(video.currentSrc || video.src, window.location.origin);
+    if (sourceUrl.origin !== window.location.origin || sourceUrl.pathname !== '/media/source') return null;
+    const token = sourceUrl.searchParams.get('token');
+    if (!token) return null;
+    const waveformUrl = new URL('/media/waveform', window.location.origin);
+    waveformUrl.searchParams.set('token', token);
+    return `${waveformUrl.pathname}${waveformUrl.search}`;
+  } catch (_) {
+    return null;
+  }
+}
+
+function renderSource(track, video, duration, waveform) {
   const target = button('Перейти к началу исходного видео', 'source-segment');
   target.dataset.sourceTarget = '';
-  target.innerHTML = '<span>Исходник</span><span>00:00</span>';
+  const waveformUrl = safeWaveformUrl(waveform, video);
+  if (waveformUrl) {
+    const image = document.createElement('img');
+    image.dataset.waveformPreview = '';
+    image.src = waveformUrl;
+    image.alt = '';
+    image.setAttribute('aria-hidden', 'true');
+    Object.assign(image.style, {
+      position: 'absolute',
+      inset: '0',
+      width: '100%',
+      height: '100%',
+      opacity: '0.28',
+      objectFit: 'fill',
+      pointerEvents: 'none',
+    });
+    target.style.overflow = 'hidden';
+    target.append(image);
+  }
+  const label = document.createElement('span');
+  label.textContent = 'Исходник';
+  const time = document.createElement('span');
+  time.textContent = '00:00';
+  label.style.position = 'relative';
+  time.style.position = 'relative';
+  target.append(label, time);
   target.addEventListener('click', () => seekPlayer(video, 0));
   track.append(target);
   place(target, 0, duration, duration);
@@ -156,7 +196,7 @@ export function renderTimeline({ root, video, state, timecode }) {
     words,
     duration,
   );
-  renderSource(root.querySelector('[data-source-track]'), video, duration);
+  renderSource(root.querySelector('[data-source-track]'), video, duration, state.waveform);
   renderAssets(root.querySelector('[data-assets]'), state.assets);
 
   synchronizePlayer({

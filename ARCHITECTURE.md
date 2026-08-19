@@ -1,6 +1,6 @@
 # Архитектура AutoMontage-Agent
 
-Актуально на 2026-08-05. Документ описывает существующий код, а не будущую дорожную карту.
+Актуально на 2026-08-20. Документ описывает существующий код, а не будущую дорожную карту.
 
 ## 1. Назначение и границы
 
@@ -119,6 +119,21 @@ owned temps. При рендере точный legacy `faceSrc: "source.mp4"` �
 Brief замораживает исходник, тему, аспект, размеры, FPS, длительность, сцены и проверенное
 кадрирование лица. Это защищает от ситуации, когда утверждали один монтаж, а рендерится другой.
 
+### 3.3 Review Workbench — локальная проверка до рендера
+
+`scripts/review/server.js` поднимает loopback-сервер с непредсказуемым session token и отдаёт
+browser-safe модель: исходник, сцены, слова, разрешённые медиа и аудит таймингов. Реальные пути
+остаются на сервере; `/api/*` и `/media/*` требуют токен, а файловые ответы привязаны к snapshot
+regular-файла и закрываются при его подмене после старта.
+
+`scripts/review/waveform.js` best-effort создаёт через argv-only ffmpeg изображение
+`previews/review-waveform-<fingerprint>.png`. Fingerprint включает workspace-relative identity,
+размер и временные метаданные исходника. Генерация идёт в непредсказуемый соседний temp,
+проверяет regular file и публикует его атомарным rename; symlink и dangling symlink отклоняются.
+Ошибка или отсутствие ffmpeg дают `waveform: null` и не меняют manifest, brief или render state.
+При успехе браузер видит только `{ url: "/media/waveform" }`, а timeline добавляет PNG внутрь
+существующей дорожки исходника без отдельной пустой панели.
+
 ## 4. Remotion-слой
 
 `src/index.js` регистрирует композиции через `src/Root.jsx`.
@@ -154,6 +169,7 @@ Brief замораживает исходник, тему, аспект, раз�
 | Папки и версии роликов | `scripts/project/workspace.js`, `scripts/project/build-context.js` |
 | Транскрипция и субтитры | `scripts/transcribe.py`, `scripts/build-captions.js` |
 | Lesson brief | `scripts/gen-brief.js`, `scripts/lesson/*` |
+| Локальная проверка | `scripts/review/*`, `review/*` |
 | Валидация и качество | `scripts/validate.js`, `scripts/quality-gate.js`, `scripts/dynamic-gate.js` |
 | Монтаж аудио/видео | `scripts/finish.js`, `scripts/finish-audio.js`, `scripts/mix-music.js`, `scripts/pack-tg.js` |
 | Длинные рендеры | `scripts/render-chunks.js` |

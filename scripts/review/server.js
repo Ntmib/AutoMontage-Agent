@@ -7,6 +7,7 @@ const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { readProjectManifest, resolveProjectPath } = require('../project/workspace');
 const { isAllowedReviewMediaPath } = require('./assets');
 const { loadReviewState } = require('./model');
+const { ensureWaveformPreview } = require('./waveform');
 
 const BODY_LIMIT = 256 * 1024;
 const STATIC_FILES = new Map([
@@ -301,6 +302,7 @@ async function routeRequest({
   root,
   state,
   sourceFile,
+  waveformFile,
   assetFiles,
 }) {
   let url;
@@ -342,6 +344,14 @@ async function routeRequest({
   }
   if (pathname === '/media/source') {
     serveFile(request, response, sourceFile);
+    return;
+  }
+  if (pathname === '/media/waveform') {
+    if (!waveformFile) {
+      sendError(response, 404, request.method === 'HEAD');
+      return;
+    }
+    serveFile(request, response, waveformFile);
     return;
   }
   const assetMatch = /^\/media\/assets\/(asset-[1-9]\d*)$/.exec(pathname);
@@ -390,14 +400,10 @@ async function startReviewServer({
   editable = false,
   open = true,
   port = 0,
+  runToolImpl,
 } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedProjectDir = path.resolve(projectDir || '');
-  const state = loadReviewState({
-    root: resolvedRoot,
-    projectDir: resolvedProjectDir,
-    editable,
-  });
   const manifest = readProjectManifest(resolvedProjectDir);
   const sourcePath = resolveProjectPath(resolvedProjectDir, manifest.source.localPath, {
     label: 'review source',
@@ -406,6 +412,18 @@ async function startReviewServer({
   });
   const sourceFile = snapshotFile(sourcePath);
   if (!sourceFile) throw new Error('review source is unavailable');
+  const waveformPreview = ensureWaveformPreview({
+    workspace: { dir: resolvedProjectDir, manifest },
+    sourcePath,
+    runToolImpl,
+  });
+  const waveformFile = waveformPreview.available ? snapshotFile(waveformPreview.path) : null;
+  const state = loadReviewState({
+    root: resolvedRoot,
+    projectDir: resolvedProjectDir,
+    editable,
+    waveformAvailable: Boolean(waveformFile),
+  });
   const assetFiles = buildAssetFiles({
     root: resolvedRoot,
     projectDir: resolvedProjectDir,
@@ -422,6 +440,7 @@ async function startReviewServer({
       root: resolvedRoot,
       state,
       sourceFile,
+      waveformFile,
       assetFiles,
     }).catch(() => {
       if (!response.headersSent) sendError(response, 500);

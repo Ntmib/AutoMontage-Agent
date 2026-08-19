@@ -12,6 +12,8 @@ let reviewSession;
 let reviewUrl;
 let denseReviewSession;
 let denseReviewUrl;
+let noWaveformSession;
+let noWaveformUrl;
 let cleanups = [];
 
 async function closeServer(server) {
@@ -37,7 +39,7 @@ async function expectNoPageOverflow(page) {
   })));
 }
 
-async function makeBrowserReviewSession({ duration = 4, dense = false } = {}) {
+async function makeBrowserReviewSession({ duration = 4, dense = false, waveform = true } = {}) {
   const fixture = makeReviewProject({ after: (cleanup) => cleanups.push(cleanup) });
   if (dense) {
     const brief = JSON.parse(fs.readFileSync(fixture.briefPath, 'utf8'));
@@ -87,6 +89,12 @@ async function makeBrowserReviewSession({ duration = 4, dense = false } = {}) {
     root: ROOT,
     projectDir: fixture.projectDir,
     open: false,
+    runToolImpl: waveform
+      ? (_command, args) => fs.copyFileSync(
+        path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
+        args.at(-1),
+      )
+      : () => { throw new Error('waveform unavailable'); },
   });
 }
 
@@ -95,13 +103,52 @@ test.beforeAll(async () => {
   reviewUrl = reviewSession.url;
   denseReviewSession = await makeBrowserReviewSession({ duration: 90, dense: true });
   denseReviewUrl = denseReviewSession.url;
+  noWaveformSession = await makeBrowserReviewSession({ waveform: false });
+  noWaveformUrl = noWaveformSession.url;
 });
 
 test.afterAll(async () => {
   await closeServer(reviewSession && reviewSession.server);
   await closeServer(denseReviewSession && denseReviewSession.server);
+  await closeServer(noWaveformSession && noWaveformSession.server);
   cleanups.reverse().forEach((cleanup) => cleanup());
   cleanups = [];
+});
+
+test('timeline shows only the token-protected safe waveform URL when available', async ({ page }) => {
+  const waveformRequests = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/media/waveform')) waveformRequests.push(request);
+  });
+
+  await openReview(page);
+
+  const waveform = page.locator('img[data-waveform-preview]');
+  await expect(waveform).toHaveCount(1);
+  await expect.poll(() => waveformRequests.length).toBeGreaterThan(0);
+  const url = new URL(waveformRequests[0].url());
+  expect(url.pathname).toBe('/media/waveform');
+  expect(url.searchParams.get('token')).toBe(reviewSession.token);
+});
+
+test('timeline adds no blank waveform element when preview is unavailable', async ({ page }) => {
+  await openReview(page, noWaveformUrl);
+
+  await expect(page.locator('img[data-waveform-preview]')).toHaveCount(0);
+  await expect(page.locator('[data-lane]')).toHaveCount(4);
+});
+
+test('timeline refuses a waveform URL outside the fixed media handle', async ({ page }) => {
+  await page.route('**/api/state', async (route) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    state.waveform = { url: 'https://evil.test/private.png' };
+    await route.fulfill({ response, json: state });
+  });
+
+  await openReview(page);
+
+  await expect(page.locator('img[data-waveform-preview]')).toHaveCount(0);
 });
 
 test('read-only review shows semantic source, lanes and diagnostics without edit controls', async ({ page }) => {

@@ -80,7 +80,13 @@ function browserScene(scene) {
   return result;
 }
 
-function loadReviewState({ root, projectDir, briefPath, editable = false } = {}) {
+function loadReviewState({
+  root,
+  projectDir,
+  briefPath,
+  editable = false,
+  waveformAvailable = false,
+} = {}) {
   if (typeof projectDir !== 'string' || projectDir.length === 0) {
     throw new Error('review project directory is required');
   }
@@ -134,7 +140,7 @@ function loadReviewState({ root, projectDir, briefPath, editable = false } = {})
     transcript,
     assets: listReviewAssets({ root, workspace }),
     timing: auditBriefTiming({ brief, transcript: transcript.segments }),
-    waveform: null,
+    waveform: waveformAvailable ? { url: '/media/waveform' } : null,
   };
 }
 
