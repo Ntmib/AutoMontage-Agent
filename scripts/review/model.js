@@ -80,13 +80,7 @@ function browserScene(scene) {
   return result;
 }
 
-function loadReviewState({
-  root,
-  projectDir,
-  briefPath,
-  editable = false,
-  waveformAvailable = false,
-} = {}) {
+function loadReviewBase({ projectDir, briefPath } = {}) {
   if (typeof projectDir !== 'string' || projectDir.length === 0) {
     throw new Error('review project directory is required');
   }
@@ -104,6 +98,32 @@ function loadReviewState({
   if (brief.status !== entry.status) {
     throw new Error('review brief status does not match the project manifest');
   }
+  return {
+    workspace,
+    entry,
+    briefFilePath,
+    brief,
+    baseHash: hash(brief),
+    manifestHash: hash(manifest),
+  };
+}
+
+function loadReviewState({
+  root,
+  projectDir,
+  briefPath,
+  editable = false,
+  waveformAvailable = false,
+} = {}) {
+  const {
+    workspace,
+    entry,
+    brief,
+    baseHash,
+    manifestHash,
+  } = loadReviewBase({ projectDir, briefPath });
+  const resolvedProjectDir = workspace.dir;
+  const { manifest } = workspace;
 
   let transcriptPath;
   try {
@@ -122,8 +142,8 @@ function loadReviewState({
     session: {
       editable: Boolean(editable),
       baseRevision: entry.revision,
-      baseHash: hash(brief),
-      manifestHash: hash(manifest),
+      baseHash,
+      manifestHash,
     },
     output: {
       width: brief.output.width,
@@ -144,4 +164,4 @@ function loadReviewState({
   };
 }
 
-module.exports = { loadReviewState };
+module.exports = { loadReviewBase, loadReviewState };

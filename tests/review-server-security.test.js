@@ -16,6 +16,7 @@ function request(session, pathname, {
   origin,
   body,
   chunked = false,
+  contentType = 'application/json',
 } = {}) {
   const suffix = queryToken && token
     ? `${pathname.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
@@ -24,7 +25,7 @@ function request(session, pathname, {
   if (token && !queryToken) headers.authorization = `Bearer ${token}`;
   if (origin) headers.origin = origin;
   if (body !== undefined) {
-    headers['content-type'] = 'application/json';
+    headers['content-type'] = contentType;
     if (chunked) headers['transfer-encoding'] = 'chunked';
     else headers['content-length'] = Buffer.byteLength(body);
   }
@@ -67,6 +68,39 @@ function startTestReviewServer(options) {
       throw new Error('waveform unavailable in unrelated server test');
     },
     ...options,
+  });
+}
+
+function jsonBody(value) {
+  return JSON.stringify(value);
+}
+
+async function editablePayload(session, commands = [{
+  type: 'move-boundary',
+  leftSceneIndex: 0,
+  seconds: 2.2,
+}]) {
+  const response = await request(session, '/api/state', { token: session.token });
+  assert.equal(response.status, 200);
+  const state = JSON.parse(response.body.toString('utf8'));
+  return {
+    state,
+    payload: {
+      baseRevision: state.session.baseRevision,
+      baseHash: state.session.baseHash,
+      manifestHash: state.session.manifestHash,
+      commands,
+    },
+  };
+}
+
+function postJson(session, pathname, value, overrides = {}) {
+  return request(session, pathname, {
+    token: session.token,
+    method: 'POST',
+    origin: session.origin,
+    body: jsonBody(value),
+    ...overrides,
   });
 }
 
@@ -151,6 +185,348 @@ test('review server rejects foreign writes, oversized bodies, and traversal', as
   })).status, 404);
   assert.equal((await request(session, '/package.json', { token: session.token })).status, 404);
   assert.equal((await request(session, '/api/%00', { token: session.token })).status, 404);
+});
+
+test('review edit routes authenticate and exist only in editable sessions', async (t) => {
+  const readOnlyProject = makeReviewProject(t);
+  const readOnly = await startTestReviewServer({
+    root: ROOT,
+    projectDir: readOnlyProject.projectDir,
+    open: false,
+  });
+  t.after(() => closeServer(readOnly.server));
+  const { payload: readOnlyPayload } = await editablePayload(readOnly);
+
+  assert.equal((await postJson(readOnly, '/api/validate', readOnlyPayload)).status, 405);
+  assert.equal((await postJson(readOnly, '/api/save', readOnlyPayload)).status, 405);
+  assert.equal((await request(readOnly, '/api/save', {
+    token: readOnly.token,
+    method: 'POST',
+    origin: readOnly.origin,
+    body: '{',
+    contentType: 'text/plain',
+  })).status, 405);
+
+  const editableProject = makeReviewProject(t);
+  const editable = await startTestReviewServer({
+    root: ROOT,
+    projectDir: editableProject.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(editable.server));
+  const { payload } = await editablePayload(editable);
+  const malformed = '{"baseRevision":';
+
+  assert.equal((await request(editable, '/api/validate', {
+    token: 'wrong',
+    method: 'POST',
+    origin: editable.origin,
+    body: malformed,
+  })).status, 401);
+  assert.equal((await request(editable, '/api/validate', {
+    token: editable.token,
+    method: 'POST',
+    origin: 'https://evil.test',
+    body: malformed,
+  })).status, 403);
+  assert.equal((await postJson(editable, '/api/validate', payload)).status, 200);
+});
+
+test('review edit routes reject malformed, extra, path-bearing and unknown JSON', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const { payload } = await editablePayload(session);
+  const malformedBodies = [
+    '{',
+    jsonBody({ ...payload, brief: { source: '/Users/private/source.mov' } }),
+    jsonBody({ ...payload, projectDir: '/Users/private/project' }),
+    jsonBody({ ...payload, ['__proto__']: { polluted: true } }),
+    jsonBody({
+      ...payload,
+      commands: [{
+        type: 'move-boundary',
+        leftSceneIndex: 0,
+        seconds: 2.2,
+        path: '/Users/private/source.mov',
+      }],
+    }),
+    jsonBody({ ...payload, commands: [{ type: 'delete-project' }] }),
+  ];
+
+  for (const body of malformedBodies) {
+    const response = await request(session, '/api/validate', {
+      token: session.token,
+      method: 'POST',
+      origin: session.origin,
+      body,
+    });
+    assert.equal(response.status, 400);
+    assert.equal(response.body.toString('utf8'), 'Request rejected');
+    assert.doesNotMatch(response.body.toString('utf8'), /Users|private|delete-project/);
+  }
+  assert.equal((await request(session, '/api/validate', {
+    token: session.token,
+    method: 'POST',
+    origin: session.origin,
+    body: jsonBody(payload),
+    contentType: 'text/plain',
+  })).status, 400);
+});
+
+test('review edit routes reject stale revisions and disk hashes', async (t) => {
+  const revisionProject = makeReviewProject(t);
+  const revisionSession = await startTestReviewServer({
+    root: ROOT,
+    projectDir: revisionProject.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(revisionSession.server));
+  const { payload: revisionPayload } = await editablePayload(revisionSession);
+  assert.equal((await postJson(revisionSession, '/api/validate', {
+    ...revisionPayload,
+    baseRevision: revisionPayload.baseRevision + 1,
+  })).status, 409);
+
+  const briefProject = makeReviewProject(t);
+  const briefSession = await startTestReviewServer({
+    root: ROOT,
+    projectDir: briefProject.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(briefSession.server));
+  const { payload: briefPayload } = await editablePayload(briefSession);
+  const brief = JSON.parse(fs.readFileSync(briefProject.briefPath, 'utf8'));
+  brief.scenes[0].caption = 'ИЗМЕНЕНО НА ДИСКЕ';
+  fs.writeFileSync(briefProject.briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  assert.equal((await postJson(briefSession, '/api/save', briefPayload)).status, 409);
+
+  const manifestProject = makeReviewProject(t);
+  const manifestSession = await startTestReviewServer({
+    root: ROOT,
+    projectDir: manifestProject.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(manifestSession.server));
+  const { payload: manifestPayload } = await editablePayload(manifestSession);
+  const manifestPath = path.join(manifestProject.projectDir, 'project.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.name = 'Changed concurrently';
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  assert.equal((await postJson(manifestSession, '/api/validate', manifestPayload)).status, 409);
+});
+
+test('review validate reports safe diff and timing without writing files', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const { payload } = await editablePayload(session);
+  const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
+  const beforeBriefNames = fs.readdirSync(path.join(projectDir, 'brief')).sort();
+
+  const response = await postJson(session, '/api/validate', payload);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(response.body.toString('utf8')), {
+    ok: true,
+    diff: [{ kind: 'boundary', leftScene: 0, rightScene: 1, from: 2, to: 2.2 }],
+    timing: { errors: [], warnings: [], suggestions: [] },
+  });
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
+  assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefNames);
+  assert.doesNotMatch(response.body.toString('utf8'), /Users|projectDir|source\.mov/);
+});
+
+test('review save rejects invalid timing and no-op commands without writing', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const { payload } = await editablePayload(session);
+  const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
+  const beforeBriefNames = fs.readdirSync(path.join(projectDir, 'brief')).sort();
+
+  assert.equal((await postJson(session, '/api/validate', {
+    ...payload,
+    commands: [{ type: 'move-boundary', leftSceneIndex: 0, seconds: 4 }],
+  })).status, 422);
+  assert.equal((await postJson(session, '/api/save', {
+    ...payload,
+    commands: [],
+  })).status, 400);
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
+  assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefNames);
+});
+
+test('review save materializes project and public broll ids into canonical references', async (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const projectAssets = path.join(workspace.dir, 'assets', 'broll');
+  fs.writeFileSync(path.join(projectAssets, 'diagram.png'), 'base asset');
+  fs.writeFileSync(path.join(projectAssets, 'replacement.png'), 'replacement asset');
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-repository-'));
+  t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(repository, 'public', 'broll'), { recursive: true });
+  fs.writeFileSync(path.join(repository, 'public', 'broll', 'public.png'), 'public asset');
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes = [
+    {
+      scene: 'broll',
+      start: 0,
+      end: 2,
+      brollSrc: 'assets/broll/diagram.png',
+      headCream: 'ПЕРВАЯ',
+      headOrange: 'СХЕМА',
+    },
+    {
+      scene: 'broll',
+      start: 2,
+      end: 4,
+      brollSrc: 'assets/broll/diagram.png',
+      headCream: 'ВТОРАЯ',
+      headOrange: 'СХЕМА',
+    },
+  ];
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  const session = await startTestReviewServer({
+    root: repository,
+    projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const stateResponse = await request(session, '/api/state', { token: session.token });
+  const state = JSON.parse(stateResponse.body.toString('utf8'));
+  assert.deepEqual(state.assets.map(({ id, kind, label }) => ({ id, kind, label })), [
+    { id: 'asset-1', kind: 'project', label: 'diagram.png' },
+    { id: 'asset-2', kind: 'project', label: 'replacement.png' },
+    { id: 'asset-3', kind: 'public', label: 'public.png' },
+  ]);
+  const payload = {
+    baseRevision: state.session.baseRevision,
+    baseHash: state.session.baseHash,
+    manifestHash: state.session.manifestHash,
+    commands: [
+      { type: 'replace-broll', sceneIndex: 0, assetId: 'asset-2' },
+      { type: 'replace-broll', sceneIndex: 1, assetId: 'asset-3' },
+    ],
+  };
+
+  const validationResponse = await postJson(session, '/api/validate', payload);
+  assert.equal(validationResponse.status, 200);
+  assert.deepEqual(JSON.parse(validationResponse.body.toString('utf8')).diff, [
+    { kind: 'asset', scene: 0, from: 'asset-1', to: 'asset-2' },
+    { kind: 'asset', scene: 1, from: 'asset-1', to: 'asset-3' },
+  ]);
+  assert.doesNotMatch(
+    validationResponse.body.toString('utf8'),
+    /assets\/broll|broll\/public|Users|\/media\//,
+  );
+
+  const response = await postJson(session, '/api/save', payload);
+
+  assert.equal(response.status, 201);
+  const result = JSON.parse(response.body.toString('utf8'));
+  const saved = JSON.parse(fs.readFileSync(path.join(projectDir, result.path), 'utf8'));
+  assert.equal(saved.scenes[0].brollSrc, 'assets/broll/replacement.png');
+  assert.equal(saved.scenes[1].brollSrc, 'broll/public.png');
+  assert.doesNotMatch(JSON.stringify(saved), /asset-[1-9]|\/media\//);
+  assert.doesNotMatch(response.body.toString('utf8'), /Users|asset-[1-9]|\/media\//);
+});
+
+test('review save creates a draft and advances the browser-safe session state', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const { state: beforeState, payload } = await editablePayload(session);
+
+  const response = await postJson(session, '/api/save', payload);
+
+  assert.equal(response.status, 201);
+  const result = JSON.parse(response.body.toString('utf8'));
+  assert.equal(result.ok, true);
+  assert.equal(result.revision, 2);
+  assert.equal(result.path, 'brief/v02-draft.lesson.json');
+  assert.equal(result.session.editable, true);
+  assert.equal(result.session.baseRevision, 2);
+  assert.match(result.session.baseHash, /^[a-f0-9]{64}$/);
+  assert.match(result.session.manifestHash, /^[a-f0-9]{64}$/);
+  assert.notEqual(result.session.baseHash, beforeState.session.baseHash);
+  assert.notEqual(result.session.manifestHash, beforeState.session.manifestHash);
+  assert.doesNotMatch(response.body.toString('utf8'), /Users|projectDir|source\.mov/);
+  const saved = JSON.parse(fs.readFileSync(path.join(projectDir, result.path), 'utf8'));
+  assert.equal(saved.status, 'draft');
+  assert.equal(saved.scenes[0].end, 2.2);
+  assert.equal(saved.scenes[1].start, 2.2);
+
+  const nextStateResponse = await request(session, '/api/state', { token: session.token });
+  const nextState = JSON.parse(nextStateResponse.body.toString('utf8'));
+  assert.deepEqual(nextState.session, result.session);
+  assert.equal(nextState.brief.scenes[0].end, 2.2);
+  assert.equal((await postJson(session, '/api/save', payload)).status, 409);
+});
+
+test('review save returns a fixed 500 and preserves state on an injected filesystem failure', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const internalPath = path.join(projectDir, 'private-save-target.json');
+  const logs = [];
+  const failingFileSystem = {
+    ...fs,
+    renameSync(source, target) {
+      if (source.includes('.tmp-review-draft-manifest-')) {
+        throw new Error(`simulated save failure at ${internalPath}`);
+      }
+      return fs.renameSync(source, target);
+    },
+  };
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+    fileSystem: failingFileSystem,
+    logger: { error: (...args) => logs.push(args) },
+  });
+  t.after(() => closeServer(session.server));
+  const { state: beforeState, payload } = await editablePayload(session);
+  const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
+
+  const response = await postJson(session, '/api/save', payload);
+
+  assert.equal(response.status, 500);
+  assert.equal(response.body.toString('utf8'), 'Request rejected');
+  assert.doesNotMatch(response.body.toString('utf8'), /simulated|private|Users/);
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
+  const afterStateResponse = await request(session, '/api/state', { token: session.token });
+  assert.deepEqual(JSON.parse(afterStateResponse.body.toString('utf8')).session, beforeState.session);
+  assert.equal(logs.length, 1);
+  const logged = JSON.stringify(logs);
+  assert.match(logged, /simulated save failure/);
+  assert.doesNotMatch(logged, new RegExp(session.token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(logged, new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(logged, /private-save-target|\/api\/save|baseHash|commands/);
 });
 
 test('review applies the body limit to declared GET and HEAD requests', async (t) => {

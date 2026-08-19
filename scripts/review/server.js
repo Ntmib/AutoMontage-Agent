@@ -4,9 +4,20 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 
-const { readProjectManifest, resolveProjectPath } = require('../project/workspace');
-const { isAllowedReviewMediaPath } = require('./assets');
-const { loadReviewState } = require('./model');
+const { validateLessonBrief } = require('../lesson/brief');
+const {
+  readProjectManifest,
+  resolveProjectPath,
+  saveDraftRevision,
+} = require('../project/workspace');
+const {
+  isAllowedReviewMediaPath,
+  resolveReviewAsset,
+} = require('./assets');
+const { applyReviewCommands, isOpaqueAssetId } = require('./commands');
+const { diffLessonBrief } = require('./diff');
+const { loadReviewBase, loadReviewState } = require('./model');
+const { auditBriefTiming } = require('./timing-audit');
 const { ensureWaveformPreview } = require('./waveform');
 
 const BODY_LIMIT = 256 * 1024;
@@ -68,6 +79,61 @@ function sendError(response, status, head = false) {
   }, head);
 }
 
+function sendJson(response, status, value) {
+  send(response, status, JSON.stringify(value), {
+    'Content-Type': 'application/json; charset=utf-8',
+  });
+}
+
+class ReviewRequestError extends Error {
+  constructor(status, code) {
+    super(code);
+    this.name = 'ReviewRequestError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function rejectRequest(status, code) {
+  throw new ReviewRequestError(status, code);
+}
+
+function isPlainObject(value) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function hasExactOwnKeys(value, expectedKeys) {
+  if (!isPlainObject(value)) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== expectedKeys.length || keys.some((key) => typeof key !== 'string')) {
+    return false;
+  }
+  return expectedKeys.every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return keys.includes(key) && descriptor && Object.hasOwn(descriptor, 'value');
+  });
+}
+
+function parseEditBody(bytes) {
+  let body;
+  try {
+    body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch (_) {
+    rejectRequest(400, 'MALFORMED_JSON');
+  }
+  if (!hasExactOwnKeys(body, ['baseRevision', 'baseHash', 'manifestHash', 'commands'])
+    || !Number.isSafeInteger(body.baseRevision) || body.baseRevision < 1
+    || typeof body.baseHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.baseHash)
+    || typeof body.manifestHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.manifestHash)
+    || !Array.isArray(body.commands)) {
+    rejectRequest(400, 'MALFORMED_EDIT_REQUEST');
+  }
+  return body;
+}
+
 function safeTokenEqual(actual, expected) {
   if (typeof actual !== 'string' || typeof expected !== 'string') return false;
   const actualBytes = Buffer.from(actual);
@@ -106,34 +172,37 @@ function hasRequestBody(request) {
 }
 
 function consumeLimitedBody(request, response) {
-  if (!hasRequestBody(request)) return Promise.resolve(true);
+  if (!hasRequestBody(request)) return Promise.resolve(Buffer.alloc(0));
   const declared = request.headers['content-length'];
   if (declared !== undefined) {
     if (typeof declared !== 'string' || !/^\d+$/.test(declared)) {
       request.resume();
       sendError(response, 400);
-      return Promise.resolve(false);
+      return Promise.resolve(null);
     }
     if (Number(declared) > BODY_LIMIT) {
       request.resume();
       sendError(response, 413);
-      return Promise.resolve(false);
+      return Promise.resolve(null);
     }
   }
 
   return new Promise((resolve) => {
     let size = 0;
     let rejected = false;
+    const chunks = [];
     request.on('data', (chunk) => {
       size += chunk.length;
       if (!rejected && size > BODY_LIMIT) {
         rejected = true;
         sendError(response, 413);
+      } else if (!rejected) {
+        chunks.push(chunk);
       }
     });
-    request.on('end', () => resolve(!rejected));
-    request.on('aborted', () => resolve(false));
-    request.on('error', () => resolve(false));
+    request.on('end', () => resolve(rejected ? null : Buffer.concat(chunks)));
+    request.on('aborted', () => resolve(null));
+    request.on('error', () => resolve(null));
   });
 }
 
@@ -183,14 +252,22 @@ function buildAssetFiles({ root, projectDir, state }) {
     });
     projectAssets = collectRegularFiles(directory)
       .filter((filePath) => isAllowedReviewMediaPath(path.relative(directory, filePath)))
-      .map((filePath) => ({ kind: 'project', filePath }));
+      .map((filePath) => ({
+        kind: 'project',
+        filePath,
+        reference: `assets/${path.relative(directory, filePath).split(path.sep).join('/')}`,
+      }));
   } catch (_) {
     projectAssets = [];
   }
   const publicDirectory = path.resolve(root, 'public');
   const publicAssets = collectRegularFiles(publicDirectory)
     .filter((filePath) => isAllowedReviewMediaPath(path.relative(publicDirectory, filePath)))
-    .map((filePath) => ({ kind: 'public', filePath }));
+    .map((filePath) => ({
+      kind: 'public',
+      filePath,
+      reference: path.relative(publicDirectory, filePath).split(path.sep).join('/'),
+    }));
   const candidates = [...projectAssets, ...publicAssets];
   const mappings = new Map();
   state.assets.forEach((descriptor, index) => {
@@ -198,7 +275,11 @@ function buildAssetFiles({ root, projectDir, state }) {
     if (candidate && candidate.kind === descriptor.kind
       && path.basename(candidate.filePath) === descriptor.label) {
       const snapshot = snapshotFile(candidate.filePath);
-      if (snapshot) mappings.set(descriptor.id, snapshot);
+      if (snapshot) mappings.set(descriptor.id, {
+        ...snapshot,
+        kind: candidate.kind,
+        reference: candidate.reference,
+      });
     }
   });
   return mappings;
@@ -294,16 +375,229 @@ function serveFile(request, response, file) {
   stream.pipe(response);
 }
 
+function safeHashEqual(actual, expected) {
+  return /^[a-f0-9]{64}$/.test(actual)
+    && /^[a-f0-9]{64}$/.test(expected)
+    && safeTokenEqual(actual, expected);
+}
+
+function currentAssetReference({ root, workspace, assetFiles, assetId }) {
+  const registered = assetFiles.get(assetId);
+  if (!registered) return null;
+  const current = resolveReviewAsset({
+    root,
+    workspace,
+    reference: registered.reference,
+    id: assetId,
+  });
+  if (!current || current.kind !== registered.kind) return null;
+  return registered.reference;
+}
+
+function currentAssetIds({ root, workspace, assetFiles }) {
+  const ids = new Set();
+  for (const assetId of assetFiles.keys()) {
+    if (currentAssetReference({ root, workspace, assetFiles, assetId })) ids.add(assetId);
+  }
+  return ids;
+}
+
+function requestStatusForCommandError(error) {
+  const message = error && typeof error.message === 'string' ? error.message : '';
+  return /boundary seconds|boundary is invalid|produced an invalid lesson brief/.test(message)
+    ? 422
+    : 400;
+}
+
+function replayReviewEdit({ root, projectDir, runtime, body }) {
+  const current = loadReviewBase({ projectDir });
+  if (current.entry.revision !== body.baseRevision
+    || !safeHashEqual(body.baseHash, current.baseHash)
+    || !safeHashEqual(body.manifestHash, current.manifestHash)) {
+    rejectRequest(409, 'STALE_REVIEW_BASE');
+  }
+
+  let candidate;
+  try {
+    candidate = applyReviewCommands({
+      brief: current.brief,
+      commands: body.commands,
+      assetIds: currentAssetIds({
+        root,
+        workspace: current.workspace,
+        assetFiles: runtime.assetFiles,
+      }),
+    });
+  } catch (error) {
+    rejectRequest(requestStatusForCommandError(error), 'INVALID_REVIEW_COMMAND');
+  }
+  candidate.status = 'draft';
+  const validation = validateLessonBrief(candidate);
+  if (!validation.ok) rejectRequest(422, 'INVALID_REVIEW_BRIEF');
+
+  let diff;
+  try {
+    diff = diffLessonBrief({ before: current.brief, after: candidate });
+  } catch (_) {
+    throw new Error('review edit replay produced an unsupported diff');
+  }
+  const timing = auditBriefTiming({
+    brief: candidate,
+    transcript: runtime.state.transcript.segments,
+  });
+  if (timing.errors.length > 0) rejectRequest(422, 'INVALID_REVIEW_TIMING');
+  return { current, candidate, diff, timing };
+}
+
+function materializeReviewAssets({ root, current, assetFiles, candidate }) {
+  const materialized = structuredClone(candidate);
+  for (const scene of materialized.scenes) {
+    if (!isOpaqueAssetId(scene.brollSrc)) continue;
+    const reference = currentAssetReference({
+      root,
+      workspace: current.workspace,
+      assetFiles,
+      assetId: scene.brollSrc,
+    });
+    if (!reference) rejectRequest(422, 'UNRESOLVED_REVIEW_ASSET');
+    scene.brollSrc = reference;
+  }
+  const validation = validateLessonBrief(materialized);
+  if (!validation.ok) rejectRequest(422, 'INVALID_REVIEW_BRIEF');
+  const timing = auditBriefTiming({ brief: materialized, transcript: [] });
+  if (timing.errors.length > 0) rejectRequest(422, 'INVALID_REVIEW_TIMING');
+  return materialized;
+}
+
+function browserSafeDiff(diff, assetFiles) {
+  return diff.map((change) => {
+    if (change.kind === 'boundary') return { ...change };
+    if (change.kind !== 'asset') throw new Error('review diff contains an unsafe change');
+    let previousId = null;
+    for (const [assetId, registered] of assetFiles) {
+      if (registered.reference === change.from
+        || (registered.kind === 'public' && `public/${registered.reference}` === change.from)) {
+        previousId = assetId;
+        break;
+      }
+    }
+    return { ...change, from: previousId };
+  });
+}
+
+function projectRelativePath(projectDir, filePath) {
+  const relative = path.relative(projectDir, filePath);
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative)) {
+    throw new Error('review save returned an invalid path');
+  }
+  return relative.split(path.sep).join('/');
+}
+
+function isSaveConflict(error) {
+  if (error && error.code === 'PROJECT_MANIFEST_CONFLICT') return true;
+  const message = error && typeof error.message === 'string' ? error.message : '';
+  return /\bstale\b|changed concurrently|no longer current/.test(message);
+}
+
+function sanitizeInternalMessage(error, sensitiveValues) {
+  let message = error && typeof error.message === 'string' ? error.message : 'internal error';
+  for (const value of sensitiveValues) {
+    if (typeof value === 'string' && value.length > 0) message = message.replaceAll(value, '[redacted]');
+  }
+  return message
+    .replace(/(?:[A-Za-z]:\\|\/)[^\s]*/g, '[redacted-path]')
+    .slice(0, 300);
+}
+
+function logInternalError(logger, error, sensitiveValues) {
+  if (!logger || typeof logger.error !== 'function') return;
+  try {
+    logger.error('Review request failed', {
+      name: error && typeof error.name === 'string' ? error.name : 'Error',
+      code: error && typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code)
+        ? error.code
+        : 'INTERNAL_ERROR',
+      message: sanitizeInternalMessage(error, sensitiveValues),
+    });
+  } catch (_) {
+    // Logging must never change the response or expose request data.
+  }
+}
+
+function handleEditRoute({
+  pathname,
+  response,
+  root,
+  projectDir,
+  editable,
+  runtime,
+  bodyBytes,
+  waveformAvailable,
+  fileSystem,
+}) {
+  if (!editable) rejectRequest(405, 'READ_ONLY_REVIEW');
+  const body = parseEditBody(bodyBytes);
+  const replay = replayReviewEdit({ root, projectDir, runtime, body });
+  if (pathname === '/api/validate') {
+    sendJson(response, 200, {
+      ok: true,
+      diff: browserSafeDiff(replay.diff, runtime.assetFiles),
+      timing: replay.timing,
+    });
+    return;
+  }
+  if (replay.diff.length === 0) rejectRequest(400, 'EMPTY_REVIEW_DIFF');
+
+  const checked = replayReviewEdit({ root, projectDir, runtime, body });
+  if (checked.diff.length === 0) rejectRequest(400, 'EMPTY_REVIEW_DIFF');
+  const materialized = materializeReviewAssets({
+    root,
+    current: checked.current,
+    assetFiles: runtime.assetFiles,
+    candidate: checked.candidate,
+  });
+  let saved;
+  try {
+    saved = saveDraftRevision(checked.current.workspace, {
+      baseJsonPath: checked.current.briefFilePath,
+      brief: materialized,
+      fileSystem,
+    });
+  } catch (error) {
+    if (isSaveConflict(error)) rejectRequest(409, 'STALE_REVIEW_BASE');
+    throw error;
+  }
+
+  const nextState = loadReviewState({
+    root,
+    projectDir,
+    editable: true,
+    waveformAvailable,
+  });
+  nextState.assets = runtime.state.assets;
+  runtime.state = nextState;
+  sendJson(response, 201, {
+    ok: true,
+    revision: saved.revision,
+    path: projectRelativePath(projectDir, saved.jsonPath),
+    session: nextState.session,
+  });
+}
+
 async function routeRequest({
   request,
   response,
   token,
   origin,
   root,
-  state,
+  runtime,
+  projectDir,
+  editable,
+  waveformAvailable,
+  fileSystem,
   sourceFile,
   waveformFile,
-  assetFiles,
 }) {
   let url;
   try {
@@ -330,14 +624,39 @@ async function routeRequest({
     sendError(response, 403);
     return;
   }
-  if (!await consumeLimitedBody(request, response)) return;
+  const bodyBytes = await consumeLimitedBody(request, response);
+  if (bodyBytes === null) return;
   if (!safeMethod) {
+    if (request.method === 'POST'
+      && (pathname === '/api/validate' || pathname === '/api/save')) {
+      if (!editable) {
+        sendError(response, 405);
+        return;
+      }
+      if (typeof request.headers['content-type'] !== 'string'
+        || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers['content-type'])) {
+        sendError(response, 400);
+        return;
+      }
+      handleEditRoute({
+        pathname,
+        response,
+        root,
+        projectDir,
+        editable,
+        runtime,
+        bodyBytes,
+        waveformAvailable,
+        fileSystem,
+      });
+      return;
+    }
     sendError(response, 405);
     return;
   }
 
   if (pathname === '/api/state') {
-    send(response, 200, JSON.stringify(state), {
+    send(response, 200, JSON.stringify(runtime.state), {
       'Content-Type': 'application/json; charset=utf-8',
     }, request.method === 'HEAD');
     return;
@@ -356,7 +675,7 @@ async function routeRequest({
   }
   const assetMatch = /^\/media\/assets\/(asset-[1-9]\d*)$/.exec(pathname);
   if (assetMatch) {
-    const file = assetFiles.get(assetMatch[1]);
+    const file = runtime.assetFiles.get(assetMatch[1]);
     if (!file) {
       sendError(response, 404, request.method === 'HEAD');
       return;
@@ -401,6 +720,8 @@ async function startReviewServer({
   open = true,
   port = 0,
   runToolImpl,
+  fileSystem = fs,
+  logger = console,
 } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedProjectDir = path.resolve(projectDir || '');
@@ -429,6 +750,7 @@ async function startReviewServer({
     projectDir: resolvedProjectDir,
     state,
   });
+  const runtime = { state, assetFiles };
   const token = randomBytes(32).toString('base64url');
   let origin = 'http://127.0.0.1';
   const server = http.createServer((request, response) => {
@@ -438,12 +760,19 @@ async function startReviewServer({
       token,
       origin,
       root: resolvedRoot,
-      state,
+      runtime,
+      projectDir: resolvedProjectDir,
+      editable: Boolean(editable),
+      waveformAvailable: Boolean(waveformFile),
+      fileSystem,
       sourceFile,
       waveformFile,
-      assetFiles,
-    }).catch(() => {
-      if (!response.headersSent) sendError(response, 500);
+    }).catch((error) => {
+      const status = error instanceof ReviewRequestError ? error.status : 500;
+      if (status === 500) {
+        logInternalError(logger, error, [token, resolvedRoot, resolvedProjectDir]);
+      }
+      if (!response.headersSent) sendError(response, status);
       else response.destroy();
     });
   });
