@@ -6,6 +6,7 @@ const { randomBytes, timingSafeEqual } = require('node:crypto');
 
 const { validateLessonBrief } = require('../lesson/brief');
 const {
+  nextBriefPaths,
   readProjectManifest,
   resolveProjectPath,
   saveDraftRevision,
@@ -544,6 +545,7 @@ function handleEditRoute({
   if (pathname === '/api/validate') {
     sendJson(response, 200, {
       ok: true,
+      destinationRevision: nextBriefPaths(replay.current.workspace).revision,
       diff: browserSafeDiff(replay.diff, runtime.assetFiles),
       timing: replay.timing,
     });

@@ -6,6 +6,7 @@ const {
   createOrOpenProject,
   nextBriefPaths,
   recordBrief,
+  writeProjectManifest,
 } = require('../../scripts/project/workspace');
 const { formatBriefMarkdown } = require('../../scripts/lesson/brief');
 
@@ -76,4 +77,27 @@ function makeReviewProject(t, { briefStatus = 'draft' } = {}) {
   };
 }
 
-module.exports = { makeReviewProject };
+function registerHigherBrief(fixture, { revision = 5 } = {}) {
+  const manifestPath = path.join(fixture.workspace.dir, 'project.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const currentBrief = JSON.parse(fs.readFileSync(fixture.briefPath, 'utf8'));
+  const prefix = `v${String(revision).padStart(2, '0')}-draft.lesson`;
+  const jsonPath = `brief/${prefix}.json`;
+  const markdownPath = `brief/${prefix}.md`;
+  const higherBrief = { ...currentBrief, status: 'draft' };
+  fs.writeFileSync(path.join(fixture.workspace.dir, jsonPath), `${JSON.stringify(higherBrief, null, 2)}\n`);
+  fs.writeFileSync(path.join(fixture.workspace.dir, markdownPath), formatBriefMarkdown(higherBrief));
+  manifest.briefs.push({
+    revision,
+    jsonPath,
+    markdownPath,
+    status: 'draft',
+    theme: higherBrief.theme,
+    aspect: higherBrief.output.aspect,
+  });
+  writeProjectManifest(fixture.workspace.dir, manifest);
+  fixture.workspace.manifest = manifest;
+  return { jsonPath, markdownPath };
+}
+
+module.exports = { makeReviewProject, registerHigherBrief };

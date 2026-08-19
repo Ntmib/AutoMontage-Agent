@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
 const { startReviewServer } = require('../scripts/review/server');
-const { makeReviewProject } = require('./helpers/review-project');
+const { makeReviewProject, registerHigherBrief } = require('./helpers/review-project');
 
 function request(session, pathname, {
   token,
@@ -343,12 +343,33 @@ test('review validate reports safe diff and timing without writing files', async
   assert.equal(response.status, 200);
   assert.deepEqual(JSON.parse(response.body.toString('utf8')), {
     ok: true,
+    destinationRevision: 2,
     diff: [{ kind: 'boundary', leftScene: 0, rightScene: 1, from: 2, to: 2.2 }],
     timing: { errors: [], warnings: [], suggestions: [] },
   });
   assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
   assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefNames);
   assert.doesNotMatch(response.body.toString('utf8'), /Users|projectDir|source\.mov/);
+});
+
+test('review validate allocates its destination above the highest registered revision', async (t) => {
+  const fixture = makeReviewProject(t);
+  registerHigherBrief(fixture, { revision: 5 });
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const { state, payload } = await editablePayload(session);
+
+  const response = await postJson(session, '/api/validate', payload);
+
+  assert.equal(state.session.baseRevision, 1);
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(response.body.toString('utf8')).destinationRevision, 6);
+  assert.doesNotMatch(response.body.toString('utf8'), /brief\/v05|Users|projectDir/);
 });
 
 test('review save rejects invalid timing and no-op commands without writing', async (t) => {

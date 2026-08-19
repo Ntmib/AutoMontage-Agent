@@ -7,7 +7,7 @@ const { test, expect } = require('playwright/test');
 
 const ROOT = path.resolve(__dirname, '..');
 const { startReviewServer } = require('../scripts/review/server');
-const { makeReviewProject } = require('./helpers/review-project');
+const { makeReviewProject, registerHigherBrief } = require('./helpers/review-project');
 
 let reviewSession;
 let reviewUrl;
@@ -50,6 +50,7 @@ async function makeBrowserReviewSession({
   briefStatus = 'draft',
   fileSystem,
   logger,
+  higherRevision,
 } = {}) {
   const fixture = makeReviewProject(
     { after: (cleanup) => cleanups.push(cleanup) },
@@ -138,6 +139,7 @@ async function makeBrowserReviewSession({
       path.join(fixture.workspace.dir, 'assets', 'broll', 'replacement.png'),
     );
   }
+  if (higherRevision) registerHigherBrief(fixture, { revision: higherRevision });
   const session = await startReviewServer({
     root: ROOT,
     projectDir: fixture.projectDir,
@@ -530,6 +532,7 @@ test('save confirms server diff, creates a new draft and leaves approved bytes u
     threeScenes: true,
     broll: true,
     briefStatus: 'approved',
+    higherRevision: 5,
   }, async (session) => {
     const approvedBytes = fs.readFileSync(session.fixture.briefPath);
     const approvedHash = crypto.createHash('sha256').update(approvedBytes).digest('hex');
@@ -550,7 +553,7 @@ test('save confirms server diff, creates a new draft and leaves approved bytes u
       expect(dialog.type()).toBe('confirm');
       expect(dialog.message()).toMatch(/Граница сцен 1–2.*00:02\.000.*00:02\.120/s);
       expect(dialog.message()).toMatch(/Медиа сцены 2.*diagram\.png.*replacement\.png/s);
-      expect(dialog.message()).toMatch(/ревизи.*v02/i);
+      expect(dialog.message()).toMatch(/ревизи.*v06/i);
       await dialog.accept();
     });
     const savedResponse = page.waitForResponse((response) => (
@@ -559,7 +562,7 @@ test('save confirms server diff, creates a new draft and leaves approved bytes u
     await page.getByRole('button', { name: /^сохранить$/i }).click();
     await savedResponse;
 
-    await expect(page.locator('[data-revision]')).toContainText('v02');
+    await expect(page.locator('[data-revision]')).toContainText('v06');
     await expect(page.locator('[data-brief-status]')).toContainText('Черновик');
     await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
     await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
@@ -575,7 +578,112 @@ test('save confirms server diff, creates a new draft and leaves approved bytes u
       path.join(session.fixture.workspace.dir, 'project.json'),
       'utf8',
     ));
-    expect(manifest.currentBrief).toBe('brief/v02-draft.lesson.json');
+    expect(manifest.currentBrief).toBe('brief/v06-draft.lesson.json');
+  });
+});
+
+test('save locks every mutation handler until the real 201 advances state', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    let releaseSave;
+    const saveGate = new Promise((resolve) => { releaseSave = resolve; });
+    let reportRealSave;
+    const realSave = new Promise((resolve) => { reportRealSave = resolve; });
+    const validationBodies = [];
+    const saveBodies = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) validationBodies.push(request.postDataJSON());
+      if (request.url().endsWith('/api/save')) saveBodies.push(request.postDataJSON());
+    });
+    await page.route('**/api/save', async (route) => {
+      const response = await route.fetch();
+      reportRealSave(response.status());
+      await saveGate;
+      await route.fulfill({ response });
+    });
+
+    try {
+      await openReview(page, session.url);
+      await waitForEditReady(page);
+      await dragBoundary(page, 0, 2.31);
+      await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeEnabled();
+      const validationCount = validationBodies.length;
+      page.once('dialog', (dialog) => dialog.accept());
+      await page.getByRole('button', { name: /^сохранить$/i }).click();
+      expect(await realSave).toBe(201);
+
+      const handle = page.locator('[data-boundary="0"]');
+      const select = page.locator('[data-broll-select]');
+      await expect(handle).toBeDisabled();
+      await expect(select).toBeDisabled();
+      await handle.dispatchEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight' });
+      await select.evaluate((element) => {
+        element.disabled = false;
+        const option = [...element.options].find((candidate) => candidate.textContent === 'diagram.png');
+        element.value = option.value;
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(validationBodies).toHaveLength(validationCount);
+      expect(saveBodies).toHaveLength(1);
+
+      releaseSave();
+      await expect(page.locator('[data-revision]')).toContainText('v02');
+      await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.32');
+      await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+    } finally {
+      releaseSave();
+    }
+  });
+});
+
+test('Arrow keys accumulate frame commands, restore boundary focus and undo one step', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true }, async (session) => {
+    let releaseFirst;
+    const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+    let reportFirst;
+    const firstValidated = new Promise((resolve) => { reportFirst = resolve; });
+    let validationNumber = 0;
+    const validationBodies = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) validationBodies.push(request.postDataJSON());
+    });
+    await page.route('**/api/validate', async (route) => {
+      const response = await route.fetch();
+      validationNumber += 1;
+      if (validationNumber === 1) {
+        reportFirst(response.status());
+        await firstGate;
+      }
+      await route.fulfill({ response });
+    });
+
+    try {
+      await openReview(page, session.url);
+      await waitForEditReady(page);
+      const handle = page.locator('[data-boundary="1"]');
+      await handle.focus();
+      await page.keyboard.press('ArrowRight');
+      expect(await firstValidated).toBe(200);
+      await page.keyboard.press('ArrowRight');
+
+      await expect(page.locator('[data-scene="1"]')).toHaveAttribute('data-end', '4.08');
+      await expect(page.locator('[data-scene="2"]')).toHaveAttribute('data-start', '4.08');
+      await expect(page.locator('[data-boundary="1"]')).toBeFocused();
+      await expect.poll(() => validationBodies.length).toBe(2);
+      expect(validationBodies[1].commands).toEqual([
+        { type: 'move-boundary', leftSceneIndex: 1, seconds: 4.04 },
+        { type: 'move-boundary', leftSceneIndex: 1, seconds: 4.08 },
+      ]);
+
+      releaseFirst();
+      await page.getByRole('button', { name: /^отменить$/i }).click();
+      await expect(page.locator('[data-scene="1"]')).toHaveAttribute('data-end', '4.04');
+      await expect(page.locator('[data-scene="2"]')).toHaveAttribute('data-start', '4.04');
+    } finally {
+      releaseFirst();
+    }
   });
 });
 

@@ -180,6 +180,8 @@ function diffLine(change, state) {
 
 function validValidation(value) {
   return value && Array.isArray(value.diff)
+    && Number.isSafeInteger(value.destinationRevision)
+    && value.destinationRevision > 0
     && value.timing
     && Array.isArray(value.timing.errors)
     && Array.isArray(value.timing.warnings)
@@ -219,12 +221,13 @@ function createEditor(initialState, token) {
   let state = prepareBrowserState(initialState, token);
   const commands = [];
   const redoStack = [];
-  let validation = { diff: [], timing: state.timing };
+  let validation = { destinationRevision: null, diff: [], timing: state.timing };
   let pending = false;
   let saving = false;
   let invalid = false;
   let conflict = false;
   let lastSnap = null;
+  let focusBoundary = null;
   let timelineCleanup = null;
   let validationGeneration = 0;
   const controls = createEditControls();
@@ -271,6 +274,7 @@ function createEditor(initialState, token) {
       select.value = selected ? selected.to : '';
       select.disabled = pending || saving;
       select.addEventListener('change', () => {
+        if (saving) return;
         if (!/^asset-[1-9]\d*$/.test(select.value)) return;
         dispatch({ type: 'replace-broll', sceneIndex: index, assetId: select.value });
       });
@@ -316,6 +320,9 @@ function createEditor(initialState, token) {
       edit: {
         lastSnap,
         invalid,
+        locked: saving,
+        focusBoundary,
+        onBoundaryFocus: (index) => { focusBoundary = index; },
         onBoundaryChange: dispatch,
       },
     });
@@ -338,7 +345,7 @@ function createEditor(initialState, token) {
     }
     if (generation !== validationGeneration) return;
     state = prepareBrowserState(latest, token);
-    validation = { diff: [], timing: state.timing };
+    validation = { destinationRevision: null, diff: [], timing: state.timing };
     pending = false;
     saving = false;
     invalid = false;
@@ -384,31 +391,37 @@ function createEditor(initialState, token) {
   }
 
   function dispatch(command, snap = null) {
+    if (saving) return;
+    focusBoundary = snap && snap.restoreFocus ? snap.index : null;
     commands.push(command);
     redoStack.length = 0;
     void validateCommands(snap);
   }
 
   function undo() {
+    if (saving) return;
     const command = commands.pop();
     if (!command) return;
     redoStack.push(command);
     lastSnap = null;
+    focusBoundary = null;
     void validateCommands();
   }
 
   function redo() {
+    if (saving) return;
     const command = redoStack.pop();
     if (!command) return;
     commands.push(command);
     lastSnap = null;
+    focusBoundary = null;
     void validateCommands();
   }
 
   async function save() {
     if (controls.save.disabled) return;
     const lines = validation.diff.map((change) => diffLine(change, state));
-    const destination = revisionLabel(state.session.baseRevision + 1);
+    const destination = revisionLabel(validation.destinationRevision);
     const accepted = window.confirm(
       `Будет создана ревизия ${destination}:\n\n${lines.map((line) => `• ${line}`).join('\n')}`,
     );
@@ -416,8 +429,9 @@ function createEditor(initialState, token) {
     const generation = ++validationGeneration;
     const payload = editPayload(state, commands);
     saving = true;
+    focusBoundary = null;
     clearEditError();
-    renderEditChrome();
+    renderAll();
     let result;
     try {
       result = await postEdit('/api/save', token, payload);
@@ -449,7 +463,7 @@ function createEditor(initialState, token) {
     state = prepareBrowserState(latest, token);
     commands.length = 0;
     redoStack.length = 0;
-    validation = { diff: [], timing: state.timing };
+    validation = { destinationRevision: null, diff: [], timing: state.timing };
     pending = false;
     saving = false;
     invalid = false;

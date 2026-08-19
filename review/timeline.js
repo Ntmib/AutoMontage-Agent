@@ -197,6 +197,9 @@ function renderBoundaries({
   onBoundaryChange,
   lastSnap,
   invalid,
+  locked,
+  focusBoundary,
+  onBoundaryFocus,
 }) {
   const cleanups = [];
   for (let index = 0; index < scenes.length - 1; index += 1) {
@@ -205,6 +208,7 @@ function renderBoundaries({
     if (leftTimes.end !== rightTimes.start) continue;
     const handle = button(`Граница сцен ${index + 1} и ${index + 2}`, 'boundary-handle');
     handle.dataset.boundary = String(index);
+    handle.disabled = Boolean(locked);
     handle.dataset.snapReason = lastSnap && lastSnap.index === index ? lastSnap.reason : '';
     if (invalid) handle.dataset.invalid = 'true';
     const snapLabel = document.createElement('span');
@@ -271,6 +275,7 @@ function renderBoundaries({
       }, { index, reason: snapped.reason });
     };
     const pointerDown = (event) => {
+      if (locked) return;
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
@@ -287,29 +292,39 @@ function renderBoundaries({
       handle.setPointerCapture(event.pointerId);
     };
     const keyboardMove = (event) => {
+      if (locked) return;
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
       event.preventDefault();
       const step = Number.isFinite(fps) && fps > 0 ? 1 / fps : 0.001;
-      const snapped = snapBoundary(leftTimes.end + (event.key === 'ArrowLeft' ? -step : step), {
-        start: leftTimes.start,
-        end: rightTimes.end,
+      const left = sceneButtons[index];
+      const right = sceneButtons[index + 1];
+      const snapped = snapBoundary(Number(left.dataset.end) + (event.key === 'ArrowLeft' ? -step : step), {
+        start: Number(left.dataset.start),
+        end: Number(right.dataset.end),
         fps,
         words,
       });
+      left.dataset.end = String(snapped.seconds);
+      right.dataset.start = String(snapped.seconds);
+      place(left, Number(left.dataset.start), snapped.seconds, duration);
+      place(right, snapped.seconds, Number(right.dataset.end), duration);
+      setBoundaryPosition(handle, snapped.seconds, duration);
       setSnapLabel(handle, snapped.reason);
       onBoundaryChange({
         type: 'move-boundary',
         leftSceneIndex: index,
         seconds: snapped.seconds,
-      }, { index, reason: snapped.reason });
+      }, { index, reason: snapped.reason, restoreFocus: true });
     };
     handle.addEventListener('pointerdown', pointerDown);
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', drop);
     handle.addEventListener('pointercancel', cancel);
     handle.addEventListener('keydown', keyboardMove);
+    handle.addEventListener('focus', () => onBoundaryFocus(index));
     window.addEventListener('keydown', keyDuringDrag);
     cleanups.push(() => window.removeEventListener('keydown', keyDuringDrag));
+    if (!locked && focusBoundary === index) handle.focus({ preventScroll: true });
   }
   return () => cleanups.forEach((cleanup) => cleanup());
 }
@@ -408,6 +423,9 @@ export function renderTimeline({
       onBoundaryChange: edit.onBoundaryChange,
       lastSnap: edit.lastSnap,
       invalid: edit.invalid,
+      locked: edit.locked,
+      focusBoundary: edit.focusBoundary,
+      onBoundaryFocus: edit.onBoundaryFocus,
     })
     : () => {};
 

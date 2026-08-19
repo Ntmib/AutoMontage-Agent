@@ -497,6 +497,11 @@ video {
   color: hsl(var(--danger));
 }
 
+.boundary-handle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .boundary-handle[data-invalid="true"]::after {
   box-shadow: 0 0 0 5px hsl(var(--danger) / 0.2);
 }
