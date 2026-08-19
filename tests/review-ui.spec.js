@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -39,8 +40,21 @@ async function expectNoPageOverflow(page) {
   })));
 }
 
-async function makeBrowserReviewSession({ duration = 4, dense = false, waveform = true } = {}) {
-  const fixture = makeReviewProject({ after: (cleanup) => cleanups.push(cleanup) });
+async function makeBrowserReviewSession({
+  duration = 4,
+  dense = false,
+  waveform = true,
+  editable = false,
+  threeScenes = false,
+  broll = false,
+  briefStatus = 'draft',
+  fileSystem,
+  logger,
+} = {}) {
+  const fixture = makeReviewProject(
+    { after: (cleanup) => cleanups.push(cleanup) },
+    { briefStatus },
+  );
   if (dense) {
     const brief = JSON.parse(fs.readFileSync(fixture.briefPath, 'utf8'));
     brief.title = 'Плотный производственный таймлайн';
@@ -68,6 +82,39 @@ async function makeBrowserReviewSession({ duration = 4, dense = false, waveform 
       path.join(fixture.workspace.dir, 'transcript', 'words.json'),
       `${JSON.stringify(transcript, null, 2)}\n`,
     );
+  } else if (threeScenes) {
+    const brief = JSON.parse(fs.readFileSync(fixture.briefPath, 'utf8'));
+    brief.output.durationInFrames = 150;
+    brief.scenes = [
+      { scene: 'fullscreen', start: 0, end: 2, caption: 'ПЕРВАЯ СЦЕНА' },
+      broll
+        ? {
+          scene: 'broll',
+          start: 2,
+          end: 4,
+          brollSrc: 'assets/broll/diagram.png',
+          headCream: 'ВТОРАЯ',
+          headOrange: 'СХЕМА',
+        }
+        : { scene: 'fullscreen', start: 2, end: 4, caption: 'ВТОРАЯ СЦЕНА' },
+      { scene: 'fullscreen', start: 4, end: 6, caption: 'ТРЕТЬЯ СЦЕНА' },
+    ];
+    fs.writeFileSync(fixture.briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+    const transcript = [{
+      start: 0,
+      end: 6,
+      text: 'Первый точная граница последний',
+      words: [
+        { w: 'Первый', s: 0, e: 0.4 },
+        { w: 'точная', s: 2.05, e: 2.12 },
+        { w: 'граница', s: 3.1, e: 3.5 },
+        { w: 'последний', s: 5, e: 5.4 },
+      ],
+    }];
+    fs.writeFileSync(
+      path.join(fixture.workspace.dir, 'transcript', 'words.json'),
+      `${JSON.stringify(transcript, null, 2)}\n`,
+    );
   }
 
   const sourcePath = path.join(fixture.workspace.dir, 'input', 'source.webm');
@@ -85,16 +132,71 @@ async function makeBrowserReviewSession({ duration = 4, dense = false, waveform 
     path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
     path.join(fixture.workspace.dir, 'assets', 'broll', 'diagram.png'),
   );
-  return startReviewServer({
+  if (broll) {
+    fs.copyFileSync(
+      path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
+      path.join(fixture.workspace.dir, 'assets', 'broll', 'replacement.png'),
+    );
+  }
+  const session = await startReviewServer({
     root: ROOT,
     projectDir: fixture.projectDir,
+    editable,
     open: false,
+    fileSystem,
+    logger,
     runToolImpl: waveform
       ? (_command, args) => fs.copyFileSync(
         path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
         args.at(-1),
       )
       : () => { throw new Error('waveform unavailable'); },
+  });
+  return { ...session, fixture };
+}
+
+async function withBrowserReviewSession(options, run) {
+  const session = await makeBrowserReviewSession(options);
+  try {
+    await run(session);
+  } finally {
+    await closeServer(session.server);
+  }
+}
+
+async function dragBoundary(page, index, seconds, { duration = 6, release = true } = {}) {
+  const handle = page.locator(`[data-boundary="${index}"]`);
+  const track = page.locator('[data-scenes-track]');
+  await handle.scrollIntoViewIfNeeded();
+  const [handleBox, trackBox] = await Promise.all([handle.boundingBox(), track.boundingBox()]);
+  if (!handleBox || !trackBox) throw new Error('Boundary is not visible');
+  const hit = await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    return {
+      boundary: target?.closest('[data-boundary]')?.getAttribute('data-boundary'),
+      description: target ? `${target.tagName}.${target.className}` : 'nothing',
+    };
+  }, { x: handleBox.x + (handleBox.width / 2), y: handleBox.y + (handleBox.height / 2) });
+  if (hit.boundary !== String(index)) throw new Error(`Boundary is covered by ${hit.description}`);
+  await page.mouse.move(handleBox.x + (handleBox.width / 2), handleBox.y + (handleBox.height / 2));
+  await page.mouse.down();
+  await page.mouse.move(trackBox.x + ((seconds / duration) * trackBox.width), handleBox.y + 2);
+  if (release) await page.mouse.up();
+}
+
+async function waitForEditReady(page) {
+  await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя] нет|изменени[ейя]:/i);
+}
+
+async function postSessionJson(session, pathname, value) {
+  return fetch(`${session.origin}${pathname}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+      Origin: session.origin,
+    },
+    body: JSON.stringify(value),
   });
 }
 
@@ -152,6 +254,10 @@ test('timeline refuses a waveform URL outside the fixed media handle', async ({ 
 });
 
 test('read-only review shows semantic source, lanes and diagnostics without edit controls', async ({ page }) => {
+  const mutatingRequests = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST') mutatingRequests.push(request.url());
+  });
   await openReview(page);
 
   await expect(page.getByRole('heading', { name: /проверка монтажа/i })).toBeVisible();
@@ -166,12 +272,14 @@ test('read-only review shows semantic source, lanes and diagnostics without edit
   await expect(page.locator('[data-scene]')).toHaveCount(2);
   await expect(page.locator('[data-transcript-word]')).toHaveCount(3);
   await expect(page.getByRole('button', { name: /сохранить|изменить|отменить/i })).toHaveCount(0);
+  await expect(page.locator('[data-edit-controls], [data-boundary], [data-broll-select]')).toHaveCount(0);
 
   for (const selector of ['[data-scene]', '[data-transcript-word]', '[data-source-target]']) {
     await expect(page.locator(selector)).not.toHaveCount(0);
     await expect(page.locator(`${selector}:not(button)`)).toHaveCount(0);
   }
   await expect(page.locator('video')).toHaveJSProperty('autoplay', false);
+  expect(mutatingRequests).toEqual([]);
 });
 
 test('scene and transcript buttons seek the source and update one synchronized playhead', async ({ page }) => {
@@ -289,4 +397,265 @@ test('keyboard reaches timeline buttons while Space remains native to the video'
   await secondScene.focus();
   await page.keyboard.press('Enter');
   await expect.poll(() => video.evaluate((element) => element.currentTime)).toBeCloseTo(2, 1);
+});
+
+test('edit mode moves only one shared boundary with word priority and can undo it', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await expect(page.locator('[data-boundary]')).toHaveCount(2);
+    await expect(page.locator('[data-boundary]:not(button)')).toHaveCount(0);
+    const thirdBefore = await page.locator('[data-scene="2"]').getAttribute('data-start');
+
+    const validationResponse = page.waitForResponse((response) => response.url().endsWith('/api/validate'));
+    await dragBoundary(page, 0, 2.1);
+    expect((await validationResponse).status()).toBe(200);
+
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.12');
+    await expect(page.locator('[data-scene="1"]')).toHaveAttribute('data-start', '2.12');
+    await expect(page.locator('[data-scene="2"]')).toHaveAttribute('data-start', thirdBefore);
+    await expect(page.locator('[data-boundary="0"]')).toHaveAttribute('data-snap-reason', 'word');
+    await expect(page.locator('[data-boundary="0"]')).toContainText('слово');
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.locator('[data-server-diff]')).toContainText('00:02.000 → 00:02.120');
+
+    const undo = page.getByRole('button', { name: /^отменить$/i });
+    await expect(undo).toBeEnabled();
+    await undo.click();
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2');
+    await expect(page.locator('[data-scene="1"]')).toHaveAttribute('data-start', '2');
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
+  });
+});
+
+test('frame snap, Escape cancellation and keyboard undo/redo keep native video Space', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true }, async (session) => {
+    const validateRequests = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) validateRequests.push(request);
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+
+    await dragBoundary(page, 0, 2.31);
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.32');
+    await expect(page.locator('[data-boundary="0"]')).toHaveAttribute('data-snap-reason', 'frame');
+    await expect(page.locator('[data-boundary="0"]')).toContainText('кадр');
+
+    const undo = page.getByRole('button', { name: /^отменить$/i });
+    await undo.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2');
+    const redo = page.getByRole('button', { name: /^повторить$/i });
+    await redo.focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.32');
+
+    const beforeCancelRequests = validateRequests.length;
+    await dragBoundary(page, 0, 2.6, { release: false });
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.32');
+    expect(validateRequests).toHaveLength(beforeCancelRequests);
+
+    const video = page.locator('video');
+    await video.focus();
+    await page.keyboard.press('Space');
+    await expect.poll(() => video.evaluate((element) => element.paused)).toBe(false);
+    await page.keyboard.press('Space');
+    await expect.poll(() => video.evaluate((element) => element.paused)).toBe(true);
+  });
+});
+
+test('b-roll controls expose only eligible scenes and send an opaque asset id', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    let validationBody;
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) validationBody = request.postDataJSON();
+    });
+    await page.setViewportSize({ width: 360, height: 900 });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+
+    const selects = page.locator('[data-broll-select]');
+    await expect(selects).toHaveCount(1);
+    await expect(selects).toHaveAttribute('data-scene-index', '1');
+    await selects.selectOption({ label: 'replacement.png' });
+    await expect(page.locator('[data-server-diff]')).toContainText('Медиа сцены 2');
+    await expect.poll(() => validationBody).toBeTruthy();
+
+    expect(validationBody.commands.at(-1)).toEqual({
+      type: 'replace-broll',
+      sceneIndex: 1,
+      assetId: expect.stringMatching(/^asset-[1-9]\d*$/),
+    });
+    expect(JSON.stringify(validationBody.commands)).not.toMatch(/https?:|\/media\/|assets\/broll|Users/);
+    expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
+    await expectNoPageOverflow(page);
+  });
+});
+
+test('server-invalid edit marks a boundary red, disables save and reports a safe accessible error', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    const select = page.locator('[data-broll-select]');
+    const replacementId = await select.locator('option', { hasText: 'replacement.png' }).getAttribute('value');
+    fs.renameSync(
+      path.join(session.fixture.workspace.dir, 'assets', 'broll', 'replacement.png'),
+      path.join(session.fixture.workspace.dir, 'assets', 'broll', 'replacement.unavailable'),
+    );
+
+    const validationResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 422
+    ));
+    await select.selectOption(replacementId);
+    await validationResponse;
+
+    await expect(page.locator('[data-boundary="0"]')).toHaveAttribute('data-invalid', 'true');
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+    const error = page.getByRole('alert');
+    await expect(error).toContainText(/не удалось проверить/i);
+    await expect(error).not.toContainText(session.token);
+    await expect(error).not.toContainText(session.fixture.projectDir);
+  });
+});
+
+test('save confirms server diff, creates a new draft and leaves approved bytes unchanged', async ({ page }) => {
+  await withBrowserReviewSession({
+    editable: true,
+    threeScenes: true,
+    broll: true,
+    briefStatus: 'approved',
+  }, async (session) => {
+    const approvedBytes = fs.readFileSync(session.fixture.briefPath);
+    const approvedHash = crypto.createHash('sha256').update(approvedBytes).digest('hex');
+    const requestBodies = { validate: [], save: [] };
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) requestBodies.validate.push(request.postDataJSON());
+      if (request.url().endsWith('/api/save')) requestBodies.save.push(request.postDataJSON());
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await expect(page.locator('[data-revision]')).toContainText('v01');
+
+    await page.locator('[data-broll-select]').selectOption({ label: 'replacement.png' });
+    await expect(page.locator('[data-server-diff]')).toContainText('Медиа сцены 2');
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeEnabled();
+    page.once('dialog', async (dialog) => {
+      expect(dialog.type()).toBe('confirm');
+      expect(dialog.message()).toMatch(/Граница сцен 1–2.*00:02\.000.*00:02\.120/s);
+      expect(dialog.message()).toMatch(/Медиа сцены 2.*diagram\.png.*replacement\.png/s);
+      expect(dialog.message()).toMatch(/ревизи.*v02/i);
+      await dialog.accept();
+    });
+    const savedResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/save') && response.status() === 201
+    ));
+    await page.getByRole('button', { name: /^сохранить$/i }).click();
+    await savedResponse;
+
+    await expect(page.locator('[data-revision]')).toContainText('v02');
+    await expect(page.locator('[data-brief-status]')).toContainText('Черновик');
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /утвердить/i })).toHaveCount(0);
+
+    expect(requestBodies.save).toHaveLength(1);
+    expect(requestBodies.save[0]).toEqual(requestBodies.validate.at(-1));
+    expect(crypto.createHash('sha256').update(fs.readFileSync(session.fixture.briefPath)).digest('hex'))
+      .toBe(approvedHash);
+    expect(fs.readFileSync(session.fixture.briefPath)).toEqual(approvedBytes);
+    const manifest = JSON.parse(fs.readFileSync(
+      path.join(session.fixture.workspace.dir, 'project.json'),
+      'utf8',
+    ));
+    expect(manifest.currentBrief).toBe('brief/v02-draft.lesson.json');
+  });
+});
+
+test('save failure keeps commands in memory and exposes no server detail', async ({ page }) => {
+  const privateTarget = '/private/review/save-target.json';
+  const failingFileSystem = {
+    ...fs,
+    renameSync(source, target) {
+      if (source.includes('.tmp-review-draft-manifest-')) {
+        throw new Error(`simulated save failure at ${privateTarget}`);
+      }
+      return fs.renameSync(source, target);
+    },
+  };
+  await withBrowserReviewSession({
+    editable: true,
+    threeScenes: true,
+    fileSystem: failingFileSystem,
+    logger: { error() {} },
+  }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeEnabled();
+    page.once('dialog', (dialog) => dialog.accept());
+    const failure = page.waitForResponse((response) => (
+      response.url().endsWith('/api/save') && response.status() === 500
+    ));
+    await page.getByRole('button', { name: /^сохранить$/i }).click();
+    await failure;
+
+    const error = page.getByRole('alert');
+    await expect(error).toContainText(/не удалось сохранить/i);
+    await expect(error).not.toContainText(/simulated|private|save-target|Users/i);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await expect(page.locator('[data-revision]')).toContainText('v01');
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+  });
+});
+
+test('stale save reloads latest state, retains commands for comparison and never retries', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true }, async (session) => {
+    const browserSaves = [];
+    const browserValidations = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/save')) browserSaves.push(request);
+      if (request.url().endsWith('/api/validate')) browserValidations.push(request);
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    const baseState = await (await fetch(`${session.origin}/api/state`, {
+      headers: { Authorization: `Bearer ${session.token}` },
+    })).json();
+
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeEnabled();
+    const concurrent = await postSessionJson(session, '/api/save', {
+      baseRevision: baseState.session.baseRevision,
+      baseHash: baseState.session.baseHash,
+      manifestHash: baseState.session.manifestHash,
+      commands: [{ type: 'move-boundary', leftSceneIndex: 0, seconds: 2.4 }],
+    });
+    expect(concurrent.status).toBe(201);
+
+    page.once('dialog', (dialog) => dialog.accept());
+    const conflictResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/save') && response.status() === 409
+    ));
+    await page.getByRole('button', { name: /^сохранить$/i }).click();
+    await conflictResponse;
+
+    await expect(page.locator('[data-conflict]')).toContainText(/конфликт/i);
+    await expect(page.locator('[data-edit-status]')).toContainText(/несохран.*1/i);
+    await expect(page.locator('[data-revision]')).toContainText('v02');
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.4');
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+    expect(browserSaves).toHaveLength(1);
+    expect(browserValidations).toHaveLength(1);
+    await page.waitForTimeout(150);
+    expect(browserSaves).toHaveLength(1);
+    expect(browserValidations).toHaveLength(1);
+  });
 });

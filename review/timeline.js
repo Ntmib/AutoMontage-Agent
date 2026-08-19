@@ -5,6 +5,7 @@ const CANVAS_CHROME_WIDTH = 160;
 const BASE_PIXELS_PER_SECOND = 20;
 const MIN_SCENE_WIDTH = 40;
 const MIN_WORD_SPACING = 44;
+const WORD_SNAP_WINDOW_SECONDS = 0.12;
 
 function formatTime(seconds, milliseconds = false) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -110,13 +111,27 @@ function renderSource(track, video, duration, waveform) {
   place(target, 0, duration, duration);
 }
 
-function renderScenes(track, video, scenes, duration) {
+function boundaryChange(diff, index) {
+  return diff.find((change) => change.kind === 'boundary' && change.leftScene === index);
+}
+
+function sceneTimes(scene, index, diff) {
+  const previous = boundaryChange(diff, index - 1);
+  const next = boundaryChange(diff, index);
+  return {
+    start: previous ? previous.to : scene.start,
+    end: next ? next.to : scene.end,
+  };
+}
+
+function renderScenes(track, video, scenes, duration, diff) {
   return scenes.map((scene, index) => {
-    const label = `Сцена ${index + 1}: ${scene.scene}, ${formatTime(scene.start)}–${formatTime(scene.end)}`;
+    const times = sceneTimes(scene, index, diff);
+    const label = `Сцена ${index + 1}: ${scene.scene}, ${formatTime(times.start)}–${formatTime(times.end)}`;
     const target = button(label, 'scene-segment');
     target.dataset.scene = String(index);
-    target.dataset.start = String(scene.start);
-    target.dataset.end = String(scene.end);
+    target.dataset.start = String(times.start);
+    target.dataset.end = String(times.end);
 
     const number = document.createElement('span');
     number.className = 'segment-number';
@@ -125,11 +140,178 @@ function renderScenes(track, video, scenes, duration) {
     name.className = 'segment-name';
     name.textContent = scene.caption || scene.headOrange || scene.headCream || scene.scene;
     target.append(number, name);
-    target.addEventListener('click', () => seekPlayer(video, scene.start));
-    place(target, scene.start, scene.end, duration);
+    target.addEventListener('click', () => seekPlayer(video, times.start));
+    place(target, times.start, times.end, duration);
     track.append(target);
     return target;
   });
+}
+
+function interiorTime(seconds, start, end) {
+  const room = end - start;
+  const inset = Math.min(0.000001, room / 4);
+  return Math.min(end - inset, Math.max(start + inset, seconds));
+}
+
+function snapBoundary(seconds, { start, end, fps, words }) {
+  const raw = interiorTime(seconds, start, end);
+  const wordCandidates = words.flatMap((word) => [word.start, word.end])
+    .filter((value) => Number.isFinite(value)
+      && value > start && value < end
+      && Math.abs(value - raw) <= WORD_SNAP_WINDOW_SECONDS)
+    .sort((left, right) => Math.abs(left - raw) - Math.abs(right - raw));
+  if (wordCandidates.length > 0) {
+    return { seconds: Number(wordCandidates[0].toFixed(6)), reason: 'word' };
+  }
+
+  if (Number.isFinite(fps) && fps > 0) {
+    const firstFrame = Math.floor(start * fps) + 1;
+    const lastFrame = Math.ceil(end * fps) - 1;
+    if (firstFrame <= lastFrame) {
+      const frame = Math.min(lastFrame, Math.max(firstFrame, Math.round(raw * fps)));
+      return { seconds: Number((frame / fps).toFixed(6)), reason: 'frame' };
+    }
+  }
+  return { seconds: Number(raw.toFixed(6)), reason: 'exact' };
+}
+
+function setBoundaryPosition(handle, seconds, duration) {
+  const percent = Math.min(100, Math.max(0, (seconds / Math.max(duration, 0.001)) * 100));
+  handle.style.setProperty('--boundary-position', `${percent}%`);
+}
+
+function setSnapLabel(handle, reason) {
+  const label = handle.querySelector('.boundary-snap-label');
+  handle.dataset.snapReason = reason;
+  label.textContent = reason === 'word' ? 'слово' : reason === 'frame' ? 'кадр' : 'точно';
+}
+
+function renderBoundaries({
+  track,
+  sceneButtons,
+  scenes,
+  words,
+  fps,
+  duration,
+  diff,
+  onBoundaryChange,
+  lastSnap,
+  invalid,
+}) {
+  const cleanups = [];
+  for (let index = 0; index < scenes.length - 1; index += 1) {
+    const leftTimes = sceneTimes(scenes[index], index, diff);
+    const rightTimes = sceneTimes(scenes[index + 1], index + 1, diff);
+    if (leftTimes.end !== rightTimes.start) continue;
+    const handle = button(`Граница сцен ${index + 1} и ${index + 2}`, 'boundary-handle');
+    handle.dataset.boundary = String(index);
+    handle.dataset.snapReason = lastSnap && lastSnap.index === index ? lastSnap.reason : '';
+    if (invalid) handle.dataset.invalid = 'true';
+    const snapLabel = document.createElement('span');
+    snapLabel.className = 'boundary-snap-label';
+    snapLabel.textContent = lastSnap && lastSnap.index === index
+      ? (lastSnap.reason === 'word' ? 'слово' : lastSnap.reason === 'frame' ? 'кадр' : 'точно')
+      : '';
+    handle.append(snapLabel);
+    setBoundaryPosition(handle, leftTimes.end, duration);
+    track.append(handle);
+
+    let dragging = null;
+    const restore = () => {
+      if (!dragging) return;
+      const { left, right, seconds } = dragging;
+      left.dataset.end = String(seconds);
+      right.dataset.start = String(seconds);
+      place(left, Number(left.dataset.start), seconds, duration);
+      place(right, seconds, Number(right.dataset.end), duration);
+      setBoundaryPosition(handle, seconds, duration);
+      dragging = null;
+    };
+    const move = (event) => {
+      if (!dragging) return;
+      const bounds = track.getBoundingClientRect();
+      const raw = ((event.clientX - bounds.left) / Math.max(bounds.width, 1)) * duration;
+      const snapped = snapBoundary(raw, {
+        start: dragging.start,
+        end: dragging.end,
+        fps,
+        words,
+      });
+      dragging.snapped = snapped;
+      dragging.left.dataset.end = String(snapped.seconds);
+      dragging.right.dataset.start = String(snapped.seconds);
+      place(dragging.left, Number(dragging.left.dataset.start), snapped.seconds, duration);
+      place(dragging.right, snapped.seconds, Number(dragging.right.dataset.end), duration);
+      setBoundaryPosition(handle, snapped.seconds, duration);
+      setSnapLabel(handle, snapped.reason);
+    };
+    const cancel = () => {
+      if (!dragging) return;
+      restore();
+      handle.dataset.snapReason = lastSnap && lastSnap.index === index ? lastSnap.reason : '';
+      snapLabel.textContent = lastSnap && lastSnap.index === index
+        ? (lastSnap.reason === 'word' ? 'слово' : lastSnap.reason === 'frame' ? 'кадр' : 'точно')
+        : '';
+    };
+    const keyDuringDrag = (event) => {
+      if (event.key !== 'Escape' || !dragging) return;
+      event.preventDefault();
+      cancel();
+    };
+    const drop = (event) => {
+      if (!dragging) return;
+      move(event);
+      const snapped = dragging.snapped;
+      dragging = null;
+      if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      if (snapped) onBoundaryChange({
+        type: 'move-boundary',
+        leftSceneIndex: index,
+        seconds: snapped.seconds,
+      }, { index, reason: snapped.reason });
+    };
+    const pointerDown = (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const left = sceneButtons[index];
+      const right = sceneButtons[index + 1];
+      dragging = {
+        left,
+        right,
+        seconds: Number(left.dataset.end),
+        start: Number(left.dataset.start),
+        end: Number(right.dataset.end),
+        snapped: null,
+      };
+      handle.setPointerCapture(event.pointerId);
+    };
+    const keyboardMove = (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      const step = Number.isFinite(fps) && fps > 0 ? 1 / fps : 0.001;
+      const snapped = snapBoundary(leftTimes.end + (event.key === 'ArrowLeft' ? -step : step), {
+        start: leftTimes.start,
+        end: rightTimes.end,
+        fps,
+        words,
+      });
+      setSnapLabel(handle, snapped.reason);
+      onBoundaryChange({
+        type: 'move-boundary',
+        leftSceneIndex: index,
+        seconds: snapped.seconds,
+      }, { index, reason: snapped.reason });
+    };
+    handle.addEventListener('pointerdown', pointerDown);
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', drop);
+    handle.addEventListener('pointercancel', cancel);
+    handle.addEventListener('keydown', keyboardMove);
+    window.addEventListener('keydown', keyDuringDrag);
+    cleanups.push(() => window.removeEventListener('keydown', keyDuringDrag));
+  }
+  return () => cleanups.forEach((cleanup) => cleanup());
 }
 
 function renderTranscript(list, video, words, duration) {
@@ -176,34 +358,66 @@ function renderAssets(list, assets) {
   });
 }
 
-export function renderTimeline({ root, video, state, timecode }) {
+export function renderTimeline({
+  root,
+  video,
+  state,
+  timecode,
+  diff = [],
+  edit = null,
+}) {
   const duration = state.output.durationInFrames / state.output.fps;
   const scenes = state.brief.scenes;
   const words = state.transcript.words;
+  const sourceTrack = root.querySelector('[data-source-track]');
+  const scenesTrack = root.querySelector('[data-scenes-track]');
+  const transcript = root.querySelector('[data-transcript]');
+  const assets = root.querySelector('[data-assets]');
+  sourceTrack.replaceChildren();
+  scenesTrack.replaceChildren();
+  transcript.replaceChildren();
+  assets.replaceChildren();
   root.querySelector('.timeline-canvas').style.setProperty(
     '--timeline-width',
     `${timelineCanvasWidth(duration, scenes, words)}px`,
   );
   const sceneButtons = renderScenes(
-    root.querySelector('[data-scenes-track]'),
+    scenesTrack,
     video,
     scenes,
     duration,
+    diff,
   );
   const wordButtons = renderTranscript(
-    root.querySelector('[data-transcript]'),
+    transcript,
     video,
     words,
     duration,
   );
-  renderSource(root.querySelector('[data-source-track]'), video, duration, state.waveform);
-  renderAssets(root.querySelector('[data-assets]'), state.assets);
+  renderSource(sourceTrack, video, duration, state.waveform);
+  renderAssets(assets, state.assets);
+  const removeBoundaryListeners = edit
+    ? renderBoundaries({
+      track: scenesTrack,
+      sceneButtons,
+      scenes,
+      words,
+      fps: state.output.fps,
+      duration,
+      diff,
+      onBoundaryChange: edit.onBoundaryChange,
+      lastSnap: edit.lastSnap,
+      invalid: edit.invalid,
+    })
+    : () => {};
 
-  synchronizePlayer({
+  const playbackScenes = scenes.map((scene, index) => sceneTimes(scene, index, diff));
+
+  const stopSynchronizing = synchronizePlayer({
     video,
     playhead: root.querySelector('[data-playhead]'),
     duration,
-    scenes,
+    scenes: playbackScenes,
     words,
     onPosition: ({ seconds, sceneIndex, wordIndex }) => {
       timecode.textContent = formatTime(seconds, true);
@@ -211,6 +425,10 @@ export function renderTimeline({ root, video, state, timecode }) {
       setCurrent(wordButtons, wordIndex);
     },
   });
+  return () => {
+    removeBoundaryListeners();
+    stopSynchronizing();
+  };
 }
 
 export { formatTime };
