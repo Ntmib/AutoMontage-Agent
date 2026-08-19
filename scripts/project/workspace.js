@@ -1,10 +1,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const Ajv = require('ajv');
 
 const projectSchema = require('../../schema/project.schema.json');
-const { formatBriefMarkdown } = require('../lesson/brief');
+const { formatBriefMarkdown, validateLessonBrief } = require('../lesson/brief');
 const projectManifestValidator = new Ajv({ allErrors: true }).compile(projectSchema);
 const TEMPORARY_ID = /^[A-Za-z0-9_-]+$/;
 
@@ -473,6 +474,185 @@ function recordBrief(workspace, {
   return workspace;
 }
 
+function saveDraftRevision(workspace, {
+  baseJsonPath,
+  brief,
+  fileSystem = fs,
+  temporaryId = randomUUID,
+} = {}) {
+  const baseRelativePath = relativeProjectPath(workspace, path.resolve(baseJsonPath));
+  const sessionEntry = workspace.manifest.briefs.find(
+    (entry) => entry.jsonPath === baseRelativePath,
+  );
+  if (!sessionEntry) throw new Error('base brief is not registered in project.json');
+  if (workspace.manifest.currentBrief !== baseRelativePath) {
+    throw new Error('base brief is stale: it is not current for this session');
+  }
+
+  const manifestPath = resolveProjectPath(workspace.dir, 'project.json', {
+    label: 'project.json',
+    fileSystem,
+    mustExist: true,
+    type: 'file',
+  });
+  const oldManifest = fileSystem.readFileSync(manifestPath, 'utf8');
+  const persistedManifest = validateProjectManifest(JSON.parse(oldManifest), {
+    projectDir: workspace.dir,
+    fileSystem,
+  });
+  const baseEntry = persistedManifest.briefs.find(
+    (entry) => entry.jsonPath === baseRelativePath,
+  );
+  if (!baseEntry) throw new Error('base brief is not registered in project.json');
+  if (persistedManifest.currentBrief !== baseRelativePath) {
+    throw new Error('base brief is stale: it is no longer current');
+  }
+  const resolvedBasePath = resolveProjectPath(workspace.dir, baseEntry.jsonPath, {
+    label: 'base brief JSON path',
+    fileSystem,
+    mustExist: true,
+    type: 'file',
+  });
+  const baseBrief = JSON.parse(fileSystem.readFileSync(resolvedBasePath, 'utf8'));
+  const baseValidation = validateLessonBrief(baseBrief);
+  if (!baseValidation.ok) throw new Error(`base brief is invalid: ${baseValidation.errors.join('\n')}`);
+
+  let draftJson;
+  try {
+    draftJson = JSON.stringify({ ...brief, status: 'draft' }, null, 2);
+  } catch (_) {
+    throw new Error('candidate brief is not canonical JSON');
+  }
+  if (draftJson === undefined) throw new Error('candidate brief is not canonical JSON');
+  const draftBrief = JSON.parse(draftJson);
+  const validation = validateLessonBrief(draftBrief);
+  if (!validation.ok) throw new Error(`candidate brief is invalid: ${validation.errors.join('\n')}`);
+
+  const pathValues = [
+    draftBrief.source,
+    draftBrief.music && draftBrief.music.file,
+    ...draftBrief.scenes.flatMap((scene) => [scene.brollSrc, scene.faceSrc]),
+  ];
+  if (pathValues.some((value) => (
+    typeof value === 'string'
+    && (/^\/media\//.test(value) || /^https?:\/\/[^/]+\/media\//i.test(value))
+  ))) {
+    throw new Error('candidate brief contains a browser media pseudo-path');
+  }
+  if (draftBrief.scenes.some((scene) => (
+    typeof scene.brollSrc === 'string' && /^asset-[1-9]\d*$/.test(scene.brollSrc)
+  ))) {
+    throw new Error('candidate brief contains an unresolved opaque asset id');
+  }
+  for (const field of ['source', 'theme', 'output']) {
+    if (!isDeepStrictEqual(draftBrief[field], baseBrief[field])) {
+      throw new Error(`candidate brief changes protected identity field ${field}`);
+    }
+  }
+  if (isDeepStrictEqual(draftBrief, { ...baseBrief, status: 'draft' })) {
+    throw new Error('ничего не изменено');
+  }
+
+  const allocationWorkspace = { ...workspace, manifest: persistedManifest };
+  const allocated = nextBriefPaths(allocationWorkspace);
+  const jsonPath = resolveProjectPath(
+    workspace.dir,
+    relativeProjectPath(workspace, allocated.jsonPath),
+    { label: 'next review JSON path', fileSystem, mustExist: false, type: 'file' },
+  );
+  const markdownPath = resolveProjectPath(
+    workspace.dir,
+    relativeProjectPath(workspace, allocated.markdownPath),
+    { label: 'next review Markdown path', fileSystem, mustExist: false, type: 'file' },
+  );
+  for (const [label, destination] of [
+    ['next review JSON path', jsonPath],
+    ['next review Markdown path', markdownPath],
+  ]) {
+    if (lstatIfPresent(fileSystem, destination)) throw new Error(`${label} already exists`);
+  }
+
+  const entry = {
+    revision: allocated.revision,
+    jsonPath: relativeProjectPath(workspace, jsonPath),
+    markdownPath: relativeProjectPath(workspace, markdownPath),
+    status: 'draft',
+    theme: typeof draftBrief.theme === 'string'
+      ? draftBrief.theme
+      : (draftBrief.theme && draftBrief.theme.id) || baseEntry.theme,
+    aspect: draftBrief.output.aspect,
+  };
+  const nextManifest = JSON.parse(JSON.stringify(persistedManifest));
+  nextManifest.briefs.push(entry);
+  nextManifest.currentBrief = entry.jsonPath;
+  nextManifest.updatedAt = new Date().toISOString();
+  const validatedManifest = validateProjectManifest(nextManifest, {
+    projectDir: workspace.dir,
+    fileSystem,
+  });
+  const markdown = formatBriefMarkdown(draftBrief);
+  const stages = [];
+  let manifestStage;
+  let markdownStage;
+  let jsonStage;
+  let rollbackStage;
+  let manifestCommitted = false;
+  try {
+    manifestStage = stageOwnedSiblingFile(
+      manifestPath,
+      `${JSON.stringify(validatedManifest, null, 2)}\n`,
+      { fileSystem, temporaryId, purpose: 'review-draft-manifest' },
+    );
+    stages.push(manifestStage);
+    markdownStage = stageOwnedSiblingFile(markdownPath, markdown, {
+      fileSystem,
+      temporaryId,
+      purpose: 'review-draft-markdown',
+    });
+    stages.push(markdownStage);
+    jsonStage = stageOwnedSiblingFile(jsonPath, `${draftJson}\n`, {
+      fileSystem,
+      temporaryId,
+      purpose: 'review-draft-json',
+    });
+    stages.push(jsonStage);
+    rollbackStage = stageOwnedSiblingFile(manifestPath, oldManifest, {
+      fileSystem,
+      temporaryId,
+      purpose: 'review-draft-rollback',
+    });
+    stages.push(rollbackStage);
+
+    manifestStage.commit();
+    manifestCommitted = true;
+    markdownStage.commit();
+    jsonStage.commit();
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const stage of [jsonStage, markdownStage]) {
+      try {
+        if (stage) stage.removeCommitted();
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (manifestCommitted) {
+      try {
+        rollbackStage.commit(manifestPath);
+        manifestCommitted = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length) error.rollbackErrors = rollbackErrors;
+    throw error;
+  } finally {
+    for (const stage of stages) stage.cleanupTemp();
+  }
+  workspace.manifest = validatedManifest;
+  return { revision: allocated.revision, jsonPath, markdownPath };
+}
+
 function approveBrief(workspace, draftJsonPath, {
   fileSystem = fs,
   temporaryId = randomUUID,
@@ -768,6 +948,7 @@ module.exports = {
   recordRender,
   resolveProjectPath,
   runRenderLifecycle,
+  saveDraftRevision,
   slugifyProjectName,
   validateProjectManifest,
   writeProjectManifest,
