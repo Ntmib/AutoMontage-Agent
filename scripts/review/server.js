@@ -5,6 +5,7 @@ const { execFile } = require('node:child_process');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 
 const { readProjectManifest, resolveProjectPath } = require('../project/workspace');
+const { isAllowedReviewMediaPath } = require('./assets');
 const { loadReviewState } = require('./model');
 
 const BODY_LIMIT = 256 * 1024;
@@ -18,14 +19,22 @@ const STATIC_FILES = new Map([
 ]);
 const CONTENT_TYPES = new Map([
   ['.css', 'text/css; charset=utf-8'],
+  ['.aac', 'audio/aac'],
+  ['.avif', 'image/avif'],
+  ['.flac', 'audio/flac'],
+  ['.gif', 'image/gif'],
   ['.html', 'text/html; charset=utf-8'],
+  ['.jpeg', 'image/jpeg'],
+  ['.jpg', 'image/jpeg'],
   ['.js', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.m4a', 'audio/mp4'],
+  ['.m4v', 'video/x-m4v'],
   ['.mov', 'video/quicktime'],
   ['.mp3', 'audio/mpeg'],
   ['.mp4', 'video/mp4'],
   ['.ogg', 'audio/ogg'],
+  ['.oga', 'audio/ogg'],
   ['.png', 'image/png'],
   ['.svg', 'image/svg+xml'],
   ['.wav', 'audio/wav'],
@@ -171,17 +180,16 @@ function buildAssetFiles({ root, projectDir, state }) {
       mustExist: true,
       type: 'directory',
     });
-    projectAssets = collectRegularFiles(directory).map((filePath) => ({
-      kind: 'project',
-      filePath,
-    }));
+    projectAssets = collectRegularFiles(directory)
+      .filter((filePath) => isAllowedReviewMediaPath(path.relative(directory, filePath)))
+      .map((filePath) => ({ kind: 'project', filePath }));
   } catch (_) {
     projectAssets = [];
   }
-  const publicAssets = collectRegularFiles(path.resolve(root, 'public')).map((filePath) => ({
-    kind: 'public',
-    filePath,
-  }));
+  const publicDirectory = path.resolve(root, 'public');
+  const publicAssets = collectRegularFiles(publicDirectory)
+    .filter((filePath) => isAllowedReviewMediaPath(path.relative(publicDirectory, filePath)))
+    .map((filePath) => ({ kind: 'public', filePath }));
   const candidates = [...projectAssets, ...publicAssets];
   const mappings = new Map();
   state.assets.forEach((descriptor, index) => {
@@ -315,13 +323,13 @@ async function routeRequest({
   }
 
   const safeMethod = request.method === 'GET' || request.method === 'HEAD';
+  if (protectedRoute && !safeMethod && request.headers.origin !== origin) {
+    request.resume();
+    sendError(response, 403);
+    return;
+  }
+  if (!await consumeLimitedBody(request, response)) return;
   if (!safeMethod) {
-    if (protectedRoute && request.headers.origin !== origin) {
-      request.resume();
-      sendError(response, 403);
-      return;
-    }
-    if (!await consumeLimitedBody(request, response)) return;
     sendError(response, 405);
     return;
   }

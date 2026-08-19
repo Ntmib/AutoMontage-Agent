@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -14,6 +15,7 @@ function request(session, pathname, {
   method = 'GET',
   origin,
   body,
+  chunked = false,
 } = {}) {
   const suffix = queryToken && token
     ? `${pathname.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
@@ -23,7 +25,8 @@ function request(session, pathname, {
   if (origin) headers.origin = origin;
   if (body !== undefined) {
     headers['content-type'] = 'application/json';
-    headers['content-length'] = Buffer.byteLength(body);
+    if (chunked) headers['transfer-encoding'] = 'chunked';
+    else headers['content-length'] = Buffer.byteLength(body);
   }
   return new Promise((resolve, reject) => {
     const outgoing = http.request({
@@ -42,7 +45,11 @@ function request(session, pathname, {
       }));
     });
     outgoing.on('error', reject);
-    if (body !== undefined) outgoing.end(body);
+    if (body !== undefined && chunked) {
+      const split = Math.floor(body.length / 2);
+      outgoing.write(body.subarray(0, split));
+      outgoing.end(body.subarray(split));
+    } else if (body !== undefined) outgoing.end(body);
     else outgoing.end();
   });
 }
@@ -137,6 +144,49 @@ test('review server rejects foreign writes, oversized bodies, and traversal', as
   assert.equal((await request(session, '/api/%00', { token: session.token })).status, 404);
 });
 
+test('review applies the body limit to declared GET and HEAD requests', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  t.after(() => closeServer(session.server));
+  const oversized = Buffer.alloc((256 * 1024) + 1, 0x61);
+
+  assert.equal((await request(session, '/api/state', { token: session.token })).status, 200);
+  assert.equal((await request(session, '/api/state', {
+    token: session.token,
+    method: 'HEAD',
+  })).status, 200);
+  assert.equal((await request(session, '/api/state', {
+    token: session.token,
+    method: 'GET',
+    body: oversized,
+  })).status, 413);
+  assert.equal((await request(session, '/api/state', {
+    token: session.token,
+    method: 'HEAD',
+    body: oversized,
+  })).status, 413);
+});
+
+test('review applies the body limit to chunked GET and HEAD requests', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  t.after(() => closeServer(session.server));
+  const oversized = Buffer.alloc((256 * 1024) + 1, 0x61);
+
+  assert.equal((await request(session, '/api/state', {
+    token: session.token,
+    method: 'GET',
+    body: oversized,
+    chunked: true,
+  })).status, 413);
+  assert.equal((await request(session, '/api/state', {
+    token: session.token,
+    method: 'HEAD',
+    body: oversized,
+    chunked: true,
+  })).status, 413);
+});
+
 test('review media requires authentication and resolves only opaque handles', async (t) => {
   const { projectDir, workspace } = makeReviewProject(t);
   const assetPath = path.join(workspace.dir, 'assets', 'broll', 'diagram.png');
@@ -164,6 +214,34 @@ test('review media requires authentication and resolves only opaque handles', as
   assert.equal((await request(session, '/media/assets/../../project.json', {
     token: session.token,
   })).status, 404);
+});
+
+test('review advertises and serves only explicit non-hidden media types', async (t) => {
+  const { projectDir, workspace } = makeReviewProject(t);
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-root-'));
+  fs.mkdirSync(path.join(repository, 'public'));
+  t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  const assets = path.join(workspace.dir, 'assets', 'broll');
+  fs.writeFileSync(path.join(assets, '.env'), 'PRIVATE_VALUE=secret');
+  fs.writeFileSync(path.join(assets, '.hidden.png'), 'hidden image');
+  fs.writeFileSync(path.join(assets, 'diagram.png'), 'safe image');
+  fs.writeFileSync(path.join(assets, 'payload.svg'), '<svg><script>alert(1)</script></svg>');
+  fs.writeFileSync(path.join(assets, 'page.html'), '<script>alert(1)</script>');
+
+  const session = await startReviewServer({ root: repository, projectDir, open: false });
+  t.after(() => closeServer(session.server));
+  const stateResponse = await request(session, '/api/state', { token: session.token });
+  const state = JSON.parse(stateResponse.body.toString('utf8'));
+
+  assert.deepEqual(state.assets.map((asset) => asset.label), ['diagram.png']);
+  const safe = await request(session, state.assets[0].url, { token: session.token });
+  assert.equal(safe.status, 200);
+  assert.equal(safe.body.toString('utf8'), 'safe image');
+  for (const id of ['asset-2', 'asset-3', 'asset-4', 'asset-5']) {
+    assert.equal((await request(session, `/media/assets/${id}`, {
+      token: session.token,
+    })).status, 404);
+  }
 });
 
 test('review media fails closed if an allowed asset is replaced after startup', async (t) => {

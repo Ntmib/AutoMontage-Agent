@@ -3,6 +3,18 @@ const path = require('node:path');
 
 const { resolveProjectPath } = require('../project/workspace');
 
+const REVIEW_MEDIA_EXTENSIONS = new Set([
+  '.aac', '.avif', '.flac', '.gif', '.jpeg', '.jpg', '.m4a', '.m4v', '.mov',
+  '.mp3', '.mp4', '.oga', '.ogg', '.png', '.wav', '.webm', '.webp',
+]);
+
+function isAllowedReviewMediaPath(filePath) {
+  if (typeof filePath !== 'string' || filePath.length === 0) return false;
+  const segments = filePath.split(/[\\/]/).filter(Boolean);
+  if (segments.length === 0 || segments.some((segment) => segment.startsWith('.'))) return false;
+  return REVIEW_MEDIA_EXTENSIONS.has(path.extname(segments.at(-1)).toLowerCase());
+}
+
 function isInside(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`)
@@ -92,7 +104,7 @@ function descriptor({ id, kind, assetPath }) {
 
 function resolveReviewAsset({ root, workspace, reference, id = 'asset-1' } = {}) {
   const canonical = canonicalReference(reference);
-  if (!canonical) return null;
+  if (!canonical || !isAllowedReviewMediaPath(canonical)) return null;
 
   const projectPath = resolveProjectAsset(workspace, canonical);
   if (projectPath) return descriptor({ id, kind: 'project', assetPath: projectPath });
@@ -143,7 +155,7 @@ function projectAssetReferences(workspace) {
   }
   return collectFiles(assetsDirectory).map((assetPath) => (
     `assets/${path.relative(assetsDirectory, assetPath).split(path.sep).join('/')}`
-  ));
+  )).filter(isAllowedReviewMediaPath);
 }
 
 function publicAssetReferences(root) {
@@ -151,7 +163,7 @@ function publicAssetReferences(root) {
   const publicDirectory = path.resolve(root, 'public');
   return collectFiles(publicDirectory).map((assetPath) => (
     path.relative(publicDirectory, assetPath).split(path.sep).join('/')
-  ));
+  )).filter(isAllowedReviewMediaPath);
 }
 
 function listReviewAssets({ root, workspace } = {}) {
@@ -173,6 +185,7 @@ function listReviewAssets({ root, workspace } = {}) {
 }
 
 module.exports = {
+  isAllowedReviewMediaPath,
   listReviewAssets,
   resolveReviewAsset,
 };
