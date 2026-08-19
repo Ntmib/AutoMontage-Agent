@@ -80,6 +80,24 @@ function browserScene(scene) {
   return result;
 }
 
+function buildReviewStateFromEdit({ state, brief, timing } = {}) {
+  return {
+    ...state,
+    output: {
+      width: brief.output.width,
+      height: brief.output.height,
+      fps: brief.output.fps,
+      durationInFrames: brief.output.durationInFrames,
+    },
+    brief: {
+      status: brief.status,
+      title: brief.title,
+      scenes: brief.scenes.map(browserScene),
+    },
+    timing,
+  };
+}
+
 function loadReviewBase({ projectDir, briefPath } = {}) {
   if (typeof projectDir !== 'string' || projectDir.length === 0) {
     throw new Error('review project directory is required');
@@ -164,4 +182,4 @@ function loadReviewState({
   };
 }
 
-module.exports = { loadReviewBase, loadReviewState };
+module.exports = { buildReviewStateFromEdit, loadReviewBase, loadReviewState };

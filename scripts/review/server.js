@@ -16,7 +16,11 @@ const {
 } = require('./assets');
 const { applyReviewCommands, isOpaqueAssetId } = require('./commands');
 const { diffLessonBrief } = require('./diff');
-const { loadReviewBase, loadReviewState } = require('./model');
+const {
+  buildReviewStateFromEdit,
+  loadReviewBase,
+  loadReviewState,
+} = require('./model');
 const { auditBriefTiming } = require('./timing-audit');
 const { ensureWaveformPreview } = require('./waveform');
 
@@ -394,12 +398,18 @@ function currentAssetReference({ root, workspace, assetFiles, assetId }) {
   return registered.reference;
 }
 
-function currentAssetIds({ root, workspace, assetFiles }) {
-  const ids = new Set();
-  for (const assetId of assetFiles.keys()) {
-    if (currentAssetReference({ root, workspace, assetFiles, assetId })) ids.add(assetId);
+function assertCurrentReviewAssets({ root, workspace, assetFiles, candidate }) {
+  for (const scene of candidate.scenes) {
+    if (!isOpaqueAssetId(scene.brollSrc)) continue;
+    if (!currentAssetReference({
+      root,
+      workspace,
+      assetFiles,
+      assetId: scene.brollSrc,
+    })) {
+      rejectRequest(422, 'UNRESOLVED_REVIEW_ASSET');
+    }
   }
-  return ids;
 }
 
 function requestStatusForCommandError(error) {
@@ -422,15 +432,17 @@ function replayReviewEdit({ root, projectDir, runtime, body }) {
     candidate = applyReviewCommands({
       brief: current.brief,
       commands: body.commands,
-      assetIds: currentAssetIds({
-        root,
-        workspace: current.workspace,
-        assetFiles: runtime.assetFiles,
-      }),
+      assetIds: new Set(runtime.assetFiles.keys()),
     });
   } catch (error) {
     rejectRequest(requestStatusForCommandError(error), 'INVALID_REVIEW_COMMAND');
   }
+  assertCurrentReviewAssets({
+    root,
+    workspace: current.workspace,
+    assetFiles: runtime.assetFiles,
+    candidate,
+  });
   candidate.status = 'draft';
   const validation = validateLessonBrief(candidate);
   if (!validation.ok) rejectRequest(422, 'INVALID_REVIEW_BRIEF');
@@ -485,15 +497,6 @@ function browserSafeDiff(diff, assetFiles) {
   });
 }
 
-function projectRelativePath(projectDir, filePath) {
-  const relative = path.relative(projectDir, filePath);
-  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`)
-    || path.isAbsolute(relative)) {
-    throw new Error('review save returned an invalid path');
-  }
-  return relative.split(path.sep).join('/');
-}
-
 function isSaveConflict(error) {
   if (error && error.code === 'PROJECT_MANIFEST_CONFLICT') return true;
   const message = error && typeof error.message === 'string' ? error.message : '';
@@ -533,7 +536,6 @@ function handleEditRoute({
   editable,
   runtime,
   bodyBytes,
-  waveformAvailable,
   fileSystem,
 }) {
   if (!editable) rejectRequest(405, 'READ_ONLY_REVIEW');
@@ -557,30 +559,36 @@ function handleEditRoute({
     assetFiles: runtime.assetFiles,
     candidate: checked.candidate,
   });
+  const nextState = buildReviewStateFromEdit({
+    state: runtime.state,
+    brief: materialized,
+    timing: checked.timing,
+  });
   let saved;
   try {
     saved = saveDraftRevision(checked.current.workspace, {
       baseJsonPath: checked.current.briefFilePath,
       brief: materialized,
       fileSystem,
+      expectedManifestHash: checked.current.manifestHash,
+      expectedBaseHash: checked.current.baseHash,
     });
   } catch (error) {
     if (isSaveConflict(error)) rejectRequest(409, 'STALE_REVIEW_BASE');
     throw error;
   }
 
-  const nextState = loadReviewState({
-    root,
-    projectDir,
+  nextState.session = {
     editable: true,
-    waveformAvailable,
-  });
-  nextState.assets = runtime.state.assets;
+    baseRevision: saved.revision,
+    baseHash: saved.baseHash,
+    manifestHash: saved.manifestHash,
+  };
   runtime.state = nextState;
   sendJson(response, 201, {
     ok: true,
     revision: saved.revision,
-    path: projectRelativePath(projectDir, saved.jsonPath),
+    path: saved.relativePath,
     session: nextState.session,
   });
 }
@@ -594,7 +602,6 @@ async function routeRequest({
   runtime,
   projectDir,
   editable,
-  waveformAvailable,
   fileSystem,
   sourceFile,
   waveformFile,
@@ -646,7 +653,6 @@ async function routeRequest({
         editable,
         runtime,
         bodyBytes,
-        waveformAvailable,
         fileSystem,
       });
       return;
@@ -763,7 +769,6 @@ async function startReviewServer({
       runtime,
       projectDir: resolvedProjectDir,
       editable: Boolean(editable),
-      waveformAvailable: Boolean(waveformFile),
       fileSystem,
       sourceFile,
       waveformFile,

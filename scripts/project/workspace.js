@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID, timingSafeEqual } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { URL } = require('node:url');
 const Ajv = require('ajv');
@@ -483,6 +483,18 @@ function manifestConflict() {
   return error;
 }
 
+function canonicalJsonHash(value) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function matchesExpectedHash(value, expectedHash) {
+  if (expectedHash === undefined) return true;
+  if (typeof expectedHash !== 'string' || !/^[a-f0-9]{64}$/.test(expectedHash)) return false;
+  const actual = Buffer.from(canonicalJsonHash(value));
+  const expected = Buffer.from(expectedHash);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 function readFileSnapshot(fileSystem, filePath) {
   const before = lstatIfPresent(fileSystem, filePath);
   if (!before || before.isSymbolicLink() || !before.isFile()) throw manifestConflict();
@@ -515,6 +527,8 @@ function saveDraftRevision(workspace, {
   brief,
   fileSystem = fs,
   temporaryId = randomUUID,
+  expectedManifestHash,
+  expectedBaseHash,
 } = {}) {
   const baseRelativePath = relativeProjectPath(workspace, path.resolve(baseJsonPath));
   const sessionEntry = workspace.manifest.briefs.find(
@@ -537,6 +551,7 @@ function saveDraftRevision(workspace, {
     projectDir: workspace.dir,
     fileSystem,
   });
+  if (!matchesExpectedHash(persistedManifest, expectedManifestHash)) throw manifestConflict();
   const baseEntry = persistedManifest.briefs.find(
     (entry) => entry.jsonPath === baseRelativePath,
   );
@@ -550,9 +565,11 @@ function saveDraftRevision(workspace, {
     mustExist: true,
     type: 'file',
   });
-  const baseBrief = JSON.parse(fileSystem.readFileSync(resolvedBasePath, 'utf8'));
+  const baseBriefSnapshot = readFileSnapshot(fileSystem, resolvedBasePath);
+  const baseBrief = JSON.parse(baseBriefSnapshot.bytes.toString('utf8'));
   const baseValidation = validateLessonBrief(baseBrief);
   if (!baseValidation.ok) throw new Error(`base brief is invalid: ${baseValidation.errors.join('\n')}`);
+  if (!matchesExpectedHash(baseBrief, expectedBaseHash)) throw manifestConflict();
 
   let draftJson;
   try {
@@ -625,6 +642,8 @@ function saveDraftRevision(workspace, {
     fileSystem,
   });
   const nextManifestBytes = Buffer.from(`${JSON.stringify(validatedManifest, null, 2)}\n`);
+  const committedBaseHash = canonicalJsonHash(draftBrief);
+  const committedManifestHash = canonicalJsonHash(validatedManifest);
   const markdown = formatBriefMarkdown(draftBrief);
   const stages = [];
   let manifestStage;
@@ -660,6 +679,7 @@ function saveDraftRevision(workspace, {
     });
     stages.push(rollbackStage);
 
+    assertFileSnapshot(fileSystem, resolvedBasePath, baseBriefSnapshot);
     assertFileSnapshot(fileSystem, manifestPath, oldManifestSnapshot);
     manifestStage.commit();
     manifestCommitted = true;
@@ -706,7 +726,14 @@ function saveDraftRevision(workspace, {
     }
   }
   workspace.manifest = validatedManifest;
-  return { revision: allocated.revision, jsonPath, markdownPath };
+  return {
+    revision: allocated.revision,
+    jsonPath,
+    markdownPath,
+    relativePath: entry.jsonPath,
+    baseHash: committedBaseHash,
+    manifestHash: committedManifestHash,
+  };
 }
 
 function approveBrief(workspace, draftJsonPath, {

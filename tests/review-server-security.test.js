@@ -488,6 +488,142 @@ test('review save creates a draft and advances the browser-safe session state', 
   assert.equal((await postJson(session, '/api/save', payload)).status, 409);
 });
 
+test('review save rejects a manifest changed after replay but before its atomic snapshot', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const manifestPath = path.join(projectDir, 'project.json');
+  const beforeBriefNames = fs.readdirSync(path.join(projectDir, 'brief')).sort();
+  let foreignManifestBytes = null;
+  let injected = false;
+  const racingFileSystem = {
+    ...fs,
+    readFileSync(target, options) {
+      if (!injected && path.resolve(target) === manifestPath) {
+        injected = true;
+        const foreignManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        foreignManifest.name = 'Foreign concurrent manifest';
+        foreignManifest.updatedAt = '2026-08-20T15:00:00.000Z';
+        foreignManifestBytes = Buffer.from(`${JSON.stringify(foreignManifest, null, 2)}\n`);
+        fs.writeFileSync(manifestPath, foreignManifestBytes);
+      }
+      return fs.readFileSync(target, options);
+    },
+  };
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+    fileSystem: racingFileSystem,
+  });
+  t.after(() => closeServer(session.server));
+  const { state: beforeState, payload } = await editablePayload(session);
+
+  const response = await postJson(session, '/api/save', payload);
+
+  assert.equal(injected, true);
+  assert.equal(response.status, 409);
+  assert.equal(response.body.toString('utf8'), 'Request rejected');
+  assert.deepEqual(fs.readFileSync(manifestPath), foreignManifestBytes);
+  assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefNames);
+  const stateResponse = await request(session, '/api/state', { token: session.token });
+  assert.deepEqual(JSON.parse(stateResponse.body.toString('utf8')).session, beforeState.session);
+});
+
+test('review save advances in-memory state without fallible disk reload after commit', async (t) => {
+  const { projectDir, workspace } = makeReviewProject(t);
+  const transcriptPath = path.join(workspace.dir, workspace.manifest.transcript.words);
+  let transcriptRemovedAfterCommit = false;
+  const postCommitFileSystem = {
+    ...fs,
+    renameSync(source, target) {
+      const result = fs.renameSync(source, target);
+      if (!transcriptRemovedAfterCommit && source.includes('.tmp-review-draft-json-')) {
+        fs.unlinkSync(transcriptPath);
+        transcriptRemovedAfterCommit = true;
+      }
+      return result;
+    },
+  };
+  const logs = [];
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+    fileSystem: postCommitFileSystem,
+    logger: { error: (...args) => logs.push(args) },
+  });
+  t.after(() => closeServer(session.server));
+  const { payload } = await editablePayload(session);
+
+  const response = await postJson(session, '/api/save', payload);
+
+  assert.equal(transcriptRemovedAfterCommit, true);
+  assert.equal(fs.existsSync(transcriptPath), false);
+  assert.equal(response.status, 201);
+  const result = JSON.parse(response.body.toString('utf8'));
+  assert.equal(result.revision, 2);
+  assert.equal(result.session.baseRevision, 2);
+  assert.equal(logs.length, 0);
+  const manifest = JSON.parse(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8'));
+  assert.equal(manifest.currentBrief, result.path);
+  const stateResponse = await request(session, '/api/state', { token: session.token });
+  const state = JSON.parse(stateResponse.body.toString('utf8'));
+  assert.deepEqual(state.session, result.session);
+  assert.equal(state.brief.scenes[0].end, 2.2);
+  assert.equal(state.brief.scenes[1].start, 2.2);
+});
+
+test('review distinguishes unavailable registered assets from unknown ids', async (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const assetsDirectory = path.join(workspace.dir, 'assets', 'broll');
+  const baseAssetPath = path.join(assetsDirectory, 'base.png');
+  const unavailableAssetPath = path.join(assetsDirectory, 'gone.png');
+  fs.writeFileSync(baseAssetPath, 'base asset');
+  fs.writeFileSync(unavailableAssetPath, 'registered at startup');
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[1] = {
+    scene: 'broll',
+    start: 2,
+    end: 4,
+    brollSrc: 'assets/broll/base.png',
+    headCream: 'БАЗОВАЯ',
+    headOrange: 'СХЕМА',
+  };
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const stateResponse = await request(session, '/api/state', { token: session.token });
+  const state = JSON.parse(stateResponse.body.toString('utf8'));
+  const unavailable = state.assets.find((asset) => asset.label === 'gone.png');
+  assert.ok(unavailable);
+  fs.unlinkSync(unavailableAssetPath);
+  const payload = {
+    baseRevision: state.session.baseRevision,
+    baseHash: state.session.baseHash,
+    manifestHash: state.session.manifestHash,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: unavailable.id }],
+  };
+
+  assert.equal((await postJson(session, '/api/validate', payload)).status, 422);
+  assert.equal((await postJson(session, '/api/save', payload)).status, 422);
+  assert.equal((await postJson(session, '/api/validate', {
+    ...payload,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: 'asset-999999' }],
+  })).status, 400);
+  assert.equal((await postJson(session, '/api/validate', {
+    ...payload,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: '../gone.png' }],
+  })).status, 400);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8')).currentBrief,
+    workspace.manifest.currentBrief);
+});
+
 test('review save returns a fixed 500 and preserves state on an injected filesystem failure', async (t) => {
   const { projectDir } = makeReviewProject(t);
   const internalPath = path.join(projectDir, 'private-save-target.json');
