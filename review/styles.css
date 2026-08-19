@@ -352,7 +352,7 @@ video {
 
 .timeline-canvas {
   position: relative;
-  width: max(100%, var(--timeline-min));
+  width: max(100%, var(--timeline-width, var(--timeline-min)));
   padding: 0.8rem 1rem 1rem;
 }
 

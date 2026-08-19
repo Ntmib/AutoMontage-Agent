@@ -1,5 +1,11 @@
 import { seekPlayer, synchronizePlayer } from './player-sync.js';
 
+const MIN_CANVAS_WIDTH = 720;
+const CANVAS_CHROME_WIDTH = 160;
+const BASE_PIXELS_PER_SECOND = 20;
+const MIN_SCENE_WIDTH = 40;
+const MIN_WORD_SPACING = 44;
+
 function formatTime(seconds, milliseconds = false) {
   const safe = Math.max(0, Number(seconds) || 0);
   const minutes = Math.floor(safe / 60);
@@ -21,7 +27,31 @@ function place(element, start, end, duration) {
   const left = Math.min(100, Math.max(0, (start / safeDuration) * 100));
   const right = Math.min(100, Math.max(left, (end / safeDuration) * 100));
   element.style.setProperty('--segment-start', `${left}%`);
-  element.style.setProperty('--segment-width', `${Math.max(0.35, right - left)}%`);
+  element.style.setProperty('--segment-width', `${Math.max(0.001, right - left)}%`);
+}
+
+function minimumPositive(values) {
+  const sorted = values.filter(Number.isFinite).sort((left, right) => left - right);
+  let minimum = Infinity;
+  for (let index = 1; index < sorted.length; index += 1) {
+    const difference = sorted[index] - sorted[index - 1];
+    if (difference > 0) minimum = Math.min(minimum, difference);
+  }
+  return minimum;
+}
+
+function timelineCanvasWidth(duration, scenes, words) {
+  const shortestScene = Math.min(...scenes.map((scene) => scene.end - scene.start));
+  const wordGap = minimumPositive(words.map((word) => word.start));
+  const pixelsPerSecond = Math.max(
+    BASE_PIXELS_PER_SECOND,
+    Number.isFinite(shortestScene) ? MIN_SCENE_WIDTH / shortestScene : 0,
+    Number.isFinite(wordGap) ? MIN_WORD_SPACING / wordGap : 0,
+  );
+  return Math.max(
+    MIN_CANVAS_WIDTH,
+    Math.ceil((Math.max(0, duration) * pixelsPerSecond) + CANVAS_CHROME_WIDTH),
+  );
 }
 
 function setCurrent(elements, activeIndex) {
@@ -110,6 +140,10 @@ export function renderTimeline({ root, video, state, timecode }) {
   const duration = state.output.durationInFrames / state.output.fps;
   const scenes = state.brief.scenes;
   const words = state.transcript.words;
+  root.querySelector('.timeline-canvas').style.setProperty(
+    '--timeline-width',
+    `${timelineCanvasWidth(duration, scenes, words)}px`,
+  );
   const sceneButtons = renderScenes(
     root.querySelector('[data-scenes-track]'),
     video,

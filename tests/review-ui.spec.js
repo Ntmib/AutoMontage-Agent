@@ -10,6 +10,8 @@ const { makeReviewProject } = require('./helpers/review-project');
 
 let reviewSession;
 let reviewUrl;
+let denseReviewSession;
+let denseReviewUrl;
 let cleanups = [];
 
 async function closeServer(server) {
@@ -19,8 +21,8 @@ async function closeServer(server) {
   )));
 }
 
-async function openReview(page) {
-  await page.goto(reviewUrl);
+async function openReview(page, url = reviewUrl) {
+  await page.goto(url);
   await page.waitForLoadState('networkidle');
   await expect(page.locator('[data-review-ready]')).toBeVisible();
 }
@@ -35,13 +37,42 @@ async function expectNoPageOverflow(page) {
   })));
 }
 
-test.beforeAll(async () => {
+async function makeBrowserReviewSession({ duration = 4, dense = false } = {}) {
   const fixture = makeReviewProject({ after: (cleanup) => cleanups.push(cleanup) });
+  if (dense) {
+    const brief = JSON.parse(fs.readFileSync(fixture.briefPath, 'utf8'));
+    brief.title = 'Плотный производственный таймлайн';
+    brief.output.durationInFrames = duration * brief.output.fps;
+    brief.scenes = Array.from({ length: 30 }, (_, index) => ({
+      scene: 'fullscreen',
+      start: index * 3,
+      end: (index + 1) * 3,
+      caption: `СЦЕНА ${index + 1}`,
+    }));
+    fs.writeFileSync(fixture.briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+
+    const words = Array.from({ length: 180 }, (_, index) => ({
+      w: `слово-${index + 1}`,
+      s: index * 0.5,
+      e: (index * 0.5) + 0.35,
+    }));
+    const transcript = [{
+      start: 0,
+      end: duration,
+      text: words.map((word) => word.w).join(' '),
+      words,
+    }];
+    fs.writeFileSync(
+      path.join(fixture.workspace.dir, 'transcript', 'words.json'),
+      `${JSON.stringify(transcript, null, 2)}\n`,
+    );
+  }
+
   const sourcePath = path.join(fixture.workspace.dir, 'input', 'source.webm');
   const ffmpeg = spawnSync('ffmpeg', [
     '-y', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', 'color=c=#15171a:s=640x360:r=25:d=4',
-    '-c:v', 'libvpx', '-b:v', '120k', '-an', sourcePath,
+    '-f', 'lavfi', '-i', `color=c=#15171a:s=160x90:r=5:d=${duration}`,
+    '-c:v', 'libvpx', '-b:v', '30k', '-an', sourcePath,
   ], { encoding: 'utf8' });
   if (ffmpeg.status !== 0) throw new Error('Unable to create the browser video fixture');
   const manifestPath = path.join(fixture.workspace.dir, 'project.json');
@@ -52,16 +83,23 @@ test.beforeAll(async () => {
     path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
     path.join(fixture.workspace.dir, 'assets', 'broll', 'diagram.png'),
   );
-  reviewSession = await startReviewServer({
+  return startReviewServer({
     root: ROOT,
     projectDir: fixture.projectDir,
     open: false,
   });
+}
+
+test.beforeAll(async () => {
+  reviewSession = await makeBrowserReviewSession();
   reviewUrl = reviewSession.url;
+  denseReviewSession = await makeBrowserReviewSession({ duration: 90, dense: true });
+  denseReviewUrl = denseReviewSession.url;
 });
 
 test.afterAll(async () => {
   await closeServer(reviewSession && reviewSession.server);
+  await closeServer(denseReviewSession && denseReviewSession.server);
   cleanups.reverse().forEach((cleanup) => cleanup());
   cleanups = [];
 });
@@ -110,6 +148,50 @@ test('scene and transcript buttons seek the source and update one synchronized p
     await page.locator('[data-playhead]').getAttribute('data-time'),
   ))
     .toBeCloseTo(0.5, 1);
+});
+
+test('dense production timeline keeps every target reachable inside its own mobile scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 900 });
+  await openReview(page, denseReviewUrl);
+  await expect(page.locator('[data-scene]')).toHaveCount(30);
+  await expect(page.locator('[data-transcript-word]')).toHaveCount(180);
+
+  const geometry = await page.evaluate(() => {
+    const rectangles = (selector) => [...document.querySelectorAll(selector)].map((element) => {
+      const box = element.getBoundingClientRect();
+      return { left: box.left, right: box.right, width: box.width };
+    });
+    const words = rectangles('[data-transcript-word]');
+    const scenes = rectangles('[data-scene]');
+    const timeline = document.querySelector('[data-timeline-root]');
+    return {
+      pageClientWidth: document.documentElement.clientWidth,
+      pageScrollWidth: document.documentElement.scrollWidth,
+      timelineClientWidth: timeline.clientWidth,
+      timelineScrollWidth: timeline.scrollWidth,
+      minimumSceneWidth: Math.min(...scenes.map((scene) => scene.width)),
+      wordOverlapCount: words.slice(1).filter((word, index) => (
+        word.left < words[index].right - 0.5
+      )).length,
+    };
+  });
+
+  expect(geometry.pageClientWidth).toBe(360);
+  expect(geometry.pageScrollWidth).toBe(360);
+  expect(geometry.timelineScrollWidth).toBeGreaterThan(geometry.timelineClientWidth);
+  expect(geometry.wordOverlapCount).toBe(0);
+  expect(geometry.minimumSceneWidth).toBeGreaterThanOrEqual(40);
+
+  const middleWord = page.locator('[data-transcript-word="100"]');
+  await middleWord.scrollIntoViewIfNeeded();
+  expect(await middleWord.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return document.elementFromPoint(box.left + (box.width / 2), box.top + (box.height / 2)) === element;
+  })).toBe(true);
+  await middleWord.click();
+  await expect.poll(() => page.locator('video').evaluate((video) => video.currentTime))
+    .toBeCloseTo(50, 1);
+  await expectNoPageOverflow(page);
 });
 
 test('session token leaves the fragment and stays out of storage, DOM and API query strings', async ({ page }) => {
