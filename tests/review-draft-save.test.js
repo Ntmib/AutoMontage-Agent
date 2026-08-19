@@ -233,6 +233,49 @@ test('review save also keeps a current draft base byte-for-byte', (t) => {
   assert.deepEqual(fs.readFileSync(state.baseMarkdownPath), beforeMarkdown);
 });
 
+test('review save returns committed data when only post-commit temp cleanup fails', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'post-commit-cleanup' });
+  let jsonCommitted = false;
+  let cleanupAttempted = false;
+  const cleanupFailureFs = {
+    ...fs,
+    renameSync(source, target) {
+      const result = fs.renameSync(source, target);
+      if (source.includes('.tmp-review-draft-json-')) jsonCommitted = true;
+      return result;
+    },
+    unlinkSync(target) {
+      if (jsonCommitted && target.includes('.tmp-review-draft-rollback-')) {
+        cleanupAttempted = true;
+        throw new Error('simulated post-commit cleanup failure');
+      }
+      return fs.unlinkSync(target);
+    },
+  };
+
+  const saved = saveDraftRevision(state.workspace, {
+    baseJsonPath: state.baseJsonPath,
+    brief: editedCandidate(state.baseBrief),
+    fileSystem: cleanupFailureFs,
+    temporaryId: () => TEMPORARY_ID,
+  });
+
+  assert.equal(jsonCommitted, true);
+  assert.equal(cleanupAttempted, true);
+  assert.equal(saved.revision, 2);
+  assert.equal(saved.relativePath, 'brief/v02-draft.lesson.json');
+  assert.equal(readProjectManifest(state.workspace.dir).currentBrief, saved.relativePath);
+  assert.equal(state.workspace.manifest.currentBrief, saved.relativePath);
+  assert.equal(JSON.parse(fs.readFileSync(saved.jsonPath, 'utf8')).status, 'draft');
+  assert.match(fs.readFileSync(saved.markdownPath, 'utf8'), /^Статус: `draft`$/m);
+  assert.deepEqual(tempEntries(state.workspace), [
+    path.join(
+      state.workspace.dir,
+      `project.json.tmp-review-draft-rollback-${TEMPORARY_ID}`,
+    ),
+  ]);
+});
+
 test('review save rolls back every staging and destination commit failure', async (t) => {
   const failures = [
     { kind: 'stage', purpose: 'review-draft-manifest' },

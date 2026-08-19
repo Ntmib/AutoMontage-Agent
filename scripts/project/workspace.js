@@ -653,6 +653,7 @@ function saveDraftRevision(workspace, {
   let manifestCommitted = false;
   let committedManifestSnapshot = null;
   let preserveStages = false;
+  let fullyCommitted = false;
   try {
     manifestStage = stageOwnedSiblingFile(
       manifestPath,
@@ -694,6 +695,7 @@ function saveDraftRevision(workspace, {
     assertFileSnapshot(fileSystem, manifestPath, committedManifestSnapshot);
     markdownStage.commit();
     jsonStage.commit();
+    fullyCommitted = true;
   } catch (error) {
     const rollbackErrors = [];
     preserveStages = error.code === MANIFEST_CONFLICT;
@@ -722,7 +724,17 @@ function saveDraftRevision(workspace, {
     throw error;
   } finally {
     if (!preserveStages) {
-      for (const stage of stages) stage.cleanupTemp();
+      for (const stage of stages) {
+        if (!fullyCommitted) {
+          stage.cleanupTemp();
+        } else {
+          try {
+            stage.cleanupTemp();
+          } catch (_) {
+            // The revision is already fully committed. Keep an owned temp as diagnostic evidence.
+          }
+        }
+      }
     }
   }
   workspace.manifest = validatedManifest;

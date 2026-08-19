@@ -574,6 +574,55 @@ test('review save advances in-memory state without fallible disk reload after co
   assert.equal(state.brief.scenes[1].start, 2.2);
 });
 
+test('review save advances session when only post-commit temp cleanup fails', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  let jsonCommitted = false;
+  let cleanupAttempted = false;
+  const postCommitCleanupFailureFs = {
+    ...fs,
+    renameSync(source, target) {
+      const result = fs.renameSync(source, target);
+      if (source.includes('.tmp-review-draft-json-')) jsonCommitted = true;
+      return result;
+    },
+    unlinkSync(target) {
+      if (jsonCommitted && target.includes('.tmp-review-draft-rollback-')) {
+        cleanupAttempted = true;
+        throw new Error('simulated post-commit cleanup failure');
+      }
+      return fs.unlinkSync(target);
+    },
+  };
+  const logs = [];
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+    fileSystem: postCommitCleanupFailureFs,
+    logger: { error: (...args) => logs.push(args) },
+  });
+  t.after(() => closeServer(session.server));
+  const { payload } = await editablePayload(session);
+
+  const response = await postJson(session, '/api/save', payload);
+
+  assert.equal(jsonCommitted, true);
+  assert.equal(cleanupAttempted, true);
+  assert.equal(response.status, 201);
+  const result = JSON.parse(response.body.toString('utf8'));
+  assert.equal(result.revision, 2);
+  assert.equal(result.session.baseRevision, 2);
+  assert.equal(logs.length, 0);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8')).currentBrief,
+    result.path);
+  const stateResponse = await request(session, '/api/state', { token: session.token });
+  assert.deepEqual(JSON.parse(stateResponse.body.toString('utf8')).session, result.session);
+  assert.ok(fs.readdirSync(projectDir).some((name) => (
+    name.includes('.tmp-review-draft-rollback-')
+  )));
+});
+
 test('review distinguishes unavailable registered assets from unknown ids', async (t) => {
   const { projectDir, briefPath, workspace } = makeReviewProject(t);
   const assetsDirectory = path.join(workspace.dir, 'assets', 'broll');
