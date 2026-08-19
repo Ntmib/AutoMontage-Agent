@@ -88,6 +88,23 @@ test('reports but does not rewrite off-frame scene boundaries', () => {
   assert.deepEqual(brief, original);
 });
 
+test('suggests the off-frame final boundary of a single scene', () => {
+  const audit = auditBriefTiming({
+    brief: fixtureBrief({ fps: 25, scenes: [
+      { scene: 'fullscreen', start: 0, end: 1.013, caption: 'A' },
+    ] }),
+    transcript: [],
+  });
+
+  assert.deepEqual(audit.suggestions, [{
+    sceneIndex: 0,
+    boundary: 'end',
+    seconds: 1.013,
+    frame: 25,
+    suggestedSeconds: 1,
+  }]);
+});
+
 test('does not suggest a boundary that already lands on a frame', () => {
   const audit = auditBriefTiming({
     brief: fixtureBrief({ fps: 25, scenes: [

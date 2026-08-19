@@ -70,7 +70,7 @@ function auditBriefTiming({ brief, transcript } = {}) {
     }
   }
   const lastIndex = brief.scenes.length - 1;
-  if (lastIndex > 0 && validScenes[lastIndex]) {
+  if (lastIndex >= 0 && validScenes[lastIndex]) {
     suggest(lastIndex, 'end');
   }
 
