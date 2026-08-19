@@ -130,6 +130,9 @@ regular-файла и закрываются при его подмене пос
 `previews/review-waveform-<fingerprint>.png`. Fingerprint включает workspace-relative identity,
 размер и временные метаданные исходника. Генерация идёт в непредсказуемый соседний temp,
 проверяет regular file и публикует его атомарным rename; symlink и dangling symlink отклоняются.
+Identity каталога `previews/` фиксируется до запуска ffmpeg и повторно сверяется через resolver,
+realpath, device и inode после процесса и непосредственно перед rename. Если parent подменён,
+публикация закрывается, а cleanup не следует по новому внешнему пути.
 Ошибка или отсутствие ffmpeg дают `waveform: null` и не меняют manifest, brief или render state.
 При успехе браузер видит только `{ url: "/media/waveform" }`, а timeline добавляет PNG внутрь
 существующей дорожки исходника без отдельной пустой панели.

@@ -30,7 +30,8 @@ npm test
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
 - process regression matrix: leading `-`, пробелы, кавычки, `$()`, `;`, newline и Unicode;
 - Review waveform: буквальный ffmpeg argv, cache reuse/invalidation, очистка partial temp,
-  отказ от regular/symlink/dangling-symlink подмен и неизменность manifest/approved brief;
+  отказ от regular/symlink/dangling-symlink подмен, включая замену `previews/` на runner boundary,
+  и неизменность manifest/approved brief;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;

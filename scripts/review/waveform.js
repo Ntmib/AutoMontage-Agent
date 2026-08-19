@@ -40,6 +40,39 @@ function removeTemporary(filePath) {
   else fs.unlinkSync(filePath);
 }
 
+function snapshotDirectory(directory) {
+  const linkStat = fs.lstatSync(directory);
+  if (linkStat.isSymbolicLink() || !linkStat.isDirectory()) {
+    throw new Error('review waveform preview directory must be regular');
+  }
+  const realPath = fs.realpathSync(directory);
+  const stat = fs.statSync(realPath);
+  if (!stat.isDirectory()) throw new Error('review waveform preview directory must exist');
+  return { realPath, dev: stat.dev, ino: stat.ino };
+}
+
+function assertDirectoryIdentity(workspaceDir, directory, expected) {
+  const resolved = resolveProjectPath(workspaceDir, 'previews', {
+    label: 'review waveform preview directory',
+    mustExist: true,
+    type: 'directory',
+  });
+  const current = snapshotDirectory(resolved);
+  if (resolved !== directory || current.realPath !== expected.realPath
+    || current.dev !== expected.dev || current.ino !== expected.ino) {
+    throw new Error('review waveform preview directory changed');
+  }
+}
+
+function hasDirectoryIdentity(workspaceDir, directory, expected) {
+  try {
+    assertDirectoryIdentity(workspaceDir, directory, expected);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function sourceFingerprint(workspaceDir, sourcePath) {
   const relative = path.relative(workspaceDir, path.resolve(sourcePath));
   const resolvedSource = resolveProjectPath(workspaceDir, relative, {
@@ -64,13 +97,16 @@ function sourceFingerprint(workspaceDir, sourcePath) {
 
 function ensureWaveformPreview({ workspace, sourcePath, runToolImpl = runTool } = {}) {
   let temporaryPath = null;
+  let previewDirectory = null;
+  let previewDirectoryIdentity = null;
+  let workspaceDir = null;
   try {
     if (!workspace || typeof workspace.dir !== 'string') {
       throw new Error('review waveform workspace is required');
     }
-    const workspaceDir = path.resolve(workspace.dir);
+    workspaceDir = path.resolve(workspace.dir);
     const source = sourceFingerprint(workspaceDir, sourcePath);
-    const previewDirectory = resolveProjectPath(workspaceDir, 'previews', {
+    previewDirectory = resolveProjectPath(workspaceDir, 'previews', {
       label: 'review waveform preview directory',
     });
     fs.mkdirSync(previewDirectory, { recursive: true, mode: 0o700 });
@@ -79,12 +115,14 @@ function ensureWaveformPreview({ workspace, sourcePath, runToolImpl = runTool } 
       mustExist: true,
       type: 'directory',
     });
+    previewDirectoryIdentity = snapshotDirectory(previewDirectory);
 
     const filename = `review-waveform-${source.fingerprint}.png`;
     const destination = resolveProjectPath(workspaceDir, `previews/${filename}`, {
       label: 'review waveform cache',
       type: 'file',
     });
+    assertDirectoryIdentity(workspaceDir, previewDirectory, previewDirectoryIdentity);
     const cached = lstatIfPresent(destination);
     if (cached) {
       if (cached.isSymbolicLink() || !cached.isFile()) throw new Error('unsafe waveform cache');
@@ -100,6 +138,7 @@ function ensureWaveformPreview({ workspace, sourcePath, runToolImpl = runTool } 
     const command = buildWaveformCommand(source.sourcePath, temporaryPath);
     runToolImpl(command.command, command.args, { stage: 'review waveform' });
 
+    assertDirectoryIdentity(workspaceDir, previewDirectory, previewDirectoryIdentity);
     const generated = lstatIfPresent(temporaryPath);
     if (!generated || generated.isSymbolicLink() || !generated.isFile()) {
       throw new Error('waveform output must be a regular file');
@@ -111,6 +150,7 @@ function ensureWaveformPreview({ workspace, sourcePath, runToolImpl = runTool } 
       }
       return { available: true, path: destination };
     }
+    assertDirectoryIdentity(workspaceDir, previewDirectory, previewDirectoryIdentity);
     fs.renameSync(temporaryPath, destination);
     temporaryPath = null;
     const committed = fs.lstatSync(destination);
@@ -121,7 +161,8 @@ function ensureWaveformPreview({ workspace, sourcePath, runToolImpl = runTool } 
   } catch (_) {
     return { available: false, warning: UNAVAILABLE_WARNING };
   } finally {
-    if (temporaryPath) {
+    if (temporaryPath && previewDirectoryIdentity
+      && hasDirectoryIdentity(workspaceDir, previewDirectory, previewDirectoryIdentity)) {
       try {
         removeTemporary(temporaryPath);
       } catch (_) {

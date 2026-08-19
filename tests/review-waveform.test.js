@@ -146,6 +146,38 @@ test('waveform refuses a symlinked preview directory and writes nothing outside'
   assert.deepEqual(fs.readdirSync(outside), []);
 });
 
+test('waveform refuses a preview directory swapped for a symlink at the runner boundary', (t) => {
+  const { root, workspace } = makeReviewProject(t);
+  const previews = path.join(workspace.dir, 'previews');
+  const displacedPreviews = path.join(workspace.dir, 'previews-before-swap');
+  const outside = path.join(root, 'outside-runner-swap');
+  const sentinel = path.join(outside, 'sentinel.txt');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(sentinel, 'outside sentinel');
+  let attackerTemporaryPath;
+  let outsideCachePath;
+
+  const result = ensureWaveformPreview({
+    workspace,
+    sourcePath: sourcePathFor(workspace),
+    runToolImpl: (_command, args) => {
+      const temporaryName = path.basename(args.at(-1));
+      const cacheName = temporaryName.replace(/\.tmp-review-[a-f0-9-]+\.png$/, '');
+      attackerTemporaryPath = path.join(outside, temporaryName);
+      outsideCachePath = path.join(outside, cacheName);
+      fs.writeFileSync(attackerTemporaryPath, 'attacker-owned temporary file');
+      fs.renameSync(previews, displacedPreviews);
+      fs.symlinkSync(outside, previews);
+    },
+  });
+
+  assert.equal(result.available, false);
+  assert.equal(fs.existsSync(outsideCachePath), false);
+  assert.equal(fs.readFileSync(attackerTemporaryPath, 'utf8'), 'attacker-owned temporary file');
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'outside sentinel');
+  assert.deepEqual(fs.readdirSync(displacedPreviews), []);
+});
+
 test('waveform refuses cached symlinks including dangling symlinks', (t) => {
   const { root, workspace } = makeReviewProject(t);
   const sourcePath = sourcePathFor(workspace);

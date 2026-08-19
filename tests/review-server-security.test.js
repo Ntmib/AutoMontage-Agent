@@ -61,9 +61,18 @@ async function closeServer(server) {
   )));
 }
 
+function startTestReviewServer(options) {
+  return startReviewServer({
+    runToolImpl: () => {
+      throw new Error('waveform unavailable in unrelated server test');
+    },
+    ...options,
+  });
+}
+
 test('review server binds only to loopback and keeps its token in the URL fragment', async (t) => {
   const { projectDir } = makeReviewProject(t);
-  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  const session = await startTestReviewServer({ root: ROOT, projectDir, open: false });
   t.after(() => closeServer(session.server));
 
   const address = session.server.address();
@@ -81,7 +90,7 @@ test('review server binds only to loopback and keeps its token in the URL fragme
 
 test('review API authenticates state and sends defensive response headers', async (t) => {
   const { projectDir } = makeReviewProject(t);
-  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  const session = await startTestReviewServer({ root: ROOT, projectDir, open: false });
   t.after(() => closeServer(session.server));
 
   assert.equal((await request(session, '/api/state')).status, 401);
@@ -106,7 +115,7 @@ test('review API authenticates state and sends defensive response headers', asyn
 
 test('review server rejects foreign writes, oversized bodies, and traversal', async (t) => {
   const { projectDir } = makeReviewProject(t);
-  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  const session = await startTestReviewServer({ root: ROOT, projectDir, open: false });
   t.after(() => closeServer(session.server));
   const origin = `http://127.0.0.1:${session.server.address().port}`;
 
@@ -146,7 +155,7 @@ test('review server rejects foreign writes, oversized bodies, and traversal', as
 
 test('review applies the body limit to declared GET and HEAD requests', async (t) => {
   const { projectDir } = makeReviewProject(t);
-  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  const session = await startTestReviewServer({ root: ROOT, projectDir, open: false });
   t.after(() => closeServer(session.server));
   const oversized = Buffer.alloc((256 * 1024) + 1, 0x61);
 
@@ -169,7 +178,7 @@ test('review applies the body limit to declared GET and HEAD requests', async (t
 
 test('review applies the body limit to chunked GET and HEAD requests', async (t) => {
   const { projectDir } = makeReviewProject(t);
-  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  const session = await startTestReviewServer({ root: ROOT, projectDir, open: false });
   t.after(() => closeServer(session.server));
   const oversized = Buffer.alloc((256 * 1024) + 1, 0x61);
 
@@ -191,7 +200,7 @@ test('review media requires authentication and resolves only opaque handles', as
   const { projectDir, workspace } = makeReviewProject(t);
   const assetPath = path.join(workspace.dir, 'assets', 'broll', 'diagram.png');
   fs.writeFileSync(assetPath, 'project asset fixture');
-  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  const session = await startTestReviewServer({ root: ROOT, projectDir, open: false });
   t.after(() => closeServer(session.server));
 
   assert.equal((await request(session, '/media/source')).status, 401);
@@ -290,7 +299,7 @@ test('review advertises and serves only explicit non-hidden media types', async 
   fs.writeFileSync(path.join(assets, 'payload.svg'), '<svg><script>alert(1)</script></svg>');
   fs.writeFileSync(path.join(assets, 'page.html'), '<script>alert(1)</script>');
 
-  const session = await startReviewServer({ root: repository, projectDir, open: false });
+  const session = await startTestReviewServer({ root: repository, projectDir, open: false });
   t.after(() => closeServer(session.server));
   const stateResponse = await request(session, '/api/state', { token: session.token });
   const state = JSON.parse(stateResponse.body.toString('utf8'));
@@ -312,7 +321,7 @@ test('review media fails closed if an allowed asset is replaced after startup', 
   const outsidePath = path.join(root, 'private.txt');
   fs.writeFileSync(assetPath, 'allowed asset');
   fs.writeFileSync(outsidePath, 'private fixture');
-  const session = await startReviewServer({ root: ROOT, projectDir, open: false });
+  const session = await startTestReviewServer({ root: ROOT, projectDir, open: false });
   t.after(() => closeServer(session.server));
 
   const stateResponse = await request(session, '/api/state', { token: session.token });
