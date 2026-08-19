@@ -20,6 +20,7 @@ function help() {
   automontage <видео.mp4> [опции]     смонтировать (результат в текущей папке)
   automontage demo                    собрать демо-ролик из примера (без ключей и whisper)
   automontage doctor                  проверить окружение (что доустановить)
+  automontage review --project-dir .  открыть локальную проверку монтажного листа
   automontage --help                  эта справка
 
 Частые опции:
@@ -57,6 +58,20 @@ if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { help(); process.
 if (argv[0] === 'doctor') {
   try { execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'doctor.js')], { stdio: 'inherit', cwd: ROOT }); }
   catch (e) { process.exit(e.status || 1); }
+  process.exit(0);
+}
+
+// локальная проверка проекта: аргументы review никогда не попадают в build.js
+if (argv[0] === 'review') {
+  try {
+    execFileSync(
+      process.execPath,
+      [path.join(ROOT, 'scripts', 'review', 'cli.js'), ...argv.slice(1)],
+      { stdio: 'inherit', cwd: process.cwd(), shell: false },
+    );
+  } catch (e) {
+    process.exit(e.status || 1);
+  }
   process.exit(0);
 }
 
