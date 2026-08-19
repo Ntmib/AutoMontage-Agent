@@ -148,6 +148,20 @@ test('commands fail closed for unknown types and attempts to alter protected fie
   for (const command of rejected) {
     assert.throws(() => apply(before, command), /command|supported/i);
   }
+  let getterCalls = 0;
+  const accessorCommand = {
+    type: 'move-boundary',
+    leftSceneIndex: 0,
+  };
+  Object.defineProperty(accessorCommand, 'seconds', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return 4.2;
+    },
+  });
+  assert.throws(() => apply(before, accessorCommand), /shape|command/i);
+  assert.equal(getterCalls, 0);
   assert.deepEqual(before, fixtureBrief({ status: 'approved' }));
 });
 
@@ -243,7 +257,22 @@ test('diff reports supported changes in a stable boundary-then-asset order', () 
   ]);
 });
 
-test('diff ignores no-op, unsupported, and malformed partial changes', () => {
+test('diff keeps an exact no-op empty and permits the approved-to-draft transition', () => {
+  const before = fixtureBrief();
+  const approved = fixtureBrief({ status: 'approved' });
+  const approvedAfter = apply(approved, {
+    type: 'move-boundary',
+    leftSceneIndex: 0,
+    seconds: 4.2,
+  });
+
+  assert.deepEqual(diffLessonBrief({ before, after: fixtureBrief() }), []);
+  assert.deepEqual(diffLessonBrief({ before: approved, after: approvedAfter }), [
+    { kind: 'boundary', leftScene: 0, rightScene: 1, from: 4, to: 4.2 },
+  ]);
+});
+
+test('diff fails closed when complete briefs contain unsupported changes', () => {
   const before = fixtureBrief();
   const textOnly = fixtureBrief();
   textOnly.scenes[0].caption = 'ПЕРЕПИСАННЫЙ ТЕКСТ';
@@ -251,10 +280,45 @@ test('diff ignores no-op, unsupported, and malformed partial changes', () => {
   partialBoundary.scenes[0].end = 4.2;
   const changedSceneKind = fixtureBrief();
   changedSceneKind.scenes[1] = { ...changedSceneKind.scenes[1], scene: 'split', brollSrc: 'asset-2' };
+  const extraScene = fixtureBrief();
+  extraScene.scenes.push({ scene: 'fullscreen', start: 10, end: 11, caption: 'ЛИШНЯЯ СЦЕНА' });
+  const outputChanged = fixtureBrief();
+  outputChanged.output.width = 1080;
+  const sourceChanged = fixtureBrief();
+  sourceChanged.source = 'other/source.mp4';
+  const themeChanged = fixtureBrief();
+  themeChanged.theme.colors.bg = '#ffffff';
+  const externalEndpoint = fixtureBrief();
+  externalEndpoint.scenes[0].start = 0.1;
+  const changedFinalEnd = fixtureBrief();
+  changedFinalEnd.scenes[2].end = 10.1;
+  const nestedSceneField = fixtureBrief();
+  nestedSceneField.scenes[2].bullets[0] = 'ПЕРЕПИСАННЫЙ ПУНКТ';
+  const disallowedStatus = fixtureBrief({ status: 'approved' });
+  const mixed = apply(before, { type: 'move-boundary', leftSceneIndex: 0, seconds: 4.2 });
+  mixed.scenes[0].caption = 'ЛИШНИЙ ТЕКСТ';
 
-  assert.deepEqual(diffLessonBrief({ before, after: fixtureBrief() }), []);
-  assert.deepEqual(diffLessonBrief({ before, after: textOnly }), []);
-  assert.deepEqual(diffLessonBrief({ before, after: partialBoundary }), []);
-  assert.deepEqual(diffLessonBrief({ before, after: changedSceneKind }), []);
-  assert.deepEqual(diffLessonBrief({ before: null, after: fixtureBrief() }), []);
+  for (const after of [
+    textOnly,
+    partialBoundary,
+    changedSceneKind,
+    extraScene,
+    outputChanged,
+    sourceChanged,
+    themeChanged,
+    externalEndpoint,
+    changedFinalEnd,
+    nestedSceneField,
+    disallowedStatus,
+    mixed,
+  ]) {
+    assert.throws(
+      () => diffLessonBrief({ before, after }),
+      (error) => error && error.message === 'review diff contains unsupported changes',
+    );
+  }
+  assert.throws(
+    () => diffLessonBrief({ before: null, after: fixtureBrief() }),
+    (error) => error && error.message === 'review diff contains unsupported changes',
+  );
 });
