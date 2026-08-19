@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
+const { URL } = require('node:url');
 const Ajv = require('ajv');
 
 const projectSchema = require('../../schema/project.schema.json');
@@ -474,6 +475,41 @@ function recordBrief(workspace, {
   return workspace;
 }
 
+const MANIFEST_CONFLICT = 'PROJECT_MANIFEST_CONFLICT';
+
+function manifestConflict() {
+  const error = new Error('project manifest changed concurrently');
+  error.code = MANIFEST_CONFLICT;
+  return error;
+}
+
+function readFileSnapshot(fileSystem, filePath) {
+  const before = lstatIfPresent(fileSystem, filePath);
+  if (!before || before.isSymbolicLink() || !before.isFile()) throw manifestConflict();
+  const bytes = fileSystem.readFileSync(filePath);
+  const after = lstatIfPresent(fileSystem, filePath);
+  if (!after || !sameFileIdentity(before, after)) throw manifestConflict();
+  return { identity: after, bytes: Buffer.from(bytes) };
+}
+
+function assertFileSnapshot(fileSystem, filePath, expected) {
+  const current = readFileSnapshot(fileSystem, filePath);
+  if (!sameFileIdentity(current.identity, expected.identity)
+    || !current.bytes.equals(expected.bytes)) {
+    throw manifestConflict();
+  }
+}
+
+function isBrowserMediaPseudoPath(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const normalized = new URL(value, 'http://review.invalid');
+    return normalized.pathname === '/media' || normalized.pathname.startsWith('/media/');
+  } catch (_) {
+    return false;
+  }
+}
+
 function saveDraftRevision(workspace, {
   baseJsonPath,
   brief,
@@ -495,7 +531,8 @@ function saveDraftRevision(workspace, {
     mustExist: true,
     type: 'file',
   });
-  const oldManifest = fileSystem.readFileSync(manifestPath, 'utf8');
+  const oldManifestSnapshot = readFileSnapshot(fileSystem, manifestPath);
+  const oldManifest = oldManifestSnapshot.bytes.toString('utf8');
   const persistedManifest = validateProjectManifest(JSON.parse(oldManifest), {
     projectDir: workspace.dir,
     fileSystem,
@@ -533,10 +570,7 @@ function saveDraftRevision(workspace, {
     draftBrief.music && draftBrief.music.file,
     ...draftBrief.scenes.flatMap((scene) => [scene.brollSrc, scene.faceSrc]),
   ];
-  if (pathValues.some((value) => (
-    typeof value === 'string'
-    && (/^\/media\//.test(value) || /^https?:\/\/[^/]+\/media\//i.test(value))
-  ))) {
+  if (pathValues.some(isBrowserMediaPseudoPath)) {
     throw new Error('candidate brief contains a browser media pseudo-path');
   }
   if (draftBrief.scenes.some((scene) => (
@@ -590,6 +624,7 @@ function saveDraftRevision(workspace, {
     projectDir: workspace.dir,
     fileSystem,
   });
+  const nextManifestBytes = Buffer.from(`${JSON.stringify(validatedManifest, null, 2)}\n`);
   const markdown = formatBriefMarkdown(draftBrief);
   const stages = [];
   let manifestStage;
@@ -597,10 +632,12 @@ function saveDraftRevision(workspace, {
   let jsonStage;
   let rollbackStage;
   let manifestCommitted = false;
+  let committedManifestSnapshot = null;
+  let preserveStages = false;
   try {
     manifestStage = stageOwnedSiblingFile(
       manifestPath,
-      `${JSON.stringify(validatedManifest, null, 2)}\n`,
+      nextManifestBytes,
       { fileSystem, temporaryId, purpose: 'review-draft-manifest' },
     );
     stages.push(manifestStage);
@@ -623,31 +660,50 @@ function saveDraftRevision(workspace, {
     });
     stages.push(rollbackStage);
 
+    assertFileSnapshot(fileSystem, manifestPath, oldManifestSnapshot);
     manifestStage.commit();
     manifestCommitted = true;
+    const committedIdentity = lstatIfPresent(fileSystem, manifestPath);
+    if (!committedIdentity || committedIdentity.isSymbolicLink() || !committedIdentity.isFile()) {
+      throw manifestConflict();
+    }
+    committedManifestSnapshot = {
+      identity: committedIdentity,
+      bytes: nextManifestBytes,
+    };
+    assertFileSnapshot(fileSystem, manifestPath, committedManifestSnapshot);
     markdownStage.commit();
     jsonStage.commit();
   } catch (error) {
     const rollbackErrors = [];
-    for (const stage of [jsonStage, markdownStage]) {
+    preserveStages = error.code === MANIFEST_CONFLICT;
+    if (manifestCommitted) {
       try {
-        if (stage) stage.removeCommitted();
+        assertFileSnapshot(fileSystem, manifestPath, committedManifestSnapshot);
+        rollbackStage.commit(manifestPath);
+        manifestCommitted = false;
+        const restoredManifest = readFileSnapshot(fileSystem, manifestPath);
+        if (!restoredManifest.bytes.equals(oldManifestSnapshot.bytes)) throw manifestConflict();
       } catch (rollbackError) {
+        preserveStages = true;
         rollbackErrors.push(rollbackError);
       }
     }
-    if (manifestCommitted) {
-      try {
-        rollbackStage.commit(manifestPath);
-        manifestCommitted = false;
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
+    if (!preserveStages && !manifestCommitted) {
+      for (const stage of [jsonStage, markdownStage]) {
+        try {
+          if (stage) stage.removeCommitted();
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
       }
     }
     if (rollbackErrors.length) error.rollbackErrors = rollbackErrors;
     throw error;
   } finally {
-    for (const stage of stages) stage.cleanupTemp();
+    if (!preserveStages) {
+      for (const stage of stages) stage.cleanupTemp();
+    }
   }
   workspace.manifest = validatedManifest;
   return { revision: allocated.revision, jsonPath, markdownPath };

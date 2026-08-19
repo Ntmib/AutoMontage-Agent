@@ -430,6 +430,26 @@ test('review save rejects unresolved opaque asset ids and browser media pseudo-p
     ['opaque b-roll id', (candidate) => { candidate.scenes[1].brollSrc = 'asset-2'; }, /asset|opaque/i],
     ['browser asset path', (candidate) => { candidate.scenes[1].brollSrc = '/media/assets/asset-2'; }, /browser|media/i],
     ['browser source path', (candidate) => { candidate.source = '/media/source'; }, /browser|media/i],
+    [
+      'absolute URL dot segment',
+      (candidate) => { candidate.scenes[1].brollSrc = 'http://review.local/./media/assets/asset-2'; },
+      /browser|media/i,
+    ],
+    [
+      'percent-encoded parent segment',
+      (candidate) => { candidate.scenes[1].brollSrc = 'http://review.local/safe/%2e%2e/media/assets/asset-2'; },
+      /browser|media/i,
+    ],
+    [
+      'relative percent-encoded parent segment',
+      (candidate) => { candidate.scenes[1].brollSrc = '/safe/%2e%2e/media/source'; },
+      /browser|media/i,
+    ],
+    [
+      'absolute URL backslashes',
+      (candidate) => { candidate.scenes[1].brollSrc = 'http://review.local\\media\\assets\\asset-2'; },
+      /browser|media/i,
+    ],
   ];
 
   for (const [name, mutate, pattern] of cases) {
@@ -451,6 +471,139 @@ test('review save rejects unresolved opaque asset ids and browser media pseudo-p
       assert.deepEqual(tempEntries(state.workspace), []);
     });
   }
+});
+
+test('review save accepts canonical project/public refs and safe filenames containing media', async (t) => {
+  const cases = [
+    ['current project ref', 'assets/broll/diagram.png'],
+    ['project media filename', 'assets/broll/social-media-card.png'],
+    ['public media ref', 'public/broll/growth.png'],
+  ];
+
+  for (const [name, reference] of cases) {
+    await t.test(name, () => {
+      const state = makeReviewWorkspace(t, { name: name.replaceAll(' ', '-') });
+      if (reference === 'assets/broll/social-media-card.png') {
+        fs.writeFileSync(path.join(state.workspace.dir, ...reference.split('/')), 'safe-media');
+      }
+      const candidate = editedCandidate(state.baseBrief);
+      candidate.scenes[1].brollSrc = reference;
+
+      const saved = saveDraftRevision(state.workspace, {
+        baseJsonPath: state.baseJsonPath,
+        brief: candidate,
+        temporaryId: () => TEMPORARY_ID,
+      });
+
+      assert.equal(JSON.parse(fs.readFileSync(saved.jsonPath, 'utf8')).scenes[1].brollSrc, reference);
+      assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v02-draft.lesson.json');
+    });
+  }
+});
+
+test('review save CAS preserves a foreign manifest and referenced temp before manifest commit', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'cas-before-commit' });
+  const manifestPath = path.join(state.workspace.dir, 'project.json');
+  const outputs = expectedDraftPaths(state.workspace);
+  const jsonTempPath = `${outputs.jsonPath}.tmp-review-draft-json-${TEMPORARY_ID}`;
+  const jsonTempRelative = path.relative(state.workspace.dir, jsonTempPath).split(path.sep).join('/');
+  const foreignManifest = readProjectManifest(state.workspace.dir);
+  foreignManifest.name = 'Foreign writer before commit';
+  foreignManifest.updatedAt = '2026-08-20T09:00:00.000Z';
+  foreignManifest.briefs.push({
+    revision: 99,
+    jsonPath: jsonTempRelative,
+    markdownPath: null,
+    status: 'draft',
+    theme: 'lesson-neutral',
+    aspect: 'horizontal',
+  });
+  foreignManifest.currentBrief = jsonTempRelative;
+  const foreignManifestBytes = Buffer.from(`${JSON.stringify(foreignManifest, null, 2)}\n`);
+  const handles = new Map();
+  let injected = false;
+  const racingFs = {
+    ...fs,
+    openSync(target, flags, mode) {
+      const handle = fs.openSync(target, flags, mode);
+      handles.set(handle, target);
+      return handle;
+    },
+    writeFileSync(target, data, options) {
+      const result = fs.writeFileSync(target, data, options);
+      const openPath = typeof target === 'number' ? handles.get(target) : null;
+      if (!injected && openPath && openPath.includes('.tmp-review-draft-rollback-')) {
+        fs.writeFileSync(jsonTempPath, 'foreign-referenced-temp');
+        fs.writeFileSync(manifestPath, foreignManifestBytes);
+        injected = true;
+      }
+      return result;
+    },
+    closeSync(handle) {
+      handles.delete(handle);
+      return fs.closeSync(handle);
+    },
+  };
+
+  assert.throws(() => saveDraftRevision(state.workspace, {
+    baseJsonPath: state.baseJsonPath,
+    brief: editedCandidate(state.baseBrief),
+    fileSystem: racingFs,
+    temporaryId: () => TEMPORARY_ID,
+  }), /concurrent|changed/i);
+
+  assert.equal(injected, true);
+  assert.deepEqual(fs.readFileSync(manifestPath), foreignManifestBytes);
+  assert.equal(fs.readFileSync(jsonTempPath, 'utf8'), 'foreign-referenced-temp');
+  assert.equal(fs.existsSync(outputs.jsonPath), false);
+  assert.equal(fs.existsSync(outputs.markdownPath), false);
+  assert.equal(readProjectManifest(state.workspace.dir).currentBrief, jsonTempRelative);
+  assert.deepEqual(fs.readFileSync(state.baseJsonPath), Buffer.from(`${JSON.stringify(state.baseBrief, null, 2)}\n`));
+});
+
+test('review save CAS preserves foreign manifest and referenced outputs after its manifest commit', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'cas-after-commit' });
+  const manifestPath = path.join(state.workspace.dir, 'project.json');
+  const outputs = expectedDraftPaths(state.workspace);
+  const jsonTempPath = `${outputs.jsonPath}.tmp-review-draft-json-${TEMPORARY_ID}`;
+  const jsonTempRelative = path.relative(state.workspace.dir, jsonTempPath).split(path.sep).join('/');
+  const beforeBase = fs.readFileSync(state.baseJsonPath);
+  let foreignManifestBytes = null;
+  const racingFs = {
+    ...fs,
+    renameSync(source, target) {
+      if (source.includes('.tmp-review-draft-json-')) {
+        throw new Error('simulated later JSON failure');
+      }
+      const result = fs.renameSync(source, target);
+      if (source.includes('.tmp-review-draft-markdown-')) {
+        const foreignManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        foreignManifest.name = 'Foreign writer after commit';
+        foreignManifest.updatedAt = '2026-08-20T10:00:00.000Z';
+        foreignManifest.briefs.at(-1).jsonPath = jsonTempRelative;
+        foreignManifest.currentBrief = jsonTempRelative;
+        foreignManifestBytes = Buffer.from(`${JSON.stringify(foreignManifest, null, 2)}\n`);
+        fs.writeFileSync(outputs.markdownPath, 'foreign-referenced-markdown');
+        fs.writeFileSync(manifestPath, foreignManifestBytes);
+      }
+      return result;
+    },
+  };
+
+  assert.throws(() => saveDraftRevision(state.workspace, {
+    baseJsonPath: state.baseJsonPath,
+    brief: editedCandidate(state.baseBrief),
+    fileSystem: racingFs,
+    temporaryId: () => TEMPORARY_ID,
+  }), /simulated later JSON failure/);
+
+  assert.ok(foreignManifestBytes);
+  assert.deepEqual(fs.readFileSync(manifestPath), foreignManifestBytes);
+  assert.equal(fs.readFileSync(outputs.markdownPath, 'utf8'), 'foreign-referenced-markdown');
+  assert.equal(JSON.parse(fs.readFileSync(jsonTempPath, 'utf8')).status, 'draft');
+  assert.equal(fs.existsSync(outputs.jsonPath), false);
+  assert.equal(readProjectManifest(state.workspace.dir).currentBrief, jsonTempRelative);
+  assert.deepEqual(fs.readFileSync(state.baseJsonPath), beforeBase);
 });
 
 test('review save validates the candidate and preserves protected identity', async (t) => {
