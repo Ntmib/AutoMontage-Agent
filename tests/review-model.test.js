@@ -36,6 +36,32 @@ test('review state exposes scenes and words without host paths', (t) => {
   assert.deepEqual(JSON.parse(JSON.stringify(state)), state);
 });
 
+test('review state timing diagnostics use normalized word timestamps', (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[0].end = 2.04;
+  brief.scenes[1].start = 2.04;
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  const transcriptPath = path.join(workspace.dir, workspace.manifest.transcript.words);
+  fs.writeFileSync(transcriptPath, `${JSON.stringify([{
+    start: 0,
+    end: 4,
+    text: 'слово рядом',
+    words: [
+      { w: 'слово', s: 1.4, e: 1.9 },
+      { w: 'рядом', s: 2.08, e: 2.5 },
+    ],
+  }], null, 2)}\n`);
+
+  const state = loadReviewState({ root: ROOT, projectDir });
+
+  assert.ok(state.timing.suggestions.some((suggestion) => (
+    suggestion.reason === 'word'
+      && suggestion.seconds === 2.04
+      && suggestion.suggestedSeconds === 2.08
+  )));
+});
+
 test('review state exposes only the fixed waveform media handle when available', (t) => {
   const { projectDir } = makeReviewProject(t);
 
@@ -82,12 +108,14 @@ test('review asset descriptors expose opaque URLs for allowed project and public
     kind: 'project',
     label: 'diagram.png',
     url: '/media/assets/asset-7',
+    capabilities: { preview: true, broll: true },
   });
   assert.deepEqual(publicAsset, {
     id: 'asset-8',
     kind: 'public',
     label: 'growth.png',
     url: '/media/assets/asset-8',
+    capabilities: { preview: true, broll: true },
   });
   const state = loadReviewState({ root: ROOT, projectDir });
   assert.ok(state.assets.some((asset) => (
@@ -97,6 +125,22 @@ test('review asset descriptors expose opaque URLs for allowed project and public
     asset.kind === 'public' && asset.label === 'growth.png' && /^\/media\/assets\/asset-\d+$/.test(asset.url)
   )));
   assert.doesNotMatch(JSON.stringify([project, publicAsset]), /assets\/broll|public\/broll|\/Users\/|C:\\Users\\/);
+});
+
+test('review assets expose preview and renderable b-roll capabilities without host paths', (t) => {
+  const { workspace, projectDir } = makeReviewProject(t);
+  const assets = path.join(workspace.dir, 'assets', 'broll');
+  fs.writeFileSync(path.join(assets, 'diagram.png'), 'image');
+  fs.writeFileSync(path.join(assets, 'voice.mp3'), 'audio');
+  fs.writeFileSync(path.join(assets, 'clip.mp4'), 'video');
+
+  const state = loadReviewState({ root: ROOT, projectDir });
+  const byLabel = new Map(state.assets.map((asset) => [asset.label, asset]));
+
+  assert.deepEqual(byLabel.get('diagram.png').capabilities, { preview: true, broll: true });
+  assert.deepEqual(byLabel.get('voice.mp3').capabilities, { preview: true, broll: false });
+  assert.deepEqual(byLabel.get('clip.mp4').capabilities, { preview: true, broll: false });
+  assert.doesNotMatch(JSON.stringify(state.assets), /assets\/broll|\/Users\/|C:\\Users\\/);
 });
 
 test('review asset resolution fails closed for project and public symlinks', (t) => {

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 
 const { formatBriefMarkdown } = require('../scripts/lesson/brief');
 const {
@@ -120,6 +121,7 @@ function assertSaveFailurePreserved(state, before, foreignTempPath) {
   assert.equal(readProjectManifest(state.workspace.dir).currentBrief, before.currentBrief);
   assert.equal(state.workspace.manifest.currentBrief, before.currentBrief);
   assert.deepEqual(tempEntries(state.workspace), foreignTempPath ? [foreignTempPath] : []);
+  assert.equal(fs.existsSync(path.join(state.workspace.dir, '.review-draft-reservation')), false);
 }
 
 function failureFileSystem({ stagePurpose = null, commitPurpose = null }) {
@@ -150,6 +152,190 @@ function failureFileSystem({ stagePurpose = null, commitPurpose = null }) {
     },
   };
 }
+
+function runSaveWorker(workerPath, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [workerPath, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on('data', (chunk) => stdout.push(chunk));
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(
+        `save worker exited ${code}: ${Buffer.concat(stderr).toString('utf8') || Buffer.concat(stdout).toString('utf8')}`,
+      ));
+    });
+  });
+}
+
+test('review save reserves one revision across two real processes', async (t) => {
+  const state = makeReviewWorkspace(t, { name: 'cross-process-reservation' });
+  const candidatePath = path.join(state.root, 'candidate.json');
+  const workerPath = path.join(state.root, 'save-worker.js');
+  const barrierDir = path.join(state.root, 'barrier');
+  fs.mkdirSync(barrierDir);
+  fs.writeFileSync(candidatePath, `${JSON.stringify(editedCandidate(state.baseBrief), null, 2)}\n`);
+  fs.writeFileSync(workerPath, String.raw`
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [modulePath, projectDir, baseJsonPath, candidatePath, barrierDir, id, resultPath] = process.argv.slice(2);
+const { readProjectManifest, saveDraftRevision } = require(modulePath);
+const manifestPath = path.join(projectDir, 'project.json');
+const otherId = id === 'a' ? 'b' : 'a';
+const pause = new Int32Array(new SharedArrayBuffer(4));
+
+function waitUntil(predicate, label) {
+  const deadline = Date.now() + 10_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('barrier timeout: ' + label);
+    Atomics.wait(pause, 0, 0, 10);
+  }
+}
+
+function marker(name) {
+  return path.join(barrierDir, name);
+}
+
+let readBarrierEntered = false;
+const racingFileSystem = {
+  ...fs,
+  readFileSync(target, options) {
+    if (!readBarrierEntered && path.resolve(String(target)) === manifestPath) {
+      readBarrierEntered = true;
+      fs.writeFileSync(marker('read-' + id), 'ready', { flag: 'wx' });
+      waitUntil(
+        () => fs.existsSync(marker('read-' + otherId)) || fs.existsSync(marker('lock-loser')),
+        'manifest read',
+      );
+    }
+    return fs.readFileSync(target, options);
+  },
+  renameSync(source, target) {
+    if (String(source).includes('.tmp-review-draft-manifest-')) {
+      if (id === 'a') {
+        waitUntil(
+          () => fs.existsSync(marker('b-manifest-ready')) || fs.existsSync(marker('lock-loser')),
+          'second precommit check',
+        );
+        fs.writeFileSync(marker('a-manifest-commit'), 'ready', { flag: 'wx' });
+      } else {
+        fs.writeFileSync(marker('b-manifest-ready'), 'ready', { flag: 'wx' });
+        waitUntil(
+          () => fs.existsSync(marker('a-manifest-commit')) || fs.existsSync(marker('lock-loser')),
+          'ordered manifest commit',
+        );
+        if (!fs.existsSync(marker('lock-loser'))) Atomics.wait(pause, 0, 0, 200);
+      }
+    }
+    return fs.renameSync(source, target);
+  },
+};
+
+try {
+  const manifest = readProjectManifest(projectDir);
+  const workspace = { dir: projectDir, manifest };
+  const brief = JSON.parse(fs.readFileSync(candidatePath, 'utf8'));
+  const saved = saveDraftRevision(workspace, {
+    baseJsonPath,
+    brief,
+    fileSystem: racingFileSystem,
+    temporaryId: () => 'process-' + id,
+  });
+  fs.writeFileSync(resultPath, JSON.stringify({ id, ok: true, revision: saved.revision }));
+} catch (error) {
+  if (error && error.code === 'PROJECT_MANIFEST_CONFLICT') {
+    try { fs.writeFileSync(marker('lock-loser'), id, { flag: 'wx' }); } catch (_) {}
+  }
+  fs.writeFileSync(resultPath, JSON.stringify({
+    id,
+    ok: false,
+    code: error && error.code,
+    message: error && error.message,
+  }));
+}
+`);
+
+  const modulePath = require.resolve('../scripts/project/workspace');
+  const resultPaths = ['a', 'b'].map((id) => path.join(state.root, `result-${id}.json`));
+  await Promise.all(['a', 'b'].map((id, index) => runSaveWorker(workerPath, [
+    modulePath,
+    state.workspace.dir,
+    state.baseJsonPath,
+    candidatePath,
+    barrierDir,
+    id,
+    resultPaths[index],
+  ])));
+
+  const results = resultPaths.map((resultPath) => JSON.parse(fs.readFileSync(resultPath, 'utf8')));
+  assert.equal(results.filter((result) => result.ok).length, 1);
+  assert.deepEqual(
+    results.filter((result) => !result.ok).map((result) => result.code),
+    ['PROJECT_MANIFEST_CONFLICT'],
+  );
+  const manifest = readProjectManifest(state.workspace.dir);
+  assert.equal(manifest.briefs.filter((entry) => entry.revision === 2).length, 1);
+  assert.equal(manifest.currentBrief, 'brief/v02-draft.lesson.json');
+  assert.equal(fs.existsSync(path.join(state.workspace.dir, 'brief', 'v02-draft.lesson.json')), true);
+  assert.equal(fs.existsSync(path.join(state.workspace.dir, 'brief', 'v02-draft.lesson.md')), true);
+  assert.equal(fs.existsSync(path.join(state.workspace.dir, '.review-draft-reservation')), false);
+});
+
+test('review save never overwrites a foreign reservation file or symlink', async (t) => {
+  const cases = [
+    {
+      name: 'regular file',
+      prepare(reservationPath) {
+        fs.writeFileSync(reservationPath, 'foreign-reservation', { flag: 'wx' });
+      },
+    },
+    {
+      name: 'symlink',
+      prepare(reservationPath, sentinelPath) {
+        fs.symlinkSync(sentinelPath, reservationPath);
+      },
+    },
+  ];
+
+  for (const currentCase of cases) {
+    await t.test(currentCase.name, () => {
+      const state = makeReviewWorkspace(t, { name: `foreign-reservation-${currentCase.name}` });
+      const reservationPath = path.join(state.workspace.dir, '.review-draft-reservation');
+      const sentinelPath = path.join(state.root, 'outside-sentinel.txt');
+      const manifestPath = path.join(state.workspace.dir, 'project.json');
+      const beforeManifest = fs.readFileSync(manifestPath);
+      fs.writeFileSync(sentinelPath, 'outside-safe');
+      currentCase.prepare(reservationPath, sentinelPath);
+
+      assert.throws(
+        () => saveDraftRevision(state.workspace, {
+          baseJsonPath: state.baseJsonPath,
+          brief: editedCandidate(state.baseBrief),
+          temporaryId: () => TEMPORARY_ID,
+        }),
+        (error) => error && error.code === 'PROJECT_MANIFEST_CONFLICT',
+      );
+
+      assert.deepEqual(fs.readFileSync(manifestPath), beforeManifest);
+      assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
+      assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).markdownPath), false);
+      assert.equal(fs.readFileSync(sentinelPath, 'utf8'), 'outside-safe');
+      const reservationStat = fs.lstatSync(reservationPath);
+      assert.equal(reservationStat.isSymbolicLink(), currentCase.name === 'symlink');
+      if (!reservationStat.isSymbolicLink()) {
+        assert.equal(fs.readFileSync(reservationPath, 'utf8'), 'foreign-reservation');
+      }
+    });
+  }
+});
 
 test('review save publishes manifest, Markdown, then JSON and preserves approved bytes', (t) => {
   const state = makeReviewWorkspace(t, { name: 'ordered-approved' });
@@ -470,28 +656,28 @@ test('review save rejects a no-op without allocating another revision', (t) => {
 
 test('review save rejects unresolved opaque asset ids and browser media pseudo-paths', async (t) => {
   const cases = [
-    ['opaque b-roll id', (candidate) => { candidate.scenes[1].brollSrc = 'asset-2'; }, /asset|opaque/i],
-    ['browser asset path', (candidate) => { candidate.scenes[1].brollSrc = '/media/assets/asset-2'; }, /browser|media/i],
+    ['opaque b-roll id', (candidate) => { candidate.scenes[1].brollSrc = 'asset-2'; }, /asset|opaque|изображ/i],
+    ['browser asset path', (candidate) => { candidate.scenes[1].brollSrc = '/media/assets/asset-2'; }, /browser|media|изображ/i],
     ['browser source path', (candidate) => { candidate.source = '/media/source'; }, /browser|media/i],
     [
       'absolute URL dot segment',
       (candidate) => { candidate.scenes[1].brollSrc = 'http://review.local/./media/assets/asset-2'; },
-      /browser|media/i,
+      /browser|media|изображ/i,
     ],
     [
       'percent-encoded parent segment',
       (candidate) => { candidate.scenes[1].brollSrc = 'http://review.local/safe/%2e%2e/media/assets/asset-2'; },
-      /browser|media/i,
+      /browser|media|изображ/i,
     ],
     [
       'relative percent-encoded parent segment',
       (candidate) => { candidate.scenes[1].brollSrc = '/safe/%2e%2e/media/source'; },
-      /browser|media/i,
+      /browser|media|изображ/i,
     ],
     [
       'absolute URL backslashes',
       (candidate) => { candidate.scenes[1].brollSrc = 'http://review.local\\media\\assets\\asset-2'; },
-      /browser|media/i,
+      /browser|media|изображ/i,
     ],
   ];
 

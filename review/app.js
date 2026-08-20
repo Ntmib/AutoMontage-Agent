@@ -58,8 +58,11 @@ function renderDiagnostics(timing) {
       const prefix = document.createElement('span');
       prefix.textContent = label;
       const message = document.createElement('p');
+      const suggestionReason = entry.reason === 'word'
+        ? 'ближайшую границу слова'
+        : 'кадровую сетку';
       message.textContent = entry.message || (
-        `Сцена ${(entry.sceneIndex ?? 0) + 1}: границу лучше поставить на ${formatTime(entry.suggestedSeconds, true)}`
+        `Сцена ${(entry.sceneIndex ?? 0) + 1}: перенести на ${suggestionReason} ${formatTime(entry.suggestedSeconds, true)}`
       );
       item.append(prefix, message);
       list.append(item);
@@ -245,7 +248,9 @@ function createEditor(initialState, token) {
 
   function renderBrollControls() {
     controls.broll.replaceChildren();
-    const assets = state.assets.filter((asset) => /^asset-[1-9]\d*$/.test(asset.id));
+    const assets = state.assets.filter((asset) => (
+      /^asset-[1-9]\d*$/.test(asset.id) && asset.capabilities?.broll === true
+    ));
     const eligible = state.brief.scenes
       .map((scene, index) => ({ scene, index }))
       .filter(({ scene }) => scene.scene === 'broll');

@@ -138,6 +138,8 @@ async function makeBrowserReviewSession({
       path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
       path.join(fixture.workspace.dir, 'assets', 'broll', 'replacement.png'),
     );
+    fs.writeFileSync(path.join(fixture.workspace.dir, 'assets', 'broll', 'voice.mp3'), 'audio');
+    fs.writeFileSync(path.join(fixture.workspace.dir, 'assets', 'broll', 'clip.mp4'), 'video');
   }
   if (higherRevision) registerHigherBrief(fixture, { revision: higherRevision });
   const session = await startReviewServer({
@@ -282,6 +284,22 @@ test('read-only review shows semantic source, lanes and diagnostics without edit
   }
   await expect(page.locator('video')).toHaveJSProperty('autoplay', false);
   expect(mutatingRequests).toEqual([]);
+});
+
+test('browser diagnostics identify a nearby word-boundary suggestion from canonical state', async ({ page }) => {
+  await withBrowserReviewSession({ threeScenes: true }, async (session) => {
+    await openReview(page, session.url);
+    const state = await (await fetch(`${session.origin}/api/state`, {
+      headers: { Authorization: `Bearer ${session.token}` },
+    })).json();
+
+    expect(state.timing.suggestions).toContainEqual(expect.objectContaining({
+      reason: 'word',
+      seconds: 2,
+      suggestedSeconds: 2.05,
+    }));
+    await expect(page.locator('[data-diagnostics]')).toContainText(/границ.*слов/i);
+  });
 });
 
 test('scene and transcript buttons seek the source and update one synchronized playhead', async ({ page }) => {
@@ -485,6 +503,10 @@ test('b-roll controls expose only eligible scenes and send an opaque asset id', 
     const selects = page.locator('[data-broll-select]');
     await expect(selects).toHaveCount(1);
     await expect(selects).toHaveAttribute('data-scene-index', '1');
+    await expect(page.locator('[data-assets]')).toContainText('voice.mp3');
+    await expect(page.locator('[data-assets]')).toContainText('clip.mp4');
+    await expect(selects.locator('option', { hasText: 'voice.mp3' })).toHaveCount(0);
+    await expect(selects.locator('option', { hasText: 'clip.mp4' })).toHaveCount(0);
     await selects.selectOption({ label: 'replacement.png' });
     await expect(page.locator('[data-server-diff]')).toContainText('Медиа сцены 2');
     await expect.poll(() => validationBody).toBeTruthy();
@@ -687,6 +709,41 @@ test('Arrow keys accumulate frame commands, restore boundary focus and undo one 
   });
 });
 
+test('ArrowRight leaves an existing word snap and advances cumulatively by frames', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    const dragValidation = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await dragBoundary(page, 0, 2.1);
+    await dragValidation;
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.12');
+    await expect(page.locator('[data-boundary="0"]')).toHaveAttribute('data-snap-reason', 'word');
+
+    const handle = page.locator('[data-boundary="0"]');
+    await handle.focus();
+    const firstValidation = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await page.keyboard.press('ArrowRight');
+    await firstValidation;
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.16');
+    await expect(handle).toBeFocused();
+
+    const secondValidation = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await page.keyboard.press('ArrowRight');
+    await secondValidation;
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.2');
+    await expect(handle).toBeFocused();
+
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.16');
+  });
+});
+
 test('save failure keeps commands in memory and exposes no server detail', async ({ page }) => {
   const privateTarget = '/private/review/save-target.json';
   const failingFileSystem = {
@@ -740,13 +797,27 @@ test('stale save reloads latest state, retains commands for comparison and never
 
     await dragBoundary(page, 0, 2.1);
     await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeEnabled();
-    const concurrent = await postSessionJson(session, '/api/save', {
-      baseRevision: baseState.session.baseRevision,
-      baseHash: baseState.session.baseHash,
-      manifestHash: baseState.session.manifestHash,
-      commands: [{ type: 'move-boundary', leftSceneIndex: 0, seconds: 2.4 }],
+    const external = await startReviewServer({
+      root: ROOT,
+      projectDir: session.fixture.projectDir,
+      editable: true,
+      open: false,
+      runToolImpl: () => { throw new Error('waveform unavailable'); },
     });
-    expect(concurrent.status).toBe(201);
+    try {
+      const externalState = await (await fetch(`${external.origin}/api/state`, {
+        headers: { Authorization: `Bearer ${external.token}` },
+      })).json();
+      const concurrent = await postSessionJson(external, '/api/save', {
+        baseRevision: externalState.session.baseRevision,
+        baseHash: externalState.session.baseHash,
+        manifestHash: externalState.session.manifestHash,
+        commands: [{ type: 'move-boundary', leftSceneIndex: 0, seconds: 2.4 }],
+      });
+      expect(concurrent.status).toBe(201);
+    } finally {
+      await closeServer(external.server);
+    }
 
     page.once('dialog', (dialog) => dialog.accept());
     const conflictResponse = page.waitForResponse((response) => (

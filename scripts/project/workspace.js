@@ -6,7 +6,7 @@ const { URL } = require('node:url');
 const Ajv = require('ajv');
 
 const projectSchema = require('../../schema/project.schema.json');
-const { formatBriefMarkdown, validateLessonBrief } = require('../lesson/brief');
+const { formatBriefMarkdown, isRenderableBrollSource, validateLessonBrief } = require('../lesson/brief');
 const projectManifestValidator = new Ajv({ allErrors: true }).compile(projectSchema);
 const TEMPORARY_ID = /^[A-Za-z0-9_-]+$/;
 
@@ -476,11 +476,62 @@ function recordBrief(workspace, {
 }
 
 const MANIFEST_CONFLICT = 'PROJECT_MANIFEST_CONFLICT';
+const REVIEW_DRAFT_RESERVATION = '.review-draft-reservation';
 
 function manifestConflict() {
   const error = new Error('project manifest changed concurrently');
   error.code = MANIFEST_CONFLICT;
   return error;
+}
+
+function acquireReviewDraftReservation(workspace, fileSystem) {
+  const directPath = path.join(path.resolve(workspace.dir), REVIEW_DRAFT_RESERVATION);
+  let reservationPath;
+  try {
+    reservationPath = resolveProjectPath(workspace.dir, REVIEW_DRAFT_RESERVATION, {
+      label: 'review draft reservation',
+      fileSystem,
+      mustExist: false,
+      type: 'file',
+    });
+  } catch (error) {
+    if (lstatIfPresent(fileSystem, directPath)) throw manifestConflict();
+    throw error;
+  }
+
+  const constants = fileSystem.constants || fs.constants;
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+    | (constants.O_NOFOLLOW || 0);
+  let handle = null;
+  let identity = null;
+  try {
+    handle = fileSystem.openSync(reservationPath, flags, 0o600);
+    identity = fileSystem.fstatSync(handle);
+    if (!identity.isFile()) throw manifestConflict();
+    fileSystem.closeSync(handle);
+    handle = null;
+  } catch (error) {
+    if (handle !== null) fileSystem.closeSync(handle);
+    const current = lstatIfPresent(fileSystem, reservationPath);
+    if (identity && current && sameFileIdentity(identity, current)) {
+      fileSystem.unlinkSync(reservationPath);
+    }
+    if ((error && (error.code === 'EEXIST' || error.code === 'ELOOP')) || current) {
+      throw manifestConflict();
+    }
+    throw error;
+  }
+
+  return {
+    release() {
+      const current = lstatIfPresent(fileSystem, reservationPath);
+      if (!current || current.isSymbolicLink() || !current.isFile()
+        || !sameFileIdentity(identity, current)) {
+        throw manifestConflict();
+      }
+      fileSystem.unlinkSync(reservationPath);
+    },
+  };
 }
 
 function canonicalJsonHash(value) {
@@ -522,7 +573,7 @@ function isBrowserMediaPseudoPath(value) {
   }
 }
 
-function saveDraftRevision(workspace, {
+function saveDraftRevisionReserved(workspace, {
   baseJsonPath,
   brief,
   fileSystem = fs,
@@ -748,6 +799,25 @@ function saveDraftRevision(workspace, {
   };
 }
 
+function saveDraftRevision(workspace, options = {}) {
+  const fileSystem = options.fileSystem || fs;
+  const reservation = acquireReviewDraftReservation(workspace, fileSystem);
+  let operationError = null;
+  try {
+    return saveDraftRevisionReserved(workspace, { ...options, fileSystem });
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    try {
+      reservation.release();
+    } catch (releaseError) {
+      if (operationError) operationError.reservationError = releaseError;
+      else throw releaseError;
+    }
+  }
+}
+
 function approveBrief(workspace, draftJsonPath, {
   fileSystem = fs,
   temporaryId = randomUUID,
@@ -768,6 +838,11 @@ function approveBrief(workspace, draftJsonPath, {
   }
   const draft = JSON.parse(fileSystem.readFileSync(draftPath, 'utf8'));
   if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
+  for (const [index, scene] of (Array.isArray(draft.scenes) ? draft.scenes : []).entries()) {
+    if (scene?.scene === 'broll' && !isRenderableBrollSource(scene.brollSrc)) {
+      throw new Error(`scenes[${index}].brollSrc: b-roll поддерживает только изображения`);
+    }
+  }
 
   const approvedJsonPath = draftPath.replace(/-draft(\.[^.]+\.json)$/i, '-approved$1');
   const approvedJsonRelativePath = relativeProjectPath(workspace, approvedJsonPath);

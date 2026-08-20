@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { resolveProjectPath } = require('../project/workspace');
+const { isRenderableBrollSource } = require('../lesson/brief');
 
 const REVIEW_MEDIA_EXTENSIONS = new Set([
   '.aac', '.avif', '.flac', '.gif', '.jpeg', '.jpg', '.m4a', '.m4v', '.mov',
@@ -99,6 +100,10 @@ function descriptor({ id, kind, assetPath }) {
     kind,
     label: path.basename(assetPath),
     url: `/media/assets/${id}`,
+    capabilities: {
+      preview: true,
+      broll: isRenderableBrollSource(assetPath),
+    },
   };
 }
 

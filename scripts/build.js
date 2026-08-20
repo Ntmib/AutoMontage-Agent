@@ -266,7 +266,7 @@ if (lessonAction === 'plan') {
   const publicBrollDir = path.join(ROOT, 'public/broll');
   const availableBroll = fs.existsSync(publicBrollDir)
     ? fs.readdirSync(publicBrollDir)
-      .filter((file) => /\.(avif|gif|jpe?g|mov|mp4|png|webp)$/i.test(file))
+      .filter((file) => /\.(avif|gif|jpe?g|png|webp)$/i.test(file))
       .map((file) => `broll/${file}`)
     : [];
   const genArgs = buildGenBriefArgs({

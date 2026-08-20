@@ -6,7 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const { parseReviewOptions } = require('../scripts/review/cli');
+const { formatReviewSessionMessages, parseReviewOptions } = require('../scripts/review/cli');
 const { makeReviewProject } = require('./helpers/review-project');
 
 test('review requires an existing project directory', (t) => {
@@ -51,6 +51,26 @@ test('review rejects malformed and unknown options', (t) => {
   assert.throws(() => parseReviewOptions(['--project-dir', projectDir, '--port', '-1']), /port/);
   assert.throws(() => parseReviewOptions(['--project-dir', projectDir, '--port', '65536']), /port/);
   assert.throws(() => parseReviewOptions(['--project-dir', projectDir, '--unknown']), /unknown/);
+});
+
+test('review CLI reports only the secure handoff path for manual opening', () => {
+  const token = 'secret-bearer-token';
+  const messages = formatReviewSessionMessages({
+    session: {
+      origin: 'http://127.0.0.1:43123',
+      url: `http://127.0.0.1:43123/#token=${token}`,
+      handoffPath: '/tmp/automontage-review-safe.url',
+    },
+    editable: true,
+  });
+
+  assert.deepEqual(messages, [
+    'Review server: http://127.0.0.1:43123',
+    'Secure session URL file: /tmp/automontage-review-safe.url',
+    'Mode: edit-enabled session',
+  ]);
+  assert.doesNotMatch(messages.join('\n'), new RegExp(token));
+  assert.doesNotMatch(messages.join('\n'), /#token=|Bearer /);
 });
 
 test('top-level CLI dispatches review without forwarding its arguments to build', (t) => {

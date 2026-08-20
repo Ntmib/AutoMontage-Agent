@@ -122,6 +122,136 @@ test('review server binds only to loopback and keeps its token in the URL fragme
   assert.doesNotMatch(shell.body.toString('utf8'), /#token=|Bearer |baseHash|manifestHash/);
 });
 
+test('no-open creates an exclusive 0600 session URL handoff and removes it on close', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const handoffDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-handoff-'));
+  t.after(() => fs.rmSync(handoffDirectory, { recursive: true, force: true }));
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    open: false,
+    handoffDirectory,
+    handoffId: () => 'fixed-safe-id',
+  });
+  t.after(() => closeServer(session.server));
+  const expectedPath = path.join(handoffDirectory, 'automontage-review-fixed-safe-id.url');
+
+  assert.equal(session.handoffPath, expectedPath);
+  assert.equal(fs.statSync(expectedPath).mode & 0o777, 0o600);
+  assert.equal(fs.readFileSync(expectedPath, 'utf8'), `${session.url}\n`);
+  assert.doesNotMatch(expectedPath, new RegExp(session.token));
+
+  await closeServer(session.server);
+  assert.equal(fs.existsSync(expectedPath), false);
+});
+
+test('browser launch failure falls back to handoff while successful launch leaves no token file', async (t) => {
+  const failedFixture = makeReviewProject(t);
+  const failedDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-open-failed-'));
+  t.after(() => fs.rmSync(failedDirectory, { recursive: true, force: true }));
+  let failedLaunchUrl = null;
+  const failed = await startTestReviewServer({
+    root: ROOT,
+    projectDir: failedFixture.projectDir,
+    open: true,
+    openBrowserImpl: async (url) => {
+      failedLaunchUrl = url;
+      throw new Error('browser unavailable');
+    },
+    handoffDirectory: failedDirectory,
+    handoffId: () => 'browser-fallback',
+  });
+  t.after(() => closeServer(failed.server));
+  assert.equal(failedLaunchUrl, failed.url);
+  assert.equal(
+    fs.readFileSync(failed.handoffPath, 'utf8'),
+    `${failed.url}\n`,
+  );
+
+  const successFixture = makeReviewProject(t);
+  const successDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-open-ok-'));
+  t.after(() => fs.rmSync(successDirectory, { recursive: true, force: true }));
+  let successfulLaunchUrl = null;
+  const successful = await startTestReviewServer({
+    root: ROOT,
+    projectDir: successFixture.projectDir,
+    open: true,
+    openBrowserImpl: async (url) => { successfulLaunchUrl = url; },
+    handoffDirectory: successDirectory,
+  });
+  t.after(() => closeServer(successful.server));
+  assert.equal(successfulLaunchUrl, successful.url);
+  assert.equal(successful.handoffPath, null);
+  assert.deepEqual(fs.readdirSync(successDirectory), []);
+});
+
+test('handoff collision, symlink and write failure all fail closed without overwriting', async (t) => {
+  for (const kind of ['collision', 'symlink', 'write-failure']) {
+    await t.test(kind, async () => {
+      const fixture = makeReviewProject(t);
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `automontage-review-${kind}-`));
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+      const id = `fixed-${kind}`;
+      const handoffPath = path.join(directory, `automontage-review-${id}.url`);
+      const outside = path.join(fixture.root, `${kind}-outside.txt`);
+      fs.writeFileSync(outside, 'outside-safe');
+      if (kind === 'collision') fs.writeFileSync(handoffPath, 'existing-safe');
+      if (kind === 'symlink') fs.symlinkSync(outside, handoffPath);
+      const handoffFileSystem = kind === 'write-failure'
+        ? {
+          ...fs,
+          openSync(target, flags, mode) {
+            if (path.resolve(String(target)) === handoffPath) {
+              const error = new Error('simulated handoff write failure');
+              error.code = 'EACCES';
+              throw error;
+            }
+            return fs.openSync(target, flags, mode);
+          },
+        }
+        : fs;
+
+      await assert.rejects(
+        startTestReviewServer({
+          root: ROOT,
+          projectDir: fixture.projectDir,
+          open: false,
+          handoffDirectory: directory,
+          handoffId: () => id,
+          handoffFileSystem,
+        }),
+      );
+      assert.equal(fs.readFileSync(outside, 'utf8'), 'outside-safe');
+      if (kind === 'collision') assert.equal(fs.readFileSync(handoffPath, 'utf8'), 'existing-safe');
+      if (kind === 'symlink') assert.equal(fs.lstatSync(handoffPath).isSymbolicLink(), true);
+      if (kind === 'write-failure') assert.equal(fs.existsSync(handoffPath), false);
+    });
+  }
+});
+
+test('manual handoff expires and removes only its owned file', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-expiry-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    open: false,
+    handoffDirectory: directory,
+    handoffId: () => 'short-lived',
+    handoffTtlMs: 25,
+  });
+  t.after(() => closeServer(session.server));
+  assert.equal(fs.existsSync(session.handoffPath), true);
+
+  const deadline = Date.now() + 1_000;
+  while (fs.existsSync(session.handoffPath) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(fs.existsSync(session.handoffPath), false);
+  assert.equal(session.server.listening, true);
+});
+
 test('review API authenticates state and sends defensive response headers', async (t) => {
   const { projectDir } = makeReviewProject(t);
   const session = await startTestReviewServer({ root: ROOT, projectDir, open: false });
@@ -325,6 +455,100 @@ test('review edit routes reject stale revisions and disk hashes', async (t) => {
   assert.equal((await postJson(manifestSession, '/api/validate', manifestPayload)).status, 409);
 });
 
+test('review state refreshes after a second server saves and preserves unchanged asset ids', async (t) => {
+  const fixture = makeReviewProject(t);
+  const assetPath = path.join(fixture.workspace.dir, 'assets', 'broll', 'stable.png');
+  fs.writeFileSync(assetPath, 'stable asset');
+  const first = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+  });
+  const second = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(first.server));
+  t.after(() => closeServer(second.server));
+
+  const firstBeforeResponse = await request(first, '/api/state', { token: first.token });
+  const firstBefore = JSON.parse(firstBeforeResponse.body.toString('utf8'));
+  const stableBefore = firstBefore.assets.find((asset) => asset.label === 'stable.png');
+  assert.ok(stableBefore);
+  const { payload: secondPayload } = await editablePayload(second, [{
+    type: 'move-boundary',
+    leftSceneIndex: 0,
+    seconds: 2.4,
+  }]);
+  assert.equal((await postJson(second, '/api/save', secondPayload)).status, 201);
+
+  const firstAfterResponse = await request(first, '/api/state', { token: first.token });
+  assert.equal(firstAfterResponse.status, 200);
+  const firstAfter = JSON.parse(firstAfterResponse.body.toString('utf8'));
+  const stableAfter = firstAfter.assets.find((asset) => asset.label === 'stable.png');
+  assert.equal(firstAfter.session.baseRevision, 2);
+  assert.equal(firstAfter.brief.scenes[0].end, 2.4);
+  assert.equal(firstAfter.brief.scenes[1].start, 2.4);
+  assert.equal(stableAfter.id, stableBefore.id);
+  assert.equal(stableAfter.url, stableBefore.url);
+});
+
+test('review state expires instead of rebinding replaced source or asset bytes', async (t) => {
+  const sourceFixture = makeReviewProject(t);
+  const sourceSession = await startTestReviewServer({
+    root: ROOT,
+    projectDir: sourceFixture.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(sourceSession.server));
+  const { payload: sourcePayload } = await editablePayload(sourceSession);
+  const sourcePath = path.join(
+    sourceFixture.projectDir,
+    sourceFixture.workspace.manifest.source.localPath,
+  );
+  const sourceReplacement = path.join(sourceFixture.projectDir, 'input', 'replacement.mp4');
+  fs.writeFileSync(sourceReplacement, 'different source bytes');
+  fs.renameSync(sourceReplacement, sourcePath);
+  assert.equal((await request(sourceSession, '/api/state', {
+    token: sourceSession.token,
+  })).status, 409);
+  assert.equal((await postJson(sourceSession, '/api/validate', sourcePayload)).status, 409);
+  assert.equal((await postJson(sourceSession, '/api/save', sourcePayload)).status, 409);
+
+  const assetFixture = makeReviewProject(t);
+  const assetPath = path.join(assetFixture.projectDir, 'assets', 'broll', 'registered.png');
+  fs.writeFileSync(assetPath, 'registered bytes');
+  const assetSession = await startTestReviewServer({
+    root: ROOT,
+    projectDir: assetFixture.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(assetSession.server));
+  const before = JSON.parse((await request(assetSession, '/api/state', {
+    token: assetSession.token,
+  })).body.toString('utf8'));
+  assert.ok(before.assets.some((asset) => asset.label === 'registered.png'));
+  const assetReplacement = path.join(assetFixture.projectDir, 'assets', 'broll', 'replacement.png');
+  fs.writeFileSync(assetReplacement, 'different asset bytes');
+  fs.renameSync(assetReplacement, assetPath);
+  assert.equal((await request(assetSession, '/api/state', {
+    token: assetSession.token,
+  })).status, 409);
+  const assetPayload = {
+    baseRevision: before.session.baseRevision,
+    baseHash: before.session.baseHash,
+    manifestHash: before.session.manifestHash,
+    commands: [{ type: 'move-boundary', leftSceneIndex: 0, seconds: 2.2 }],
+  };
+  assert.equal((await postJson(assetSession, '/api/validate', assetPayload)).status, 409);
+  assert.equal((await postJson(assetSession, '/api/save', assetPayload)).status, 409);
+});
+
 test('review validate reports safe diff and timing without writing files', async (t) => {
   const { projectDir } = makeReviewProject(t);
   const session = await startTestReviewServer({
@@ -472,6 +696,55 @@ test('review save materializes project and public broll ids into canonical refer
   assert.doesNotMatch(response.body.toString('utf8'), /Users|asset-[1-9]|\/media\//);
 });
 
+test('review b-roll commands accept renderer images and reject registered audio or video', async (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const assets = path.join(workspace.dir, 'assets', 'broll');
+  fs.writeFileSync(path.join(assets, 'base.png'), 'base image');
+  fs.writeFileSync(path.join(assets, 'replacement.png'), 'replacement image');
+  fs.writeFileSync(path.join(assets, 'voice.mp3'), 'audio bytes');
+  fs.writeFileSync(path.join(assets, 'clip.mp4'), 'video bytes');
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[1] = {
+    scene: 'broll',
+    start: 2,
+    end: 4,
+    brollSrc: 'assets/broll/base.png',
+    headCream: 'БАЗОВАЯ',
+    headOrange: 'СХЕМА',
+  };
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const byLabel = new Map(state.assets.map((asset) => [asset.label, asset]));
+  const payloadFor = (label) => ({
+    baseRevision: state.session.baseRevision,
+    baseHash: state.session.baseHash,
+    manifestHash: state.session.manifestHash,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: byLabel.get(label).id }],
+  });
+
+  assert.equal((await postJson(session, '/api/validate', payloadFor('voice.mp3'))).status, 422);
+  assert.equal((await postJson(session, '/api/save', payloadFor('voice.mp3'))).status, 422);
+  assert.equal((await postJson(session, '/api/validate', payloadFor('clip.mp4'))).status, 422);
+  assert.equal((await postJson(session, '/api/save', payloadFor('clip.mp4'))).status, 422);
+  assert.equal((await postJson(session, '/api/validate', payloadFor('replacement.png'))).status, 200);
+  const savedResponse = await postJson(session, '/api/save', payloadFor('replacement.png'));
+  assert.equal(savedResponse.status, 201);
+  const saved = JSON.parse(fs.readFileSync(
+    path.join(projectDir, JSON.parse(savedResponse.body.toString('utf8')).path),
+    'utf8',
+  ));
+  assert.equal(saved.scenes[1].brollSrc, 'assets/broll/replacement.png');
+});
+
 test('review save creates a draft and advances the browser-safe session state', async (t) => {
   const { projectDir } = makeReviewProject(t);
   const session = await startTestReviewServer({
@@ -547,10 +820,15 @@ test('review save rejects a manifest changed after replay but before its atomic 
   assert.deepEqual(fs.readFileSync(manifestPath), foreignManifestBytes);
   assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefNames);
   const stateResponse = await request(session, '/api/state', { token: session.token });
-  assert.deepEqual(JSON.parse(stateResponse.body.toString('utf8')).session, beforeState.session);
+  assert.equal(stateResponse.status, 200);
+  const refreshed = JSON.parse(stateResponse.body.toString('utf8'));
+  assert.equal(refreshed.project.name, 'Foreign concurrent manifest');
+  assert.equal(refreshed.session.baseRevision, beforeState.session.baseRevision);
+  assert.equal(refreshed.session.baseHash, beforeState.session.baseHash);
+  assert.notEqual(refreshed.session.manifestHash, beforeState.session.manifestHash);
 });
 
-test('review save advances in-memory state without fallible disk reload after commit', async (t) => {
+test('review save stays committed but fresh state fails closed when canonical transcript disappears', async (t) => {
   const { projectDir, workspace } = makeReviewProject(t);
   const transcriptPath = path.join(workspace.dir, workspace.manifest.transcript.words);
   let transcriptRemovedAfterCommit = false;
@@ -589,10 +867,8 @@ test('review save advances in-memory state without fallible disk reload after co
   const manifest = JSON.parse(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8'));
   assert.equal(manifest.currentBrief, result.path);
   const stateResponse = await request(session, '/api/state', { token: session.token });
-  const state = JSON.parse(stateResponse.body.toString('utf8'));
-  assert.deepEqual(state.session, result.session);
-  assert.equal(state.brief.scenes[0].end, 2.2);
-  assert.equal(state.brief.scenes[1].start, 2.2);
+  assert.equal(stateResponse.status, 500);
+  assert.equal(stateResponse.body.toString('utf8'), 'Request rejected');
 });
 
 test('review save advances session when only post-commit temp cleanup fails', async (t) => {
@@ -916,4 +1192,51 @@ test('review media fails closed if an allowed asset is replaced after startup', 
   const response = await request(session, descriptor.url, { token: session.token });
   assert.equal(response.status, 404);
   assert.doesNotMatch(response.body.toString('utf8'), /private fixture/);
+});
+
+test('review validate and save reject the same atomically replaced asset as media preview', async (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const assets = path.join(workspace.dir, 'assets', 'broll');
+  const basePath = path.join(assets, 'base.png');
+  const candidatePath = path.join(assets, 'candidate.png');
+  fs.writeFileSync(basePath, 'base image');
+  fs.writeFileSync(candidatePath, 'registered candidate image');
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[1] = {
+    scene: 'broll',
+    start: 2,
+    end: 4,
+    brollSrc: 'assets/broll/base.png',
+    headCream: 'БАЗОВАЯ',
+    headOrange: 'СХЕМА',
+  };
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const candidate = state.assets.find((asset) => asset.label === 'candidate.png');
+  assert.ok(candidate);
+  const payload = {
+    baseRevision: state.session.baseRevision,
+    baseHash: state.session.baseHash,
+    manifestHash: state.session.manifestHash,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: candidate.id }],
+  };
+  const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
+
+  const replacementPath = path.join(assets, 'atomic-replacement.png');
+  fs.writeFileSync(replacementPath, 'different regular file');
+  fs.renameSync(replacementPath, candidatePath);
+
+  assert.equal((await request(session, candidate.url, { token: session.token })).status, 404);
+  assert.equal((await postJson(session, '/api/validate', payload)).status, 422);
+  assert.equal((await postJson(session, '/api/save', payload)).status, 422);
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
 });

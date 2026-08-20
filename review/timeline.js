@@ -153,9 +153,15 @@ function interiorTime(seconds, start, end) {
   return Math.min(end - inset, Math.max(start + inset, seconds));
 }
 
-function snapBoundary(seconds, { start, end, fps, words }) {
+function snapBoundary(seconds, {
+  start,
+  end,
+  fps,
+  words,
+  allowWordSnap = true,
+}) {
   const raw = interiorTime(seconds, start, end);
-  const wordCandidates = words.flatMap((word) => [word.start, word.end])
+  const wordCandidates = (allowWordSnap ? words : []).flatMap((word) => [word.start, word.end])
     .filter((value) => Number.isFinite(value)
       && value > start && value < end
       && Math.abs(value - raw) <= WORD_SNAP_WINDOW_SECONDS)
@@ -303,6 +309,7 @@ function renderBoundaries({
         end: Number(right.dataset.end),
         fps,
         words,
+        allowWordSnap: false,
       });
       left.dataset.end = String(snapped.seconds);
       right.dataset.start = String(snapped.seconds);

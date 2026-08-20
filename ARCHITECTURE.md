@@ -126,6 +126,12 @@ browser-safe модель: исходник, сцены, слова, разре�
 остаются на сервере; `/api/*` и `/media/*` требуют токен, а файловые ответы привязаны к snapshot
 regular-файла и закрываются при его подмене после старта.
 
+`GET /api/state` каждый раз заново читает текущие manifest, brief и transcript с диска. Opaque
+asset id сохраняется, пока совпадают server-side reference, device и inode; замена исходника или
+зарегистрированного медиа завершает старую сессию с `409`, а не привязывает прежний handle к
+новым байтам. Тот же identity gate действует перед validate/save. Для выбранного подменённого
+asset preview даёт `404`, а validate/save — `422`.
+
 По умолчанию сессия read-only и не имеет POST-маршрутов или edit controls. Флаг `--edit`
 открывает только `POST /api/validate` и `POST /api/save`. Для protected edit-запроса token и Origin
 своей loopback-сессии проверяются до чтения body. Сам body сервер вычитывает с жёстким лимитом;
@@ -135,6 +141,9 @@ regular-файла и закрываются при его подмене пос
 и возвращает browser-safe diff. Save повторяет эту проверку на свежем snapshot и через project
 workspace создаёт новую draft Markdown/JSON-ревизию и ровно одну manifest entry. Исходный draft,
 approved-файлы и render history не перезаписываются. Review не вызывает approval или Remotion.
+Перед повторным чтением CAS и выделением номера workspace берёт фиксированный exclusive
+reservation через `O_CREAT | O_EXCL | O_NOFOLLOW`. Чужой или symlink lock закрывает операцию;
+owned lock освобождается по file identity на success и rollback.
 
 Редактор принимает только `move-boundary` для общей границы двух соседних сцен и
 `replace-broll` с непрозрачным `asset-N` из текущего allowlist. Первая команда меняет только
@@ -144,6 +153,16 @@ approved-файлы и render history не перезаписываются. Rev
 Undo/redo хранит только команды в памяти браузера; серверный validate остаётся источником
 геометрии, diff и timing audit. Текст, scene type, effects, keyframes, masks и прочие поля
 fail closed как unsupported diff.
+
+Asset registry остаётся широким для preview, но публикует capabilities: текущий b-roll renderer
+принимает только AVIF/GIF/JPEG/PNG/WebP. Аудио/видео нельзя провести через UI, API, approval или
+render validation. Drag может притянуть границу к слову, Arrow — только к следующему кадру;
+timing audit использует нормализованные word timestamps и объясняет `reason: frame|word`.
+
+Token обычно передаётся только существующему browser-launch process. Для `--no-open` или ошибки
+launch сервер вместо URL в stdout создаёт в системной temp-папке exclusive regular URL-файл
+mode `0600`; stdout содержит лишь путь. Owned файл удаляется при закрытии сервера либо через
+10 минут, а collision, symlink или ошибка записи закрывают старт сервера.
 
 `scripts/review/waveform.js` best-effort создаёт через argv-only ffmpeg изображение
 `previews/review-waveform-<fingerprint>.png`. Fingerprint включает workspace-relative identity,

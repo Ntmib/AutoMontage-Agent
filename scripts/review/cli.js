@@ -58,14 +58,22 @@ async function main(argv = process.argv.slice(2)) {
   try {
     const options = parseReviewOptions(argv);
     const session = await startReviewServer(options);
-    console.log(`Review server: ${session.origin}`);
-    console.log(options.editable ? 'Mode: edit-enabled session' : 'Mode: read-only');
+    for (const message of formatReviewSessionMessages({ session, editable: options.editable })) {
+      console.log(message);
+    }
   } catch (_) {
     console.error('Review server failed to start. Check --project-dir and options.');
     process.exitCode = 1;
   }
 }
 
+function formatReviewSessionMessages({ session, editable }) {
+  const messages = [`Review server: ${session.origin}`];
+  if (session.handoffPath) messages.push(`Secure session URL file: ${session.handoffPath}`);
+  messages.push(editable ? 'Mode: edit-enabled session' : 'Mode: read-only');
+  return messages;
+}
+
 if (require.main === module) main();
 
-module.exports = { main, parseReviewOptions };
+module.exports = { formatReviewSessionMessages, main, parseReviewOptions };

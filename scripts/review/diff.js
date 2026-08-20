@@ -9,7 +9,7 @@ function unsupportedDiff() {
 
 function validBrief(brief) {
   try {
-    return validateLessonBrief(brief).ok;
+    return validateLessonBrief(brief, { allowOpaqueBrollAssetIds: true }).ok;
   } catch (_) {
     return false;
   }

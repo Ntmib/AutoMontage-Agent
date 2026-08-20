@@ -1,10 +1,11 @@
 const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 
-const { validateLessonBrief } = require('../lesson/brief');
+const { isRenderableBrollSource, validateLessonBrief } = require('../lesson/brief');
 const {
   nextBriefPaths,
   readProjectManifest,
@@ -18,6 +19,7 @@ const {
 const { applyReviewCommands, isOpaqueAssetId } = require('./commands');
 const { diffLessonBrief } = require('./diff');
 const {
+  buildReviewState,
   buildReviewStateFromEdit,
   loadReviewBase,
   loadReviewState,
@@ -26,6 +28,8 @@ const { auditBriefTiming } = require('./timing-audit');
 const { ensureWaveformPreview } = require('./waveform');
 
 const BODY_LIMIT = 256 * 1024;
+const HANDOFF_TTL_MS = 10 * 60 * 1000;
+const SAFE_HANDOFF_ID = /^[A-Za-z0-9_-]+$/;
 const STATIC_FILES = new Map([
   ['/', 'index.html'],
   ['/index.html', 'index.html'],
@@ -237,17 +241,21 @@ function collectRegularFiles(directory) {
 }
 
 function snapshotFile(filePath) {
+  let descriptor = null;
   try {
-    const linkStat = fs.lstatSync(filePath);
-    if (linkStat.isSymbolicLink() || !linkStat.isFile()) return null;
-    const stat = fs.statSync(filePath);
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+    descriptor = fs.openSync(filePath, flags);
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile()) return null;
     return { filePath, dev: stat.dev, ino: stat.ino };
   } catch (_) {
     return null;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
   }
 }
 
-function buildAssetFiles({ root, projectDir, state }) {
+function scanAssetFiles({ root, projectDir }) {
   let projectAssets = [];
   try {
     const directory = resolveProjectPath(projectDir, 'assets', {
@@ -261,6 +269,10 @@ function buildAssetFiles({ root, projectDir, state }) {
         kind: 'project',
         filePath,
         reference: `assets/${path.relative(directory, filePath).split(path.sep).join('/')}`,
+        capabilities: {
+          preview: true,
+          broll: isRenderableBrollSource(filePath),
+        },
       }));
   } catch (_) {
     projectAssets = [];
@@ -272,22 +284,117 @@ function buildAssetFiles({ root, projectDir, state }) {
       kind: 'public',
       filePath,
       reference: path.relative(publicDirectory, filePath).split(path.sep).join('/'),
+      capabilities: {
+        preview: true,
+        broll: isRenderableBrollSource(filePath),
+      },
     }));
-  const candidates = [...projectAssets, ...publicAssets];
+  return [...projectAssets, ...publicAssets]
+    .map((candidate) => {
+      const snapshot = snapshotFile(candidate.filePath);
+      return snapshot ? { ...candidate, ...snapshot } : null;
+    })
+    .filter(Boolean);
+}
+
+function buildAssetFiles({ root, projectDir, state }) {
+  const candidates = scanAssetFiles({ root, projectDir });
   const mappings = new Map();
   state.assets.forEach((descriptor, index) => {
     const candidate = candidates[index];
     if (candidate && candidate.kind === descriptor.kind
       && path.basename(candidate.filePath) === descriptor.label) {
-      const snapshot = snapshotFile(candidate.filePath);
-      if (snapshot) mappings.set(descriptor.id, {
-        ...snapshot,
+      mappings.set(descriptor.id, {
+        filePath: candidate.filePath,
+        dev: candidate.dev,
+        ino: candidate.ino,
         kind: candidate.kind,
         reference: candidate.reference,
+        capabilities: candidate.capabilities,
       });
     }
   });
   return mappings;
+}
+
+function assetIdentityKey(asset) {
+  return `${asset.kind}\0${asset.reference}`;
+}
+
+function sameSnapshotIdentity(left, right) {
+  return left && right && left.dev === right.dev && left.ino === right.ino;
+}
+
+function descriptorForAsset(id, asset) {
+  return {
+    id,
+    kind: asset.kind,
+    label: path.basename(asset.filePath),
+    url: `/media/assets/${id}`,
+    capabilities: { ...asset.capabilities },
+  };
+}
+
+function refreshAssetFiles({ root, projectDir, runtime }) {
+  const currentCandidates = scanAssetFiles({ root, projectDir });
+  const previousByIdentity = new Map([...runtime.assetFiles].map(([id, asset]) => (
+    [assetIdentityKey(asset), { id, asset }]
+  )));
+  const currentKeys = new Set(currentCandidates.map(assetIdentityKey));
+  for (const [key] of previousByIdentity) {
+    if (!currentKeys.has(key)) rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
+  }
+
+  const assetFiles = new Map();
+  const descriptors = [];
+  for (const candidate of currentCandidates) {
+    const previous = previousByIdentity.get(assetIdentityKey(candidate));
+    let id;
+    if (previous) {
+      if (!sameSnapshotIdentity(previous.asset, candidate)) {
+        rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
+      }
+      id = previous.id;
+    } else {
+      id = `asset-${runtime.nextAssetId}`;
+      runtime.nextAssetId += 1;
+    }
+    assetFiles.set(id, candidate);
+    descriptors.push(descriptorForAsset(id, candidate));
+  }
+  return { assetFiles, descriptors };
+}
+
+function refreshRuntimeState({
+  root,
+  projectDir,
+  editable,
+  runtime,
+  sourceFile,
+  waveformFile,
+}) {
+  const base = loadReviewBase({ projectDir });
+  const currentSourcePath = resolveProjectPath(
+    projectDir,
+    base.workspace.manifest.source.localPath,
+    { label: 'review source', mustExist: true, type: 'file' },
+  );
+  const currentSource = snapshotFile(currentSourcePath);
+  if (path.resolve(currentSourcePath) !== path.resolve(sourceFile.filePath)
+    || !sameSnapshotIdentity(sourceFile, currentSource)) {
+    rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
+  }
+  const refreshedAssets = refreshAssetFiles({ root, projectDir, runtime });
+  const state = buildReviewState({
+    root,
+    base,
+    editable,
+    waveformAvailable: Boolean(waveformFile),
+  });
+  state.assets = refreshedAssets.descriptors;
+  runtime.assetFiles = refreshedAssets.assetFiles;
+  runtime.state = state;
+  return state;
 }
 
 function fixedStaticFile(root, pathname) {
@@ -388,7 +495,9 @@ function safeHashEqual(actual, expected) {
 
 function currentAssetReference({ root, workspace, assetFiles, assetId }) {
   const registered = assetFiles.get(assetId);
-  if (!registered) return null;
+  if (!registered || registered.capabilities?.broll !== true) return null;
+  const currentSnapshot = snapshotFile(registered.filePath);
+  if (!sameSnapshotIdentity(registered, currentSnapshot)) return null;
   const current = resolveReviewAsset({
     root,
     workspace,
@@ -413,6 +522,35 @@ function assertCurrentReviewAssets({ root, workspace, assetFiles, candidate }) {
   }
 }
 
+function assertCurrentSourceIdentity({ projectDir, current, sourceFile }) {
+  const currentSourcePath = resolveProjectPath(
+    projectDir,
+    current.workspace.manifest.source.localPath,
+    { label: 'review source', mustExist: true, type: 'file' },
+  );
+  const currentSource = snapshotFile(currentSourcePath);
+  if (path.resolve(currentSourcePath) !== path.resolve(sourceFile.filePath)
+    || !sameSnapshotIdentity(sourceFile, currentSource)) {
+    rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
+  }
+}
+
+function assertOtherRegisteredAssetIdentities({ root, projectDir, assetFiles, candidate }) {
+  const selectedIds = new Set(candidate.scenes
+    .map((scene) => scene.brollSrc)
+    .filter(isOpaqueAssetId));
+  const currentByKey = new Map(scanAssetFiles({ root, projectDir }).map((asset) => (
+    [assetIdentityKey(asset), asset]
+  )));
+  for (const [id, registered] of assetFiles) {
+    if (selectedIds.has(id)) continue;
+    const current = currentByKey.get(assetIdentityKey(registered));
+    if (!sameSnapshotIdentity(registered, current)) {
+      rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
+    }
+  }
+}
+
 function requestStatusForCommandError(error) {
   const message = error && typeof error.message === 'string' ? error.message : '';
   return /boundary seconds|boundary is invalid|produced an invalid lesson brief/.test(message)
@@ -420,13 +558,14 @@ function requestStatusForCommandError(error) {
     : 400;
 }
 
-function replayReviewEdit({ root, projectDir, runtime, body }) {
+function replayReviewEdit({ root, projectDir, runtime, body, sourceFile }) {
   const current = loadReviewBase({ projectDir });
   if (current.entry.revision !== body.baseRevision
     || !safeHashEqual(body.baseHash, current.baseHash)
     || !safeHashEqual(body.manifestHash, current.manifestHash)) {
     rejectRequest(409, 'STALE_REVIEW_BASE');
   }
+  assertCurrentSourceIdentity({ projectDir, current, sourceFile });
 
   let candidate;
   try {
@@ -444,8 +583,14 @@ function replayReviewEdit({ root, projectDir, runtime, body }) {
     assetFiles: runtime.assetFiles,
     candidate,
   });
+  assertOtherRegisteredAssetIdentities({
+    root,
+    projectDir,
+    assetFiles: runtime.assetFiles,
+    candidate,
+  });
   candidate.status = 'draft';
-  const validation = validateLessonBrief(candidate);
+  const validation = validateLessonBrief(candidate, { allowOpaqueBrollAssetIds: true });
   if (!validation.ok) rejectRequest(422, 'INVALID_REVIEW_BRIEF');
 
   let diff;
@@ -456,13 +601,13 @@ function replayReviewEdit({ root, projectDir, runtime, body }) {
   }
   const timing = auditBriefTiming({
     brief: candidate,
-    transcript: runtime.state.transcript.segments,
+    words: runtime.state.transcript.words,
   });
   if (timing.errors.length > 0) rejectRequest(422, 'INVALID_REVIEW_TIMING');
   return { current, candidate, diff, timing };
 }
 
-function materializeReviewAssets({ root, current, assetFiles, candidate }) {
+function materializeReviewAssets({ root, current, assetFiles, candidate, words }) {
   const materialized = structuredClone(candidate);
   for (const scene of materialized.scenes) {
     if (!isOpaqueAssetId(scene.brollSrc)) continue;
@@ -477,7 +622,7 @@ function materializeReviewAssets({ root, current, assetFiles, candidate }) {
   }
   const validation = validateLessonBrief(materialized);
   if (!validation.ok) rejectRequest(422, 'INVALID_REVIEW_BRIEF');
-  const timing = auditBriefTiming({ brief: materialized, transcript: [] });
+  const timing = auditBriefTiming({ brief: materialized, words });
   if (timing.errors.length > 0) rejectRequest(422, 'INVALID_REVIEW_TIMING');
   return materialized;
 }
@@ -538,10 +683,11 @@ function handleEditRoute({
   runtime,
   bodyBytes,
   fileSystem,
+  sourceFile,
 }) {
   if (!editable) rejectRequest(405, 'READ_ONLY_REVIEW');
   const body = parseEditBody(bodyBytes);
-  const replay = replayReviewEdit({ root, projectDir, runtime, body });
+  const replay = replayReviewEdit({ root, projectDir, runtime, body, sourceFile });
   if (pathname === '/api/validate') {
     sendJson(response, 200, {
       ok: true,
@@ -553,13 +699,14 @@ function handleEditRoute({
   }
   if (replay.diff.length === 0) rejectRequest(400, 'EMPTY_REVIEW_DIFF');
 
-  const checked = replayReviewEdit({ root, projectDir, runtime, body });
+  const checked = replayReviewEdit({ root, projectDir, runtime, body, sourceFile });
   if (checked.diff.length === 0) rejectRequest(400, 'EMPTY_REVIEW_DIFF');
   const materialized = materializeReviewAssets({
     root,
     current: checked.current,
     assetFiles: runtime.assetFiles,
     candidate: checked.candidate,
+    words: runtime.state.transcript.words,
   });
   const nextState = buildReviewStateFromEdit({
     state: runtime.state,
@@ -656,6 +803,7 @@ async function routeRequest({
         runtime,
         bodyBytes,
         fileSystem,
+        sourceFile,
       });
       return;
     }
@@ -664,7 +812,15 @@ async function routeRequest({
   }
 
   if (pathname === '/api/state') {
-    send(response, 200, JSON.stringify(runtime.state), {
+    const state = refreshRuntimeState({
+      root,
+      projectDir,
+      editable,
+      runtime,
+      sourceFile,
+      waveformFile,
+    });
+    send(response, 200, JSON.stringify(state), {
       'Content-Type': 'application/json; charset=utf-8',
     }, request.method === 'HEAD');
     return;
@@ -717,8 +873,83 @@ function openBrowser(url) {
     command = 'xdg-open';
     args = [url];
   }
-  const child = execFile(command, args, { shell: false, windowsHide: true }, () => {});
-  child.unref();
+  return new Promise((resolve, reject) => {
+    const child = execFile(command, args, { shell: false, windowsHide: true }, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+    child.unref();
+  });
+}
+
+function lstatHandoffIfPresent(fileSystem, target) {
+  try {
+    return fileSystem.lstatSync(target);
+  } catch (error) {
+    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
+    throw error;
+  }
+}
+
+function createSessionHandoff({
+  url,
+  directory,
+  handoffId,
+  ttlMs,
+  fileSystem,
+}) {
+  const id = String(handoffId());
+  if (!SAFE_HANDOFF_ID.test(id)) throw new Error('review handoff id is unsafe');
+  if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new Error('review handoff TTL is invalid');
+  const resolvedDirectory = path.resolve(directory);
+  const directoryStat = fileSystem.lstatSync(resolvedDirectory);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+    throw new Error('review handoff directory is unsafe');
+  }
+  const handoffPath = path.join(resolvedDirectory, `automontage-review-${id}.url`);
+  const constants = fileSystem.constants || fs.constants;
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+    | (constants.O_NOFOLLOW || 0);
+  let handle = null;
+  let identity = null;
+  try {
+    handle = fileSystem.openSync(handoffPath, flags, 0o600);
+    identity = fileSystem.fstatSync(handle);
+    if (!identity.isFile()) throw new Error('review handoff must be a regular file');
+    if (typeof fileSystem.fchmodSync === 'function') fileSystem.fchmodSync(handle, 0o600);
+    fileSystem.writeFileSync(handle, `${url}\n`, { encoding: 'utf8' });
+    fileSystem.fsyncSync(handle);
+    fileSystem.closeSync(handle);
+    handle = null;
+  } catch (error) {
+    if (handle !== null) fileSystem.closeSync(handle);
+    const current = lstatHandoffIfPresent(fileSystem, handoffPath);
+    if (identity && current && sameSnapshotIdentity(identity, current)) {
+      fileSystem.unlinkSync(handoffPath);
+    }
+    throw error;
+  }
+
+  let timer = null;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    if (timer) clearTimeout(timer);
+    const current = lstatHandoffIfPresent(fileSystem, handoffPath);
+    if (current && !current.isSymbolicLink() && current.isFile()
+      && sameSnapshotIdentity(identity, current)) {
+      fileSystem.unlinkSync(handoffPath);
+    }
+  };
+  timer = setTimeout(cleanup, ttlMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  return { path: handoffPath, cleanup };
+}
+
+async function closeReviewServer(server) {
+  if (!server.listening) return;
+  await new Promise((resolve) => server.close(() => resolve()));
 }
 
 async function startReviewServer({
@@ -730,6 +961,11 @@ async function startReviewServer({
   runToolImpl,
   fileSystem = fs,
   logger = console,
+  openBrowserImpl = openBrowser,
+  handoffDirectory = os.tmpdir(),
+  handoffId = () => randomBytes(16).toString('hex'),
+  handoffTtlMs = HANDOFF_TTL_MS,
+  handoffFileSystem = fs,
 } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedProjectDir = path.resolve(projectDir || '');
@@ -758,7 +994,10 @@ async function startReviewServer({
     projectDir: resolvedProjectDir,
     state,
   });
-  const runtime = { state, assetFiles };
+  const nextAssetId = [...assetFiles.keys()].reduce((highest, id) => (
+    Math.max(highest, Number(id.slice('asset-'.length)) || 0)
+  ), 0) + 1;
+  const runtime = { state, assetFiles, nextAssetId };
   const token = randomBytes(32).toString('base64url');
   let origin = 'http://127.0.0.1';
   const server = http.createServer((request, response) => {
@@ -793,8 +1032,41 @@ async function startReviewServer({
   });
   origin = `http://127.0.0.1:${server.address().port}`;
   const url = `${origin}/#token=${token}`;
-  if (open) openBrowser(url);
-  return { server, token, url, origin };
+  let handoff = null;
+  try {
+    if (open) {
+      try {
+        await openBrowserImpl(url);
+      } catch (_) {
+        handoff = createSessionHandoff({
+          url,
+          directory: handoffDirectory,
+          handoffId,
+          ttlMs: handoffTtlMs,
+          fileSystem: handoffFileSystem,
+        });
+      }
+    } else {
+      handoff = createSessionHandoff({
+        url,
+        directory: handoffDirectory,
+        handoffId,
+        ttlMs: handoffTtlMs,
+        fileSystem: handoffFileSystem,
+      });
+    }
+  } catch (error) {
+    await closeReviewServer(server);
+    throw error;
+  }
+  if (handoff) server.once('close', handoff.cleanup);
+  return {
+    server,
+    token,
+    url,
+    origin,
+    handoffPath: handoff ? handoff.path : null,
+  };
 }
 
 module.exports = {

@@ -51,11 +51,15 @@ node scripts/build.js <видео> --template lesson \
 ```bash
 automontage review --project-dir projects/2026.08.20_demo
 automontage review --project-dir projects/2026.08.20_demo --edit
+automontage review --project-dir projects/2026.08.20_demo --no-open
 ```
 
 Первая команда read-only и не меняет brief, manifest или render history. Вторая разрешает только
-adjacent boundary и allowlisted b-roll; Save создаёт новую `vNN-draft.lesson.md/.json`, не меняя
-approved и исходную ревизию. Undo/redo до Save остаётся в памяти. Waveform является best-effort:
+adjacent boundary и allowlisted image b-roll (AVIF/GIF/JPEG/PNG/WebP); аудио/видео можно видеть
+в media lane, но нельзя назначать сцене. Save создаёт новую `vNN-draft.lesson.md/.json`, не меняя
+approved и исходную ревизию. Undo/redo до Save остаётся в памяти. `--no-open` печатает путь к
+временному mode-`0600` URL-файлу вместо bearer URL; файл живёт не дольше 10 минут или до закрытия
+сервера. Waveform является best-effort:
 при его ошибке видео, слова и timeline продолжают работать. Review не умеет менять текст,
 effects, keyframes, masks или делать global ripple/OpenCut-экспорт и никогда не рендерит draft.
 

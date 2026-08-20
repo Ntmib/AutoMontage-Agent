@@ -115,6 +115,30 @@ test('approved brief becomes ReelScenes props with one audio source', () => {
   });
 });
 
+test('audio and video b-roll cannot cross the approval or render boundary', () => {
+  for (const brollSrc of ['broll/voice.mp3', 'broll/clip.mp4']) {
+    const brief = makeBrief({
+      status: 'approved',
+      scenes: [{
+        scene: 'broll',
+        start: 0,
+        end: 8,
+        brollSrc,
+        headCream: 'НЕПОДДЕРЖИВАЕМОЕ',
+        headOrange: 'МЕДИА',
+      }],
+    });
+
+    const validation = validateLessonBrief(brief);
+    assert.equal(validation.ok, false);
+    assert.match(validation.errors.join('\n'), /b-roll|изображен/i);
+    assert.throws(
+      () => buildReelScenesProps({ brief, theme: 'lesson-neutral' }),
+      /b-roll|изображен/i,
+    );
+  }
+});
+
 test('approved speaker crop is preserved in render props', () => {
   const brief = makeBrief({
     status: 'approved',

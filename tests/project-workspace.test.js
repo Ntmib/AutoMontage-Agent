@@ -494,6 +494,29 @@ function makeApprovalFailureFixture(t, name) {
   };
 }
 
+test('approval rejects a draft whose b-roll renderer cannot display', (t) => {
+  const state = makeApprovalFailureFixture(t, 'unsupported-broll');
+  const brief = JSON.parse(fs.readFileSync(state.draft.jsonPath, 'utf8'));
+  brief.scenes = [{
+    scene: 'broll',
+    start: 0,
+    end: 8,
+    brollSrc: 'assets/broll/clip.mp4',
+    headCream: 'НЕПОДДЕРЖИВАЕМОЕ',
+    headOrange: 'ВИДЕО',
+  }];
+  fs.writeFileSync(state.draft.jsonPath, `${JSON.stringify(brief, null, 2)}\n`);
+  const beforeManifest = fs.readFileSync(path.join(state.workspace.dir, 'project.json'));
+
+  assert.throws(
+    () => approveBrief(state.workspace, state.draft.jsonPath),
+    /b-roll|изображен/i,
+  );
+  assert.deepEqual(fs.readFileSync(path.join(state.workspace.dir, 'project.json')), beforeManifest);
+  assert.equal(fs.existsSync(state.approvedJson), false);
+  assert.equal(fs.existsSync(state.approvedMarkdown), false);
+});
+
 test('approval rolls back manifest and outputs when a destination commit fails', async (t) => {
   for (const destination of ['project.json', 'approved Markdown', 'approved JSON']) {
     await t.test(destination, () => {

@@ -23,6 +23,12 @@
 - Все Review API/media routes требуют случайный session token, POST также проверяет loopback
   Origin; traversal, symlink, oversized body, unknown command и stale session закрываются без
   раскрытия host paths или token.
+- Review Save резервирует revision между процессами через exclusive no-follow lock; только один
+  конкурент публикует согласованную Markdown/JSON-пару и manifest entry.
+- `--no-open` и ошибка browser launch передают bearer URL через временный mode-`0600` файл,
+  печатают только путь и очищают owned файл при закрытии сервера или через 10 минут.
+- State, preview, validate и save сверяют исходный device/inode media snapshot; подмена не
+  перепривязывает opaque handle к новым байтам.
 - Transitive `nanoid` обновлён в lockfile с 3.3.16 до исправленной совместимой 3.3.18; high
   `GHSA-2v37-7h3g-55p8` устранён без direct dependency, override или обновления Remotion.
 
@@ -32,6 +38,12 @@
   успеха принимает только серверную ревизию; conflict сохраняет команды в памяти без auto-retry.
 - Новая draft-ревизия публикуется как manifest -> Markdown -> JSON с rollback до commit и
   best-effort cleanup после него, не изменяя approved или исходный draft.
+- `/api/state` перечитывает внешнюю draft-ревизию с диска, сохраняя id неизменных assets; после
+  `409` браузер показывает свежую ревизию и не воспроизводит unsaved-команды автоматически.
+- B-roll capability ограничена поддерживаемыми renderer изображениями; аудио/видео отклоняются
+  API, approval и render validation, оставаясь доступными в общей preview lane.
+- Timing audit выдаёт отдельные frame/word suggestions, drag сохраняет word snap, а Arrow
+  накапливает покадровое движение и сохраняет focus/undo.
 
 ## [1.2.1] - 2026-08-05
 

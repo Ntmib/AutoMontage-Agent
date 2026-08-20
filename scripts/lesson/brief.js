@@ -11,6 +11,10 @@ const OFFICIAL_SCENES = [
   'stat',
   'broll',
 ];
+const RENDERABLE_BROLL_EXTENSIONS = new Set([
+  '.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp',
+]);
+const REVIEW_ASSET_ID = /^asset-[1-9]\d*$/;
 
 const schemaPath = path.join(__dirname, '../../schema/lesson-brief.schema.json');
 const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
@@ -32,7 +36,23 @@ function schemaErrors(brief) {
   });
 }
 
-function validateLessonBrief(brief, { requireApproved = false } = {}) {
+function isRenderableBrollSource(value, { allowOpaqueAssetId = false } = {}) {
+  if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) return false;
+  if (allowOpaqueAssetId && REVIEW_ASSET_ID.test(value)) return true;
+  let pathname = value;
+  try {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) pathname = new URL(value).pathname;
+  } catch (_) {
+    return false;
+  }
+  pathname = pathname.split(/[?#]/, 1)[0].replaceAll('\\', '/');
+  return RENDERABLE_BROLL_EXTENSIONS.has(path.posix.extname(pathname).toLowerCase());
+}
+
+function validateLessonBrief(brief, {
+  requireApproved = false,
+  allowOpaqueBrollAssetIds = false,
+} = {}) {
   const errors = schemaErrors(brief);
   const scenes = Array.isArray(brief && brief.scenes) ? brief.scenes : [];
 
@@ -46,6 +66,12 @@ function validateLessonBrief(brief, { requireApproved = false } = {}) {
     if (index > 0 && Number.isFinite(scene.start) && Number.isFinite(scenes[index - 1].end)
       && scene.start < scenes[index - 1].end) {
       errors.push(`scenes[${index}]: тайминг пересекается с предыдущей сценой`);
+    }
+    if (scene.scene === 'broll'
+      && !isRenderableBrollSource(scene.brollSrc, {
+        allowOpaqueAssetId: allowOpaqueBrollAssetIds,
+      })) {
+      errors.push(`scenes[${index}].brollSrc: b-roll поддерживает только изображения`);
     }
   });
 
@@ -148,5 +174,6 @@ module.exports = {
   OFFICIAL_SCENES,
   buildReelScenesProps,
   formatBriefMarkdown,
+  isRenderableBrollSource,
   validateLessonBrief,
 };

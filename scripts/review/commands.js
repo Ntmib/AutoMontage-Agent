@@ -107,7 +107,7 @@ function applyReplaceBroll(candidate, command, assetIds) {
 
 function validateCandidate(candidate, base) {
   candidate.status = 'draft';
-  const validation = validateLessonBrief(candidate);
+  const validation = validateLessonBrief(candidate, { allowOpaqueBrollAssetIds: true });
   if (!validation.ok) commandError('produced an invalid lesson brief');
   assertProtectedIdentity(candidate, base);
   return candidate;

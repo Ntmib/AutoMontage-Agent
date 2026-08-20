@@ -126,10 +126,9 @@ function loadReviewBase({ projectDir, briefPath } = {}) {
   };
 }
 
-function loadReviewState({
+function buildReviewState({
   root,
-  projectDir,
-  briefPath,
+  base,
   editable = false,
   waveformAvailable = false,
 } = {}) {
@@ -139,7 +138,7 @@ function loadReviewState({
     brief,
     baseHash,
     manifestHash,
-  } = loadReviewBase({ projectDir, briefPath });
+  } = base;
   const resolvedProjectDir = workspace.dir;
   const { manifest } = workspace;
 
@@ -177,9 +176,25 @@ function loadReviewState({
     },
     transcript,
     assets: listReviewAssets({ root, workspace }),
-    timing: auditBriefTiming({ brief, transcript: transcript.segments }),
+    timing: auditBriefTiming({ brief, words: transcript.words }),
     waveform: waveformAvailable ? { url: '/media/waveform' } : null,
   };
 }
 
-module.exports = { buildReviewStateFromEdit, loadReviewBase, loadReviewState };
+function loadReviewState({
+  root,
+  projectDir,
+  briefPath,
+  editable = false,
+  waveformAvailable = false,
+} = {}) {
+  const base = loadReviewBase({ projectDir, briefPath });
+  return buildReviewState({ root, base, editable, waveformAvailable });
+}
+
+module.exports = {
+  buildReviewState,
+  buildReviewStateFromEdit,
+  loadReviewBase,
+  loadReviewState,
+};

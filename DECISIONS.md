@@ -184,3 +184,17 @@ Boundary edit намеренно adjacent-only: меняются `left.end` и `
 глобальный source time как `trimBefore`; обнуление времени на каждой сцене вернуло бы старый
 рассинхрон из D-007. Свободный текст, scene conversion, effects, keyframes, masks, browser export
 и OpenCut runtime отложены до отдельных решений и спецификаций.
+
+Asset allowlist разделён на широкую preview capability и узкую renderer capability: назначить
+в b-roll можно только форматы изображений, которые уже умеет показывать `SceneBroll`. Добавлять
+video renderer в security-fix означало бы менять production-композицию, поэтому audio/video
+остаются только в media lane и fail closed на API, approval и render boundary.
+
+Opaque handles считаются lease на конкретные device/inode, а не на имя файла. Fresh state
+сохраняет id неизменного lease, но любая подмена source/registered asset завершает старую сессию.
+Конкурентные Save сериализуются fixed exclusive no-follow reservation: manifest CAS сам по себе
+не закрывал окно между проверкой и overwrite-capable rename.
+
+Bearer URL не выводится в обычный stdout. Если автоматический browser launch не используется
+или падает, выбран временный exclusive regular-файл mode `0600` с bounded TTL; stdout показывает
+только путь. Это сохраняет ручной запуск, не расширяя token exposure за browser-launch contract.

@@ -33,9 +33,11 @@ npm test
   отказ от regular/symlink/dangling-symlink подмен, включая замену `previews/` на runner boundary,
   и неизменность manifest/approved brief;
 - Review security: random token на каждом `/api/*` и `/media/*`, same-session Origin для POST,
-  read-only `405`, traversal/symlink, oversized body, unknown command и stale-session fail closed;
+  read-only `405`, traversal/symlink, oversized body, unknown command, свежий disk state,
+  source/asset identity expiry и secure `0600` handoff без token в CLI-логе;
 - Review edit contract: только adjacent boundary и allowlisted b-roll, отсутствие global ripple,
-  серверный diff/timing, in-memory undo/redo, новая draft-пара на Save и byte-identical approved;
+  image-only renderer capability, frame/word timing reasons, межпроцессный revision reservation,
+  in-memory undo/redo, новая draft-пара на Save и byte-identical approved;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;
@@ -57,8 +59,9 @@ npm run test:review-ui
 ```
 
 Chromium suite поднимает настоящий loopback-сервер и проверяет read-only/edit DOM, token/origin,
-waveform fallback, drag/keyboard boundary, b-roll, undo/redo, save confirmation, 409 conflict и
-неизменность approved. Она не заменяет `npm test`: browser и Node suites обязательны отдельно.
+waveform fallback, word-snap drag, накопительное frame-only Arrow movement, b-roll capability,
+undo/redo, save confirmation, внешний `409` с настоящей перезагрузкой и неизменность approved.
+Она не заменяет `npm test`: browser и Node suites обязательны отдельно.
 
 Для золотого пути свежего клона отдельно проверь:
 
