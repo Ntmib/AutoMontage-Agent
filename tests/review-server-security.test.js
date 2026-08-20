@@ -245,8 +245,8 @@ test('review edit routes reject malformed, extra, path-bearing and unknown JSON'
   const { payload } = await editablePayload(session);
   const malformedBodies = [
     '{',
-    jsonBody({ ...payload, brief: { source: '/Users/private/source.mov' } }),
-    jsonBody({ ...payload, projectDir: '/Users/private/project' }),
+    jsonBody({ ...payload, brief: { source: '/fixture-host/private/source.mov' } }),
+    jsonBody({ ...payload, projectDir: '/fixture-host/private/project' }),
     jsonBody({ ...payload, ['__proto__']: { polluted: true } }),
     jsonBody({
       ...payload,
@@ -254,7 +254,7 @@ test('review edit routes reject malformed, extra, path-bearing and unknown JSON'
         type: 'move-boundary',
         leftSceneIndex: 0,
         seconds: 2.2,
-        path: '/Users/private/source.mov',
+        path: '/fixture-host/private/source.mov',
       }],
     }),
     jsonBody({ ...payload, commands: [{ type: 'delete-project' }] }),

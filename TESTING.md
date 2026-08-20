@@ -32,6 +32,10 @@ npm test
 - Review waveform: буквальный ffmpeg argv, cache reuse/invalidation, очистка partial temp,
   отказ от regular/symlink/dangling-symlink подмен, включая замену `previews/` на runner boundary,
   и неизменность manifest/approved brief;
+- Review security: random token на каждом `/api/*` и `/media/*`, same-session Origin для POST,
+  read-only `405`, traversal/symlink, oversized body, unknown command и stale-session fail closed;
+- Review edit contract: только adjacent boundary и allowlisted b-roll, отсутствие global ripple,
+  серверный diff/timing, in-memory undo/redo, новая draft-пара на Save и byte-identical approved;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;
@@ -49,8 +53,12 @@ npm test
 
 ```bash
 node --test tests/review-waveform.test.js tests/process-security.test.js
-npx playwright test tests/review-ui.spec.js --project=chromium
+npm run test:review-ui
 ```
+
+Chromium suite поднимает настоящий loopback-сервер и проверяет read-only/edit DOM, token/origin,
+waveform fallback, drag/keyboard boundary, b-roll, undo/redo, save confirmation, 409 conflict и
+неизменность approved. Она не заменяет `npm test`: browser и Node suites обязательны отдельно.
 
 Для золотого пути свежего клона отдельно проверь:
 
@@ -135,6 +143,13 @@ node scripts/dynamic-gate.js path/to/scenario.json path/to/transcript.json
    `scripts/project/approve-brief.js`.
 5. Рендерить локальным исходником через `--project-dir`, `--brief` и `--version-label`.
 6. Отдельно проверить, что draft, другой source, тема или аспект блокируются.
+
+Для реальной проверки Review используй только копию fixture/project workspace. До запуска сними
+SHA-256 `project.json`, всех brief и approved-файлов. Read-only сессию закрой и подтверди те же
+bytes. В `--edit` перенеси одну общую границу, сделай Undo, перенеси снова и Save; должны появиться
+одна новая draft Markdown/JSON-пара и одна manifest entry, а approved hash остаться прежним.
+Утверждай новую draft только существующим `approve-brief.js`, затем рендери `--brief` и выполни
+полный decode, ffprobe и визуальную проверку контрольных кадров. Review сам approval/render не делает.
 7. Убедиться, что повторный рендер создаёт новый `renders/vNN-<label>/`, не стирая прошлый.
 8. Убедиться, что `final/<slug>.mp4` совпадает с последним успешным рендером.
 9. При искусственном сбое render/finish/music/publish проверить статус `failed`, прежние
@@ -168,10 +183,12 @@ project-папке. Старые артефакты в `out/` при мигра�
 
 ## 7. CI
 
-`.github/workflows/ci.yml` запускает `npm ci`, `npm test` и `npm run check:release` на pull
-request и push в `main` под Node.js 20. Release-checker в CI проверяет committed current
-tree без base, поэтому работает и с shallow checkout. Отдельный job Gitleaks сканирует
-полную Git-историю на секреты.
+`.github/workflows/ci.yml` сохраняет обычный Node 20 job с `npm ci`, `npm test` и
+`npm run check:release` на pull request и push в `main`. Отдельный browser job выполняет
+`npm ci --no-audit --no-fund`, устанавливает только Playwright Chromium с системными
+зависимостями и запускает `npm run test:review-ui`. Поэтому browser setup не может скрыть
+обычную Node-регрессию. Release-checker проверяет committed current tree без base и работает
+с shallow checkout. Отдельный job Gitleaks сканирует полную Git-историю на секреты.
 Полные рендеры в CI не запускаются: им нужны тяжёлые медиа, ffmpeg/Whisper-модели и
 иногда приватные темы. Их проверяют локально по разделам выше.
 

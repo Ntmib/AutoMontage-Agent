@@ -46,6 +46,19 @@ node scripts/build.js <видео> --template lesson \
 `brief/v01-draft.lesson.md` + `.json`, затем останавливается до Remotion. Для этого этапа
 нужен `ANTHROPIC_API_KEY` или `OPENAI_API_KEY`.
 
+Необязательно открыть локальную проверку draft можно до утверждения:
+
+```bash
+automontage review --project-dir projects/2026.08.20_demo
+automontage review --project-dir projects/2026.08.20_demo --edit
+```
+
+Первая команда read-only и не меняет brief, manifest или render history. Вторая разрешает только
+adjacent boundary и allowlisted b-roll; Save создаёт новую `vNN-draft.lesson.md/.json`, не меняя
+approved и исходную ревизию. Undo/redo до Save остаётся в памяти. Waveform является best-effort:
+при его ошибке видео, слова и timeline продолжают работать. Review не умеет менять текст,
+effects, keyframes, masks или делать global ripple/OpenCut-экспорт и никогда не рендерит draft.
+
 После правок и явного «утверждаю» заморозь отдельную approved-копию:
 
 ```bash

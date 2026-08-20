@@ -158,3 +158,29 @@ manifest и очищает temps по file identity.
 
 Отклонены прямые последовательные `writeFile` и порядок JSON до manifest: при ошибке они
 оставляют approved JSON, который можно передать рендеру без зарегистрированного approval.
+
+## D-013 – Review Workbench изолирован от renderer и редактирует только соседнюю границу
+
+**Дата:** 2026-08-20
+**Статус:** принято
+
+Для визуальной проверки lesson рассматривались три варианта:
+
+1. Fork OpenCut дал бы полноценный timeline, но принёс бы чужой project format, runtime,
+   renderer, effects registry и большую поверхность синхронизации и безопасности.
+2. Связка с Remotion Studio переиспользовала бы composition preview, но смешала бы проверку
+   draft с production props/renderer и ослабила правило «draft никогда не рендерится».
+3. Изолированный локальный Review Workbench читает browser-safe snapshot и отправляет только
+   узкий allowlist команд в существующий project workspace.
+
+Выбран третий вариант. Он оставляет approval и `scripts/build.js --brief` каноническими,
+не добавляет renderer или новый формат проекта и позволяет fail closed отклонить любое изменение,
+кроме общей границы двух соседних сцен и allowlisted b-roll. Read-only является default; Save
+создаёт новую draft-ревизию, а approved остаётся immutable.
+
+Boundary edit намеренно adjacent-only: меняются `left.end` и `right.start`, поздние сцены не
+сдвигаются. Global ripple мог бы незаметно разойтись с дословной речью, transcript и уже
+утверждёнными моментами. Brief хранит абсолютное время исходника, а Remotion использует этот
+глобальный source time как `trimBefore`; обнуление времени на каждой сцене вернуло бы старый
+рассинхрон из D-007. Свободный текст, scene conversion, effects, keyframes, masks, browser export
+и OpenCut runtime отложены до отдельных решений и спецификаций.

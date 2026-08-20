@@ -126,6 +126,23 @@ browser-safe модель: исходник, сцены, слова, разре�
 остаются на сервере; `/api/*` и `/media/*` требуют токен, а файловые ответы привязаны к snapshot
 regular-файла и закрываются при его подмене после старта.
 
+По умолчанию сессия read-only и не имеет POST-маршрутов или edit controls. Флаг `--edit`
+открывает только `POST /api/validate` и `POST /api/save`; до чтения body сервер проверяет token,
+Origin своей loopback-сессии, метод, content type и лимит размера. Validate заново читает
+зарегистрированный текущий brief и manifest, сверяет их hashes, воспроизводит allowlist-команды
+и возвращает browser-safe diff. Save повторяет эту проверку на свежем snapshot и через project
+workspace создаёт новую draft Markdown/JSON-ревизию и ровно одну manifest entry. Исходный draft,
+approved-файлы и render history не перезаписываются. Review не вызывает approval или Remotion.
+
+Редактор принимает только `move-boundary` для общей границы двух соседних сцен и
+`replace-broll` с непрозрачным `asset-N` из текущего allowlist. Первая команда меняет только
+`left.end` и `right.start`: это adjacent edit, а не global ripple. Все времена brief остаются
+абсолютными временами исходника; поздние сцены не сдвигаются, а Remotion затем использует их как
+глобальный `trimBefore`. Поэтому проверяемая картинка не начинает исходник заново на каждой сцене.
+Undo/redo хранит только команды в памяти браузера; серверный validate остаётся источником
+геометрии, diff и timing audit. Текст, scene type, effects, keyframes, masks и прочие поля
+fail closed как unsupported diff.
+
 `scripts/review/waveform.js` best-effort создаёт через argv-only ffmpeg изображение
 `previews/review-waveform-<fingerprint>.png`. Fingerprint включает workspace-relative identity,
 размер и временные метаданные исходника. Генерация идёт в непредсказуемый соседний temp,
@@ -136,6 +153,11 @@ realpath, device и inode после процесса и непосредств�
 Ошибка или отсутствие ffmpeg дают `waveform: null` и не меняют manifest, brief или render state.
 При успехе браузер видит только `{ url: "/media/waveform" }`, а timeline добавляет PNG внутрь
 существующей дорожки исходника без отдельной пустой панели.
+
+Workbench изолирован от OpenCut runtime/project format и Remotion Studio. Он не экспортирует
+видео в браузере, не меняет текст, не делает global ripple и не реализует effects registry,
+keyframes или masks. Канонический путь остаётся прежним: draft -> внешнее approval -> approved
+brief -> `scripts/build.js --brief` -> Remotion.
 
 ## 4. Remotion-слой
 

@@ -126,12 +126,12 @@ test('review asset resolution fails closed for project and public symlinks', (t)
 test('review state strips path-bearing scene fields before browser serialization', (t) => {
   const { projectDir, briefPath } = makeReviewProject(t);
   const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
-  brief.scenes[0].faceSrc = '/Users/person/private.mp4';
+  brief.scenes[0].faceSrc = '/fixture-host/person/private.mp4';
   brief.scenes[1] = {
     scene: 'broll',
     start: 2,
     end: 4,
-    brollSrc: '/Users/person/private.png',
+    brollSrc: '/fixture-host/person/private.png',
     headCream: 'ЧАСТНЫЙ',
     headOrange: 'ФАЙЛ',
   };
@@ -141,12 +141,12 @@ test('review state strips path-bearing scene fields before browser serialization
 
   assert.equal(state.brief.scenes[0].faceSrc, undefined);
   assert.equal(state.brief.scenes[1].brollSrc, undefined);
-  assert.doesNotMatch(JSON.stringify(state), /\/Users\/|C:\\Users\\/);
+  assert.doesNotMatch(JSON.stringify(state), /\/fixture-host\/|\/Users\/|C:\\Users\\/);
 });
 
 test('invalid review briefs expose a fixed public error', (t) => {
   const { projectDir, briefPath } = makeReviewProject(t);
-  const hostileValue = '/Users/person/private-invalid-scene';
+  const hostileValue = '/fixture-host/person/private-invalid-scene';
   const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
   brief.scenes[0].scene = hostileValue;
   fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);

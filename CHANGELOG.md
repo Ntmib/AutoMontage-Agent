@@ -5,11 +5,33 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-20
+
 ### Добавлено
 
+- Локальный Review Workbench открывает project lesson в read-only timeline с видео, словами,
+  сценами и timing audit; token-protected loopback API не вызывает Remotion и не рендерит draft.
+- Явный `--edit` разрешает только adjacent boundary и allowlisted b-roll, хранит undo/redo в
+  памяти и сохраняет правки новой draft-ревизией без изменения approved.
 - Локальный Review Workbench показывает необязательную waveform-дорожку исходника. PNG
   кэшируется внутри project workspace с повторной проверкой identity каталога после ffmpeg;
   отсутствие или ошибка ffmpeg не мешают открыть review.
+- Отдельный Chromium job проверяет Review browser flow независимо от обычного Node CI.
+
+### Безопасность
+
+- Все Review API/media routes требуют случайный session token, POST также проверяет loopback
+  Origin; traversal, symlink, oversized body, unknown command и stale session закрываются без
+  раскрытия host paths или token.
+- Transitive `nanoid` обновлён в lockfile с 3.3.16 до исправленной совместимой 3.3.18; high
+  `GHSA-2v37-7h3g-55p8` устранён без direct dependency, override или обновления Remotion.
+
+### Исправлено
+
+- Save повторно проверяет manifest/base snapshot, блокирует controls на время commit и после
+  успеха принимает только серверную ревизию; conflict сохраняет команды в памяти без auto-retry.
+- Новая draft-ревизия публикуется как manifest -> Markdown -> JSON с rollback до commit и
+  best-effort cleanup после него, не изменяя approved или исходный draft.
 
 ## [1.2.1] - 2026-08-05
 
