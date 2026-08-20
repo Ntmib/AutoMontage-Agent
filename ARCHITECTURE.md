@@ -127,8 +127,10 @@ browser-safe модель: исходник, сцены, слова, разре�
 regular-файла и закрываются при его подмене после старта.
 
 По умолчанию сессия read-only и не имеет POST-маршрутов или edit controls. Флаг `--edit`
-открывает только `POST /api/validate` и `POST /api/save`; до чтения body сервер проверяет token,
-Origin своей loopback-сессии, метод, content type и лимит размера. Validate заново читает
+открывает только `POST /api/validate` и `POST /api/save`. Для protected edit-запроса token и Origin
+своей loopback-сессии проверяются до чтения body. Сам body сервер вычитывает с жёстким лимитом;
+лишь затем сверяет method, route, edit permission и точный content type. Только допущенный body
+разбирается как JSON. Validate заново читает
 зарегистрированный текущий brief и manifest, сверяет их hashes, воспроизводит allowlist-команды
 и возвращает browser-safe diff. Save повторяет эту проверку на свежем snapshot и через project
 workspace создаёт новую draft Markdown/JSON-ревизию и ровно одну manifest entry. Исходный draft,
