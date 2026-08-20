@@ -143,7 +143,10 @@ workspace создаёт новую draft Markdown/JSON-ревизию и ров
 approved-файлы и render history не перезаписываются. Review не вызывает approval или Remotion.
 Перед повторным чтением CAS и выделением номера workspace берёт фиксированный exclusive
 reservation через `O_CREAT | O_EXCL | O_NOFOLLOW`. Чужой или symlink lock закрывает операцию;
-owned lock освобождается по file identity на success и rollback.
+owned lock освобождается по file identity на success и rollback. Review сначала публикует
+Markdown, затем канонический JSON, повторно сверяет старый manifest и лишь после этого атомарно
+публикует новый manifest. Поэтому `/api/state` продолжает видеть старую согласованную ревизию,
+пока оба файла новой пары не стали видимы; ошибки проходят через прежний identity-safe rollback.
 
 Редактор принимает только `move-boundary` для общей границы двух соседних сцен и
 `replace-broll` с непрозрачным `asset-N` из текущего allowlist. Первая команда меняет только
@@ -154,6 +157,12 @@ Undo/redo хранит только команды в памяти браузе�
 геометрии, diff и timing audit. Текст, scene type, effects, keyframes, masks и прочие поля
 fail closed как unsupported diff.
 
+Внешний `409` переводит браузер в отдельное конфликтное состояние: свежий канонический state
+заменяет локальную базу, активный command stack и redo stack очищаются, а timeline, b-roll,
+undo/redo и Save блокируются. Никакого silent rebase нет. Только явное удаление устаревших
+правок снимает блокировку; следующая команда валидируется отдельно от свежей базы, поэтому
+дорефрешные команды не могут попасть в новый replay.
+
 Asset registry остаётся широким для preview, но публикует capabilities: текущий b-roll renderer
 принимает только AVIF/GIF/JPEG/PNG/WebP. Аудио/видео нельзя провести через UI, API, approval или
 render validation. Drag может притянуть границу к слову, Arrow — только к следующему кадру;
@@ -162,7 +171,9 @@ timing audit использует нормализованные word timestamps
 Token обычно передаётся только существующему browser-launch process. Для `--no-open` или ошибки
 launch сервер вместо URL в stdout создаёт в системной temp-папке exclusive regular URL-файл
 mode `0600`; stdout содержит лишь путь. Owned файл удаляется при закрытии сервера либо через
-10 минут, а collision, symlink или ошибка записи закрывают старт сервера.
+10 минут, а collision, symlink или ошибка записи закрывают старт сервера. CLI обрабатывает
+обычные `SIGINT` и `SIGTERM` через `server.close()`: close-listener удаляет owned handoff до
+завершения процесса. Для не перехватываемого `SIGKILL` cleanup намеренно не обещается.
 
 `scripts/review/waveform.js` best-effort создаёт через argv-only ffmpeg изображение
 `previews/review-waveform-<fingerprint>.png`. Fingerprint включает workspace-relative identity,

@@ -58,8 +58,10 @@ automontage review --project-dir projects/2026.08.20_demo --no-open
 adjacent boundary и allowlisted image b-roll (AVIF/GIF/JPEG/PNG/WebP); аудио/видео можно видеть
 в media lane, но нельзя назначать сцене. Save создаёт новую `vNN-draft.lesson.md/.json`, не меняя
 approved и исходную ревизию. Undo/redo до Save остаётся в памяти. `--no-open` печатает путь к
-временному mode-`0600` URL-файлу вместо bearer URL; файл живёт не дольше 10 минут или до закрытия
-сервера. Waveform является best-effort:
+временному mode-`0600` URL-файлу вместо bearer URL; файл живёт не дольше 10 минут, до закрытия
+сервера или обычного `SIGINT`/`SIGTERM`. После внешнего `409` устаревшие undo/redo-команды
+удаляются, controls блокируются и включаются только явным discard от свежей версии. Waveform
+является best-effort:
 при его ошибке видео, слова и timeline продолжают работать. Review не умеет менять текст,
 effects, keyframes, masks или делать global ripple/OpenCut-экспорт и никогда не рендерит draft.
 

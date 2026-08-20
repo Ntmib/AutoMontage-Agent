@@ -141,6 +141,13 @@ function createEditControls() {
   const conflict = element('p', 'edit-conflict');
   conflict.dataset.conflict = '';
   conflict.hidden = true;
+  const discardConflict = element(
+    'button',
+    'edit-button edit-conflict-action',
+    'Отбросить устаревшие правки и продолжить',
+  );
+  discardConflict.type = 'button';
+  discardConflict.hidden = true;
   const error = element('p', 'edit-error');
   error.dataset.editError = '';
   error.setAttribute('role', 'alert');
@@ -158,7 +165,7 @@ function createEditControls() {
   broll.dataset.brollControls = '';
   brollSection.append(brollTitle, broll);
   body.append(diffSection, brollSection);
-  panel.append(heading, status, conflict, error, body);
+  panel.append(heading, status, conflict, discardConflict, error, body);
   document.querySelector('.timeline-panel').before(panel);
   return {
     panel,
@@ -167,6 +174,7 @@ function createEditControls() {
     save,
     status,
     conflict,
+    discardConflict,
     error,
     diff,
     broll,
@@ -229,6 +237,7 @@ function createEditor(initialState, token) {
   let saving = false;
   let invalid = false;
   let conflict = false;
+  let conflictedCommandCount = 0;
   let lastSnap = null;
   let focusBoundary = null;
   let timelineCleanup = null;
@@ -277,9 +286,9 @@ function createEditor(initialState, token) {
         change.kind === 'asset' && change.scene === index
       ));
       select.value = selected ? selected.to : '';
-      select.disabled = pending || saving;
+      select.disabled = pending || saving || conflict;
       select.addEventListener('change', () => {
-        if (saving) return;
+        if (saving || conflict) return;
         if (!/^asset-[1-9]\d*$/.test(select.value)) return;
         dispatch({ type: 'replace-broll', sceneIndex: index, assetId: select.value });
       });
@@ -291,16 +300,18 @@ function createEditor(initialState, token) {
   function renderEditChrome() {
     const count = commands.length;
     controls.status.textContent = conflict
-      ? `Несохранённых изменений: ${count}`
+      ? `Ожидают решения устаревшие правки: ${conflictedCommandCount}`
       : count === 0 ? 'Изменений нет' : `Изменений: ${count}`;
-    controls.undo.disabled = count === 0 || pending || saving;
-    controls.redo.disabled = redoStack.length === 0 || pending || saving;
+    controls.undo.disabled = count === 0 || pending || saving || conflict;
+    controls.redo.disabled = redoStack.length === 0 || pending || saving || conflict;
     controls.save.disabled = pending || saving || invalid || conflict
       || !validation || validation.diff.length === 0;
     controls.conflict.hidden = !conflict;
     controls.conflict.textContent = conflict
-      ? 'Конфликт ревизий: загружена последняя версия. Правки сохранены только в памяти для сравнения.'
+      ? `Конфликт ревизий: загружена последняя версия. Устаревшие правки (${conflictedCommandCount}) не будут применены. Отбросьте их явно, чтобы продолжить с новой версии.`
       : '';
+    controls.discardConflict.hidden = !conflict;
+    controls.discardConflict.disabled = !conflict || pending || saving;
     controls.diff.replaceChildren();
     if (validation.diff.length === 0) {
       controls.diff.append(element('li', 'edit-diff-empty', 'Проверенных изменений нет'));
@@ -325,7 +336,7 @@ function createEditor(initialState, token) {
       edit: {
         lastSnap,
         invalid,
-        locked: saving,
+        locked: saving || conflict,
         focusBoundary,
         onBoundaryFocus: (index) => { focusBoundary = index; },
         onBoundaryChange: dispatch,
@@ -350,6 +361,9 @@ function createEditor(initialState, token) {
     }
     if (generation !== validationGeneration) return;
     state = prepareBrowserState(latest, token);
+    conflictedCommandCount = commands.length + redoStack.length;
+    commands.length = 0;
+    redoStack.length = 0;
     validation = { destinationRevision: null, diff: [], timing: state.timing };
     pending = false;
     saving = false;
@@ -396,7 +410,7 @@ function createEditor(initialState, token) {
   }
 
   function dispatch(command, snap = null) {
-    if (saving) return;
+    if (saving || conflict) return;
     focusBoundary = snap && snap.restoreFocus ? snap.index : null;
     commands.push(command);
     redoStack.length = 0;
@@ -404,7 +418,7 @@ function createEditor(initialState, token) {
   }
 
   function undo() {
-    if (saving) return;
+    if (saving || conflict) return;
     const command = commands.pop();
     if (!command) return;
     redoStack.push(command);
@@ -414,13 +428,25 @@ function createEditor(initialState, token) {
   }
 
   function redo() {
-    if (saving) return;
+    if (saving || conflict) return;
     const command = redoStack.pop();
     if (!command) return;
     commands.push(command);
     lastSnap = null;
     focusBoundary = null;
     void validateCommands();
+  }
+
+  function discardConflictAndContinue() {
+    if (!conflict || pending || saving) return;
+    validationGeneration += 1;
+    conflict = false;
+    conflictedCommandCount = 0;
+    invalid = false;
+    lastSnap = null;
+    focusBoundary = null;
+    clearEditError();
+    renderAll();
   }
 
   async function save() {
@@ -480,6 +506,7 @@ function createEditor(initialState, token) {
 
   controls.undo.addEventListener('click', undo);
   controls.redo.addEventListener('click', redo);
+  controls.discardConflict.addEventListener('click', discardConflictAndContinue);
   controls.save.addEventListener('click', () => { void save(); });
   renderAll();
 }

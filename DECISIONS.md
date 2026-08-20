@@ -195,6 +195,19 @@ Opaque handles считаются lease на конкретные device/inode, 
 Конкурентные Save сериализуются fixed exclusive no-follow reservation: manifest CAS сам по себе
 не закрывал окно между проверкой и overwrite-capable rename.
 
+После внешнего `409` silent rebase отклонён: команда границы или b-roll была сформирована от уже
+устаревшей геометрии и может иметь другой смысл на новой ревизии. Браузер поэтому загружает
+канонический state, очищает active/redo stacks и блокирует мутации до явного discard. Следующий
+validate получает только команды, созданные оператором уже от свежей базы.
+
+Review Save публикует Markdown и канонический JSON до manifest и повторяет manifest CAS прямо
+перед последним rename. Manifest является visibility boundary: reader либо видит прежнюю полную
+ревизию, либо новую запись, чья Markdown/JSON-пара уже существует. Это отличается от approval
+транзакции D-012: draft JSON сам по себе не renderable approved capability, а частичный manifest
+сломал бы даже read-only `/api/state`.
+
 Bearer URL не выводится в обычный stdout. Если автоматический browser launch не используется
 или падает, выбран временный exclusive regular-файл mode `0600` с bounded TTL; stdout показывает
 только путь. Это сохраняет ручной запуск, не расширяя token exposure за browser-launch contract.
+Обычные `SIGINT`/`SIGTERM` закрывают сервер штатно, чтобы его close-listener удалил owned handoff;
+неперехватываемый `SIGKILL` вне этого обещания.

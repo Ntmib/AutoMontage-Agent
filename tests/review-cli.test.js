@@ -4,10 +4,23 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { EventEmitter } = require('node:events');
 
 const ROOT = path.resolve(__dirname, '..');
-const { formatReviewSessionMessages, parseReviewOptions } = require('../scripts/review/cli');
+const {
+  formatReviewSessionMessages,
+  installReviewShutdownHandlers,
+  parseReviewOptions,
+} = require('../scripts/review/cli');
+const { startReviewServer } = require('../scripts/review/server');
 const { makeReviewProject } = require('./helpers/review-project');
+
+async function closeServer(server) {
+  if (!server || !server.listening) return;
+  await new Promise((resolve, reject) => server.close((error) => (
+    error ? reject(error) : resolve()
+  )));
+}
 
 test('review requires an existing project directory', (t) => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-cli-'));
@@ -71,6 +84,50 @@ test('review CLI reports only the secure handoff path for manual opening', () =>
   ]);
   assert.doesNotMatch(messages.join('\n'), new RegExp(token));
   assert.doesNotMatch(messages.join('\n'), /#token=|Bearer /);
+});
+
+test('review CLI signal handlers close the server, remove handoff and restore listeners', async (t) => {
+  for (const { signal, exitCode } of [
+    { signal: 'SIGINT', exitCode: 130 },
+    { signal: 'SIGTERM', exitCode: 143 },
+  ]) {
+    await t.test(signal, async (signalTest) => {
+      const { projectDir } = makeReviewProject(signalTest);
+      const handoffDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-signal-'));
+      signalTest.after(() => fs.rmSync(handoffDirectory, { recursive: true, force: true }));
+      const session = await startReviewServer({
+        root: ROOT,
+        projectDir,
+        open: false,
+        handoffDirectory,
+        handoffId: () => signal.toLowerCase(),
+        runToolImpl: () => { throw new Error('waveform unavailable'); },
+      });
+      signalTest.after(() => closeServer(session.server));
+      assert.equal(fs.existsSync(session.handoffPath), true);
+
+      const processLike = new EventEmitter();
+      const exited = new Promise((resolve) => {
+        processLike.exit = (code) => resolve(code);
+      });
+      const restore = installReviewShutdownHandlers({
+        server: session.server,
+        processLike,
+      });
+      signalTest.after(restore);
+      assert.equal(processLike.listenerCount('SIGINT'), 1);
+      assert.equal(processLike.listenerCount('SIGTERM'), 1);
+
+      processLike.emit(signal);
+
+      assert.equal(await exited, exitCode);
+      assert.equal(session.server.listening, false);
+      assert.equal(fs.existsSync(session.handoffPath), false);
+      assert.equal(processLike.listenerCount('SIGINT'), 0);
+      assert.equal(processLike.listenerCount('SIGTERM'), 0);
+      restore();
+    });
+  }
 });
 
 test('top-level CLI dispatches review without forwarding its arguments to build', (t) => {

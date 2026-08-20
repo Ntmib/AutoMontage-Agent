@@ -733,6 +733,9 @@ function saveDraftRevisionReserved(workspace, {
 
     assertFileSnapshot(fileSystem, resolvedBasePath, baseBriefSnapshot);
     assertFileSnapshot(fileSystem, manifestPath, oldManifestSnapshot);
+    markdownStage.commit();
+    jsonStage.commit();
+    assertFileSnapshot(fileSystem, manifestPath, oldManifestSnapshot);
     manifestStage.commit();
     manifestCommitted = true;
     const committedIdentity = lstatIfPresent(fileSystem, manifestPath);
@@ -744,12 +747,18 @@ function saveDraftRevisionReserved(workspace, {
       bytes: nextManifestBytes,
     };
     assertFileSnapshot(fileSystem, manifestPath, committedManifestSnapshot);
-    markdownStage.commit();
-    jsonStage.commit();
     fullyCommitted = true;
   } catch (error) {
     const rollbackErrors = [];
     preserveStages = error.code === MANIFEST_CONFLICT;
+    if (!manifestCommitted && !preserveStages) {
+      try {
+        assertFileSnapshot(fileSystem, manifestPath, oldManifestSnapshot);
+      } catch (concurrentError) {
+        preserveStages = true;
+        error.concurrentError = concurrentError;
+      }
+    }
     if (manifestCommitted) {
       try {
         assertFileSnapshot(fileSystem, manifestPath, committedManifestSnapshot);

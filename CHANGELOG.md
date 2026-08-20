@@ -26,7 +26,8 @@
 - Review Save резервирует revision между процессами через exclusive no-follow lock; только один
   конкурент публикует согласованную Markdown/JSON-пару и manifest entry.
 - `--no-open` и ошибка browser launch передают bearer URL через временный mode-`0600` файл,
-  печатают только путь и очищают owned файл при закрытии сервера или через 10 минут.
+  печатают только путь и очищают owned файл при закрытии сервера, обычном `SIGINT`/`SIGTERM`
+  или через 10 минут.
 - State, preview, validate и save сверяют исходный device/inode media snapshot; подмена не
   перепривязывает opaque handle к новым байтам.
 - Transitive `nanoid` обновлён в lockfile с 3.3.16 до исправленной совместимой 3.3.18; high
@@ -35,11 +36,13 @@
 ### Исправлено
 
 - Save повторно проверяет manifest/base snapshot, блокирует controls на время commit и после
-  успеха принимает только серверную ревизию; conflict сохраняет команды в памяти без auto-retry.
-- Новая draft-ревизия публикуется как manifest -> Markdown -> JSON с rollback до commit и
-  best-effort cleanup после него, не изменяя approved или исходный draft.
+  успеха принимает только серверную ревизию; conflict очищает active/redo stacks и блокирует
+  мутации до явного discard без silent rebase или auto-retry.
+- Новая draft-ревизия публикуется как Markdown -> JSON -> manifest с повторным manifest CAS,
+  поэтому reader не видит ссылку на ещё не опубликованный JSON; rollback не изменяет approved
+  или исходный draft.
 - `/api/state` перечитывает внешнюю draft-ревизию с диска, сохраняя id неизменных assets; после
-  `409` браузер показывает свежую ревизию и не воспроизводит unsaved-команды автоматически.
+  `409` браузер показывает свежую ревизию, а следующая команда не содержит устаревший replay.
 - B-roll capability ограничена поддерживаемыми renderer изображениями; аудио/видео отклоняются
   API, approval и render validation, оставаясь доступными в общей preview lane.
 - Timing audit выдаёт отдельные frame/word suggestions, drag сохраняет word snap, а Arrow

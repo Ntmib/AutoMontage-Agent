@@ -781,8 +781,12 @@ test('save failure keeps commands in memory and exposes no server detail', async
   });
 });
 
-test('stale save reloads latest state, retains commands for comparison and never retries', async ({ page }) => {
-  await withBrowserReviewSession({ editable: true, threeScenes: true }, async (session) => {
+test('stale conflict never replays an earlier command in the next validation', async ({ page }) => {
+  await withBrowserReviewSession({
+    editable: true,
+    threeScenes: true,
+    broll: true,
+  }, async (session) => {
     const browserSaves = [];
     const browserValidations = [];
     page.on('request', (request) => {
@@ -827,14 +831,46 @@ test('stale save reloads latest state, retains commands for comparison and never
     await conflictResponse;
 
     await expect(page.locator('[data-conflict]')).toContainText(/конфликт/i);
-    await expect(page.locator('[data-edit-status]')).toContainText(/несохран.*1/i);
+    await expect(page.locator('[data-conflict]')).toContainText(/устаревш.*не.*примен/i);
     await expect(page.locator('[data-revision]')).toContainText('v02');
     await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.4');
-    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+    const handle = page.locator('[data-boundary="0"]');
+    const brollSelect = page.locator('[data-broll-select]').first();
+    await expect(handle).toBeDisabled();
+    await expect(brollSelect).toBeDisabled();
+    const discard = page.getByRole('button', {
+      name: /отбросить устаревшие правки и продолжить/i,
+    });
+    await expect(discard).toBeVisible();
+    await expect(discard).toBeEnabled();
     expect(browserSaves).toHaveLength(1);
     expect(browserValidations).toHaveLength(1);
     await page.waitForTimeout(150);
     expect(browserSaves).toHaveLength(1);
     expect(browserValidations).toHaveLength(1);
+
+    await discard.click();
+    await expect(page.locator('[data-conflict]')).toBeHidden();
+    await expect(page.locator('[data-edit-status]')).toHaveText('Изменений нет');
+    await expect(handle).toBeEnabled();
+    await expect(brollSelect).toBeEnabled();
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '2.4');
+
+    const nextValidation = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await handle.focus();
+    await handle.press('ArrowRight');
+    await nextValidation;
+
+    expect(browserValidations).toHaveLength(2);
+    expect(browserValidations[1].postDataJSON().commands).toEqual([{
+      type: 'move-boundary',
+      leftSceneIndex: 0,
+      seconds: 2.44,
+    }]);
   });
 });

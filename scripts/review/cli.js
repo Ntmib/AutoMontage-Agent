@@ -4,6 +4,8 @@ const path = require('node:path');
 
 const { startReviewServer } = require('./server');
 
+const SIGNAL_EXIT_CODES = Object.freeze({ SIGINT: 130, SIGTERM: 143 });
+
 function parseReviewOptions(argv) {
   if (!Array.isArray(argv)) throw new Error('review arguments are invalid');
   const options = {
@@ -58,6 +60,7 @@ async function main(argv = process.argv.slice(2)) {
   try {
     const options = parseReviewOptions(argv);
     const session = await startReviewServer(options);
+    installReviewShutdownHandlers({ server: session.server });
     for (const message of formatReviewSessionMessages({ session, editable: options.editable })) {
       console.log(message);
     }
@@ -65,6 +68,49 @@ async function main(argv = process.argv.slice(2)) {
     console.error('Review server failed to start. Check --project-dir and options.');
     process.exitCode = 1;
   }
+}
+
+function installReviewShutdownHandlers({ server, processLike = process } = {}) {
+  if (!server || typeof server.close !== 'function'
+    || !processLike || typeof processLike.on !== 'function'
+    || typeof processLike.removeListener !== 'function'
+    || typeof processLike.exit !== 'function') {
+    throw new Error('review shutdown handler requires a server and process');
+  }
+  let installed = true;
+  let shuttingDown = false;
+  const handlers = {};
+  const restore = () => {
+    if (!installed) return;
+    installed = false;
+    for (const signal of Object.keys(SIGNAL_EXIT_CODES)) {
+      processLike.removeListener(signal, handlers[signal]);
+    }
+    server.removeListener('close', restore);
+  };
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const finish = () => {
+      restore();
+      processLike.exit(SIGNAL_EXIT_CODES[signal]);
+    };
+    if (!server.listening) {
+      finish();
+      return;
+    }
+    try {
+      server.close(finish);
+    } catch (_) {
+      finish();
+    }
+  };
+  for (const signal of Object.keys(SIGNAL_EXIT_CODES)) {
+    handlers[signal] = () => shutdown(signal);
+    processLike.on(signal, handlers[signal]);
+  }
+  server.once('close', restore);
+  return restore;
 }
 
 function formatReviewSessionMessages({ session, editable }) {
@@ -76,4 +122,9 @@ function formatReviewSessionMessages({ session, editable }) {
 
 if (require.main === module) main();
 
-module.exports = { formatReviewSessionMessages, main, parseReviewOptions };
+module.exports = {
+  formatReviewSessionMessages,
+  installReviewShutdownHandlers,
+  main,
+  parseReviewOptions,
+};

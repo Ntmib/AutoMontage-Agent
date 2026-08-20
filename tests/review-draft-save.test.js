@@ -337,7 +337,7 @@ test('review save never overwrites a foreign reservation file or symlink', async
   }
 });
 
-test('review save publishes manifest, Markdown, then JSON and preserves approved bytes', (t) => {
+test('review save publishes Markdown and JSON before the manifest exposes them', (t) => {
   const state = makeReviewWorkspace(t, { name: 'ordered-approved' });
   const beforeJson = fs.readFileSync(state.baseJsonPath);
   const beforeMarkdown = fs.readFileSync(state.baseMarkdownPath);
@@ -346,20 +346,21 @@ test('review save publishes manifest, Markdown, then JSON and preserves approved
   const observingFs = {
     ...fs,
     renameSync(source, target) {
-      if (source.includes('.tmp-review-draft-manifest-')) {
-        assert.equal(fs.existsSync(outputs.markdownPath), false);
-        assert.equal(fs.existsSync(outputs.jsonPath), false);
-        commits.push('manifest');
-      } else if (source.includes('.tmp-review-draft-markdown-')) {
-        assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v02-draft.lesson.json');
+      if (source.includes('.tmp-review-draft-markdown-')) {
+        assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v01-approved.lesson.json');
         assert.equal(fs.existsSync(outputs.markdownPath), false);
         assert.equal(fs.existsSync(outputs.jsonPath), false);
         commits.push('markdown');
       } else if (source.includes('.tmp-review-draft-json-')) {
-        assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v02-draft.lesson.json');
+        assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v01-approved.lesson.json');
         assert.equal(fs.existsSync(outputs.markdownPath), true);
         assert.equal(fs.existsSync(outputs.jsonPath), false);
         commits.push('json');
+      } else if (source.includes('.tmp-review-draft-manifest-')) {
+        assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v01-approved.lesson.json');
+        assert.equal(fs.existsSync(outputs.markdownPath), true);
+        assert.equal(fs.existsSync(outputs.jsonPath), true);
+        commits.push('manifest');
       }
       return fs.renameSync(source, target);
     },
@@ -376,7 +377,7 @@ test('review save publishes manifest, Markdown, then JSON and preserves approved
     temporaryId: () => TEMPORARY_ID,
   });
 
-  assert.deepEqual(commits, ['manifest', 'markdown', 'json']);
+  assert.deepEqual(commits, ['markdown', 'json', 'manifest']);
   assert.equal(saved.revision, 2);
   assert.equal(saved.jsonPath, outputs.jsonPath);
   assert.equal(saved.markdownPath, outputs.markdownPath);

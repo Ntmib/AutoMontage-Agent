@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const { startReviewServer } = require('../scripts/review/server');
@@ -102,6 +103,47 @@ function postJson(session, pathname, value, overrides = {}) {
     body: jsonBody(value),
     ...overrides,
   });
+}
+
+function waitForFile(filePath, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (fs.existsSync(filePath)) {
+        resolve();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`timed out waiting for ${path.basename(filePath)}`));
+        return;
+      }
+      setTimeout(check, 10);
+    };
+    check();
+  });
+}
+
+function runNodeWorker(workerPath, args) {
+  const child = spawn(process.execPath, [workerPath, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stdout = [];
+  const stderr = [];
+  const completed = new Promise((resolve, reject) => {
+    child.stdout.on('data', (chunk) => stdout.push(chunk));
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(
+        `review worker exited ${code}: ${Buffer.concat(stderr).toString('utf8') || Buffer.concat(stdout).toString('utf8')}`,
+      ));
+    });
+  });
+  return { child, completed };
 }
 
 test('review server binds only to loopback and keeps its token in the URL fragment', async (t) => {
@@ -494,6 +536,95 @@ test('review state refreshes after a second server saves and preserves unchanged
   assert.equal(firstAfter.brief.scenes[1].start, 2.4);
   assert.equal(stableAfter.id, stableBefore.id);
   assert.equal(stableAfter.url, stableBefore.url);
+});
+
+test('review state never observes a manifest revision before its draft JSON is visible', async (t) => {
+  const fixture = makeReviewProject(t);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    open: false,
+    logger: { error() {} },
+  });
+  t.after(() => closeServer(session.server));
+  const before = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  assert.equal(before.session.baseRevision, 1);
+
+  const candidate = JSON.parse(fs.readFileSync(fixture.briefPath, 'utf8'));
+  candidate.scenes[0].end = 2.2;
+  candidate.scenes[1].start = 2.2;
+  const candidatePath = path.join(fixture.root, 'publish-candidate.json');
+  const workerPath = path.join(fixture.root, 'publish-worker.js');
+  const readyPath = path.join(fixture.root, 'manifest-visible');
+  const releasePath = path.join(fixture.root, 'release-writer');
+  const resultPath = path.join(fixture.root, 'publish-result.json');
+  fs.writeFileSync(candidatePath, `${JSON.stringify(candidate, null, 2)}\n`);
+  fs.writeFileSync(workerPath, String.raw`
+const fs = require('node:fs');
+
+const [modulePath, projectDir, baseJsonPath, candidatePath, readyPath, releasePath, resultPath] = process.argv.slice(2);
+const { readProjectManifest, saveDraftRevision } = require(modulePath);
+const pause = new Int32Array(new SharedArrayBuffer(4));
+const deadline = Date.now() + 10_000;
+const racingFileSystem = {
+  ...fs,
+  renameSync(source, target) {
+    const result = fs.renameSync(source, target);
+    if (String(source).includes('.tmp-review-draft-manifest-')) {
+      fs.writeFileSync(readyPath, 'visible', { flag: 'wx' });
+      while (!fs.existsSync(releasePath)) {
+        if (Date.now() >= deadline) throw new Error('release barrier timeout');
+        Atomics.wait(pause, 0, 0, 10);
+      }
+    }
+    return result;
+  },
+};
+
+try {
+  const workspace = { dir: projectDir, manifest: readProjectManifest(projectDir) };
+  const brief = JSON.parse(fs.readFileSync(candidatePath, 'utf8'));
+  const saved = saveDraftRevision(workspace, {
+    baseJsonPath,
+    brief,
+    fileSystem: racingFileSystem,
+  });
+  fs.writeFileSync(resultPath, JSON.stringify({ ok: true, revision: saved.revision }));
+} catch (error) {
+  fs.writeFileSync(resultPath, JSON.stringify({
+    ok: false,
+    code: error && error.code,
+    message: error && error.message,
+  }));
+}
+`);
+
+  const worker = runNodeWorker(workerPath, [
+    require.resolve('../scripts/project/workspace'),
+    fixture.projectDir,
+    fixture.briefPath,
+    candidatePath,
+    readyPath,
+    releasePath,
+    resultPath,
+  ]);
+  await waitForFile(readyPath);
+  let duringPublish;
+  try {
+    duringPublish = await request(session, '/api/state', { token: session.token });
+  } finally {
+    fs.writeFileSync(releasePath, 'continue', { flag: 'wx' });
+  }
+  await worker.completed;
+  const workerResult = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+
+  assert.equal(duringPublish.status, 200);
+  const visible = JSON.parse(duringPublish.body.toString('utf8'));
+  assert.equal(visible.session.baseRevision, 2);
+  assert.equal(visible.brief.scenes[0].end, 2.2);
+  assert.deepEqual(workerResult, { ok: true, revision: 2 });
 });
 
 test('review state expires instead of rebinding replaced source or asset bytes', async (t) => {
