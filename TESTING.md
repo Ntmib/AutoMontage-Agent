@@ -63,7 +63,9 @@ npm run test:review-ui
 Chromium suite поднимает настоящий loopback-сервер и проверяет read-only/edit DOM, token/origin,
 waveform fallback, word-snap drag, накопительное frame-only Arrow movement, b-roll capability,
 undo/redo, save confirmation, внешний `409` с настоящей перезагрузкой, блокировкой мутаций,
-явным discard и отсутствием дорефрешных команд в следующем validate, а также неизменность approved.
+немедленной quarantine для validate/save, сохранением блокировки при ошибке reload, fresh-ready
+gate перед явным discard и отсутствием дорефрешных команд в следующем validate, а также
+неизменность approved.
 Она не заменяет `npm test`: browser и Node suites обязательны отдельно.
 
 Для золотого пути свежего клона отдельно проверь:

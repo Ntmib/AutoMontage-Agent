@@ -731,7 +731,7 @@ test('review save accepts canonical project/public refs and safe filenames conta
   }
 });
 
-test('review save CAS preserves a foreign manifest and referenced temp before manifest commit', (t) => {
+test('review save CAS preserves a foreign manifest and referenced temp injected before JSON and manifest publish', (t) => {
   const state = makeReviewWorkspace(t, { name: 'cas-before-commit' });
   const manifestPath = path.join(state.workspace.dir, 'project.json');
   const outputs = expectedDraftPaths(state.workspace);

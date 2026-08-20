@@ -237,6 +237,7 @@ function createEditor(initialState, token) {
   let saving = false;
   let invalid = false;
   let conflict = false;
+  let conflictFreshStateReady = false;
   let conflictedCommandCount = 0;
   let lastSnap = null;
   let focusBoundary = null;
@@ -308,10 +309,14 @@ function createEditor(initialState, token) {
       || !validation || validation.diff.length === 0;
     controls.conflict.hidden = !conflict;
     controls.conflict.textContent = conflict
-      ? `Конфликт ревизий: загружена последняя версия. Устаревшие правки (${conflictedCommandCount}) не будут применены. Отбросьте их явно, чтобы продолжить с новой версии.`
+      ? conflictFreshStateReady
+        ? `Конфликт ревизий: загружена последняя версия. Устаревшие правки (${conflictedCommandCount}) не будут применены. Отбросьте их явно, чтобы продолжить с новой версии.`
+        : pending
+          ? `Конфликт ревизий: устаревшие правки (${conflictedCommandCount}) не будут применены. Загружается последняя версия; продолжение пока заблокировано.`
+          : `Конфликт ревизий: устаревшие правки (${conflictedCommandCount}) не будут применены. Последнюю версию загрузить не удалось; продолжение заблокировано.`
       : '';
     controls.discardConflict.hidden = !conflict;
-    controls.discardConflict.disabled = !conflict || pending || saving;
+    controls.discardConflict.disabled = !conflict || !conflictFreshStateReady || pending || saving;
     controls.diff.replaceChildren();
     if (validation.diff.length === 0) {
       controls.diff.append(element('li', 'edit-diff-empty', 'Проверенных изменений нет'));
@@ -347,6 +352,20 @@ function createEditor(initialState, token) {
   }
 
   async function reloadAfterConflict(generation) {
+    if (generation !== validationGeneration) return;
+    conflictedCommandCount = commands.length + redoStack.length;
+    commands.length = 0;
+    redoStack.length = 0;
+    validation = { destinationRevision: null, diff: [], timing: state.timing };
+    pending = true;
+    saving = false;
+    invalid = false;
+    conflict = true;
+    conflictFreshStateReady = false;
+    lastSnap = null;
+    focusBoundary = null;
+    clearEditError();
+    renderAll();
     let latest;
     try {
       latest = await loadState(token);
@@ -361,14 +380,12 @@ function createEditor(initialState, token) {
     }
     if (generation !== validationGeneration) return;
     state = prepareBrowserState(latest, token);
-    conflictedCommandCount = commands.length + redoStack.length;
-    commands.length = 0;
-    redoStack.length = 0;
     validation = { destinationRevision: null, diff: [], timing: state.timing };
     pending = false;
     saving = false;
     invalid = false;
     conflict = true;
+    conflictFreshStateReady = true;
     lastSnap = null;
     clearEditError();
     renderAll();
@@ -380,6 +397,7 @@ function createEditor(initialState, token) {
     saving = false;
     invalid = false;
     conflict = false;
+    conflictFreshStateReady = false;
     lastSnap = snap;
     clearEditError();
     renderEditChrome();
@@ -438,9 +456,10 @@ function createEditor(initialState, token) {
   }
 
   function discardConflictAndContinue() {
-    if (!conflict || pending || saving) return;
+    if (!conflict || !conflictFreshStateReady || pending || saving) return;
     validationGeneration += 1;
     conflict = false;
+    conflictFreshStateReady = false;
     conflictedCommandCount = 0;
     invalid = false;
     lastSnap = null;
@@ -499,6 +518,7 @@ function createEditor(initialState, token) {
     saving = false;
     invalid = false;
     conflict = false;
+    conflictFreshStateReady = false;
     lastSnap = null;
     clearEditError();
     renderAll();

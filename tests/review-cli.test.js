@@ -107,6 +107,9 @@ test('review CLI signal handlers close the server, remove handoff and restore li
       assert.equal(fs.existsSync(session.handoffPath), true);
 
       const processLike = new EventEmitter();
+      const preexistingSignals = [];
+      const preexistingListener = () => preexistingSignals.push(signal);
+      processLike.on(signal, preexistingListener);
       const exited = new Promise((resolve) => {
         processLike.exit = (code) => resolve(code);
       });
@@ -115,17 +118,20 @@ test('review CLI signal handlers close the server, remove handoff and restore li
         processLike,
       });
       signalTest.after(restore);
-      assert.equal(processLike.listenerCount('SIGINT'), 1);
-      assert.equal(processLike.listenerCount('SIGTERM'), 1);
+      assert.equal(processLike.listenerCount('SIGINT'), signal === 'SIGINT' ? 2 : 1);
+      assert.equal(processLike.listenerCount('SIGTERM'), signal === 'SIGTERM' ? 2 : 1);
 
       processLike.emit(signal);
 
       assert.equal(await exited, exitCode);
       assert.equal(session.server.listening, false);
       assert.equal(fs.existsSync(session.handoffPath), false);
-      assert.equal(processLike.listenerCount('SIGINT'), 0);
-      assert.equal(processLike.listenerCount('SIGTERM'), 0);
+      assert.deepEqual(preexistingSignals, [signal]);
+      assert.deepEqual(processLike.listeners(signal), [preexistingListener]);
+      assert.equal(processLike.listenerCount(signal === 'SIGINT' ? 'SIGTERM' : 'SIGINT'), 0);
       restore();
+      assert.deepEqual(processLike.listeners(signal), [preexistingListener]);
+      processLike.removeListener(signal, preexistingListener);
     });
   }
 });

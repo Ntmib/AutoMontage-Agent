@@ -36,8 +36,9 @@
 ### Исправлено
 
 - Save повторно проверяет manifest/base snapshot, блокирует controls на время commit и после
-  успеха принимает только серверную ревизию; conflict очищает active/redo stacks и блокирует
-  мутации до явного discard без silent rebase или auto-retry.
+  успеха принимает только серверную ревизию; validate/save conflict немедленно очищает
+  active/redo stacks и блокирует мутации до успешной загрузки fresh state и явного discard.
+  Ошибка reload сохраняет quarantine без silent rebase, auto-retry или stale replay.
 - Новая draft-ревизия публикуется как Markdown -> JSON -> manifest с повторным manifest CAS,
   поэтому reader не видит ссылку на ещё не опубликованный JSON; rollback не изменяет approved
   или исходный draft.

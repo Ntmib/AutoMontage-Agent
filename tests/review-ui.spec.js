@@ -204,6 +204,30 @@ async function postSessionJson(session, pathname, value) {
   });
 }
 
+async function saveExternalBoundary(session, seconds) {
+  const external = await startReviewServer({
+    root: ROOT,
+    projectDir: session.fixture.projectDir,
+    editable: true,
+    open: false,
+    runToolImpl: () => { throw new Error('waveform unavailable'); },
+  });
+  try {
+    const externalState = await (await fetch(`${external.origin}/api/state`, {
+      headers: { Authorization: `Bearer ${external.token}` },
+    })).json();
+    const response = await postSessionJson(external, '/api/save', {
+      baseRevision: externalState.session.baseRevision,
+      baseHash: externalState.session.baseHash,
+      manifestHash: externalState.session.manifestHash,
+      commands: [{ type: 'move-boundary', leftSceneIndex: 0, seconds }],
+    });
+    expect(response.status).toBe(201);
+  } finally {
+    await closeServer(external.server);
+  }
+}
+
 test.beforeAll(async () => {
   reviewSession = await makeBrowserReviewSession();
   reviewUrl = reviewSession.url;
@@ -795,33 +819,10 @@ test('stale conflict never replays an earlier command in the next validation', a
     });
     await openReview(page, session.url);
     await waitForEditReady(page);
-    const baseState = await (await fetch(`${session.origin}/api/state`, {
-      headers: { Authorization: `Bearer ${session.token}` },
-    })).json();
 
     await dragBoundary(page, 0, 2.1);
     await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeEnabled();
-    const external = await startReviewServer({
-      root: ROOT,
-      projectDir: session.fixture.projectDir,
-      editable: true,
-      open: false,
-      runToolImpl: () => { throw new Error('waveform unavailable'); },
-    });
-    try {
-      const externalState = await (await fetch(`${external.origin}/api/state`, {
-        headers: { Authorization: `Bearer ${external.token}` },
-      })).json();
-      const concurrent = await postSessionJson(external, '/api/save', {
-        baseRevision: externalState.session.baseRevision,
-        baseHash: externalState.session.baseHash,
-        manifestHash: externalState.session.manifestHash,
-        commands: [{ type: 'move-boundary', leftSceneIndex: 0, seconds: 2.4 }],
-      });
-      expect(concurrent.status).toBe(201);
-    } finally {
-      await closeServer(external.server);
-    }
+    await saveExternalBoundary(session, 2.4);
 
     page.once('dialog', (dialog) => dialog.accept());
     const conflictResponse = page.waitForResponse((response) => (
@@ -865,6 +866,158 @@ test('stale conflict never replays an earlier command in the next validation', a
     await handle.focus();
     await handle.press('ArrowRight');
     await nextValidation;
+
+    expect(browserValidations).toHaveLength(2);
+    expect(browserValidations[1].postDataJSON().commands).toEqual([{
+      type: 'move-boundary',
+      leftSceneIndex: 0,
+      seconds: 2.44,
+    }]);
+  });
+});
+
+test('failed state reload quarantines stale commands and keeps discard unavailable', async ({ page }) => {
+  await withBrowserReviewSession({
+    editable: true,
+    threeScenes: true,
+    broll: true,
+  }, async (session) => {
+    const browserValidations = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) browserValidations.push(request);
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeEnabled();
+    expect(browserValidations).toHaveLength(1);
+    await saveExternalBoundary(session, 2.4);
+
+    await page.route('**/api/state', (route) => route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'temporarily unavailable' }),
+    }));
+    page.once('dialog', (dialog) => dialog.accept());
+    const conflictResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/save') && response.status() === 409
+    ));
+    const reloadFailure = page.waitForResponse((response) => (
+      response.url().endsWith('/api/state') && response.status() === 503
+    ));
+    await page.getByRole('button', { name: /^сохранить$/i }).click();
+    await conflictResponse;
+    await reloadFailure;
+
+    await expect(page.locator('[data-conflict]')).toContainText(/устаревш.*не.*примен/i);
+    await expect(page.locator('[data-edit-status]')).toContainText(/устаревш.*1/i);
+    await expect(page.locator('[data-revision]')).toContainText('v01');
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+    const handle = page.locator('[data-boundary="0"]');
+    const brollSelect = page.locator('[data-broll-select]').first();
+    await expect(handle).toBeDisabled();
+    await expect(brollSelect).toBeDisabled();
+    const discard = page.getByRole('button', {
+      name: /отбросить устаревшие правки и продолжить/i,
+    });
+    await expect(discard).toBeVisible();
+    await expect(discard).toBeDisabled();
+    await expect(page.getByRole('alert')).toContainText(/не удалось загрузить/i);
+
+    await brollSelect.evaluate((select) => {
+      select.disabled = false;
+      select.value = Array.from(select.options).find((option) => option.value)?.value || '';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForTimeout(150);
+    expect(browserValidations).toHaveLength(1);
+  });
+});
+
+test('validate conflict locks immediately and resumes only from the loaded fresh state', async ({ page }) => {
+  await withBrowserReviewSession({
+    editable: true,
+    threeScenes: true,
+    broll: true,
+  }, async (session) => {
+    const browserValidations = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) browserValidations.push(request);
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await saveExternalBoundary(session, 2.4);
+
+    let reportReload;
+    const reloadRequested = new Promise((resolve) => { reportReload = resolve; });
+    let releaseReload;
+    const allowReload = new Promise((resolve) => { releaseReload = resolve; });
+    await page.route('**/api/state', async (route) => {
+      reportReload();
+      await allowReload;
+      await route.continue();
+    });
+
+    const conflictResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 409
+    ));
+    const initialHandle = page.locator('[data-boundary="0"]');
+    await initialHandle.focus();
+    await initialHandle.press('ArrowRight');
+    await conflictResponse;
+    await reloadRequested;
+
+    const reloadSuccess = page.waitForResponse((response) => (
+      response.url().endsWith('/api/state') && response.status() === 200
+    ));
+    try {
+      await expect(page.locator('[data-conflict]')).toContainText(/устаревш.*не.*примен/i);
+      await expect(page.locator('[data-edit-status]')).toContainText(/устаревш.*1/i);
+      await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+      const lockedHandle = page.locator('[data-boundary="0"]');
+      const lockedBroll = page.locator('[data-broll-select]').first();
+      await expect(lockedHandle).toBeDisabled();
+      await expect(lockedBroll).toBeDisabled();
+      const discard = page.getByRole('button', {
+        name: /отбросить устаревшие правки и продолжить/i,
+      });
+      await expect(discard).toBeVisible();
+      await expect(discard).toBeDisabled();
+      expect(browserValidations).toHaveLength(1);
+
+      await lockedHandle.evaluate((handle) => {
+        handle.disabled = false;
+        handle.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'ArrowRight',
+          bubbles: true,
+        }));
+      });
+      await page.waitForTimeout(150);
+      expect(browserValidations).toHaveLength(1);
+    } finally {
+      releaseReload();
+    }
+    await reloadSuccess;
+
+    await expect(page.locator('[data-revision]')).toContainText('v02');
+    const discard = page.getByRole('button', {
+      name: /отбросить устаревшие правки и продолжить/i,
+    });
+    await expect(discard).toBeEnabled();
+    await discard.click();
+    const freshHandle = page.locator('[data-boundary="0"]');
+    await expect(freshHandle).toBeEnabled();
+
+    const freshValidation = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await freshHandle.focus();
+    await freshHandle.press('ArrowRight');
+    await freshValidation;
 
     expect(browserValidations).toHaveLength(2);
     expect(browserValidations[1].postDataJSON().commands).toEqual([{
