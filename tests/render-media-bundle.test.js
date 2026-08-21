@@ -388,3 +388,228 @@ test('a colliding exclusive bundle id cannot remove the first lease', (t) => {
   assert.equal(fs.readFileSync(path.join(first.directory, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
   first.cleanup();
 });
+
+test('cleanup claims its owned directory before an original-path replacement and never recursively removes foreign data', (t) => {
+  const fixture = makeFixture(t);
+  const bundleDirectory = path.join(
+    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+  );
+  const movedByOldCleanup = `${bundleDirectory}.old-owned`;
+  let injected = false;
+  let recursiveRemovalCalls = 0;
+  const racingFs = {
+    ...fs,
+    renameSync(source, destination) {
+      const result = fs.renameSync(source, destination);
+      if (!injected && source === bundleDirectory && destination.includes('.cleanup-')) {
+        injected = true;
+        fs.mkdirSync(bundleDirectory);
+        fs.writeFileSync(path.join(bundleDirectory, 'foreign.txt'), 'foreign');
+      }
+      return result;
+    },
+    rmSync(target, options) {
+      if (options?.recursive) recursiveRemovalCalls += 1;
+      if (!injected && target === bundleDirectory && options?.recursive) {
+        injected = true;
+        fs.renameSync(bundleDirectory, movedByOldCleanup);
+        fs.mkdirSync(bundleDirectory);
+        fs.writeFileSync(path.join(bundleDirectory, 'foreign.txt'), 'foreign');
+      }
+      return fs.rmSync(target, options);
+    },
+  };
+  const lease = prepareRenderMediaBundle({
+    ...bundleInput(fixture, []),
+    fileSystem: racingFs,
+  });
+
+  lease.cleanup();
+
+  assert.equal(injected, true);
+  assert.equal(recursiveRemovalCalls, 0);
+  assert.equal(fs.readFileSync(path.join(bundleDirectory, 'foreign.txt'), 'utf8'), 'foreign');
+  assert.equal(fs.existsSync(movedByOldCleanup), false);
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(bundleDirectory)).filter((name) => name.includes('.cleanup-')),
+    [],
+  );
+});
+
+test('cleanup claim race refuses a pre-rename foreign swap without deleting either directory', (t) => {
+  const fixture = makeFixture(t);
+  const bundleDirectory = path.join(
+    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+  );
+  const movedOwned = `${bundleDirectory}.owned-by-lease`;
+  let injected = false;
+  const racingFs = {
+    ...fs,
+    renameSync(source, destination) {
+      if (!injected && source === bundleDirectory && destination.includes('.cleanup-')) {
+        injected = true;
+        fs.renameSync(bundleDirectory, movedOwned);
+        fs.mkdirSync(bundleDirectory);
+        fs.writeFileSync(path.join(bundleDirectory, 'foreign.txt'), 'foreign');
+      }
+      return fs.renameSync(source, destination);
+    },
+  };
+  const lease = prepareRenderMediaBundle({
+    ...bundleInput(fixture, []),
+    fileSystem: racingFs,
+  });
+
+  assert.throws(() => lease.cleanup(), /replaced directory|claim/i);
+
+  const tombstone = fs.readdirSync(path.dirname(bundleDirectory))
+    .find((name) => name.includes('.cleanup-'));
+  assert.ok(tombstone);
+  assert.equal(fs.readFileSync(path.join(
+    path.dirname(bundleDirectory), tombstone, 'bundle', 'foreign.txt',
+  ), 'utf8'), 'foreign');
+  assert.equal(fs.readFileSync(path.join(movedOwned, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
+});
+
+test('same-inode destination mutation after fsync or lease return aborts before the render callback', async (t) => {
+  for (const mutation of ['append', 'overwrite']) {
+    for (const mutateAfterClose of [1, 2]) {
+      await t.test(`${mutation} after destination close ${mutateAfterClose}`, () => {
+        const fixture = makeFixture(t);
+        const descriptors = new Map();
+        let destinationCloses = 0;
+        let mutated = false;
+        const mutatingFs = {
+          ...fs,
+          openSync(filename, flags, mode) {
+            const descriptor = fs.openSync(filename, flags, mode);
+            descriptors.set(descriptor, filename);
+            return descriptor;
+          },
+          closeSync(descriptor) {
+            const filename = descriptors.get(descriptor);
+            if (filename && /[\\/]\.automontage[\\/].*[\\/]media-1\.mp4$/.test(filename)) {
+              destinationCloses += 1;
+              if (!mutated && destinationCloses === mutateAfterClose) {
+                mutated = true;
+                if (mutation === 'append') {
+                  fs.appendFileSync(filename, 'appended-after-fsync');
+                } else {
+                  const bytes = fs.readFileSync(filename);
+                  bytes[0] ^= 0xff;
+                  fs.writeFileSync(filename, bytes);
+                }
+              }
+            }
+            descriptors.delete(descriptor);
+            return fs.closeSync(descriptor);
+          },
+        };
+        let invoked = false;
+
+        assert.throws(() => withRenderMediaBundle({
+          ...bundleInput(fixture, []),
+          fileSystem: mutatingFs,
+        }, () => {
+          invoked = true;
+        }), /destination|bundle.*changed|hash|identity/i);
+        assert.equal(mutated, true);
+        assert.equal(invoked, false);
+        assert.equal(fs.existsSync(path.join(
+          fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+        )), false);
+      });
+    }
+  }
+});
+
+test('trusted roots reject symlink aliases above the immediate storage directory', async (t) => {
+  await t.test('source chain', () => {
+    const fixture = makeFixture(t);
+    const realParent = path.join(fixture.directory, 'real-source-parent');
+    const aliasParent = path.join(fixture.directory, 'source-alias');
+    const realSource = writeFile(path.join(realParent, 'nested', 'speaker.mp4'), 'aliased-source');
+    fs.symlinkSync(realParent, aliasParent, 'dir');
+    const aliasSource = path.join(aliasParent, 'nested', 'speaker.mp4');
+    const input = bundleInput(fixture, []);
+    input.sourcePath = aliasSource;
+    input.approvedBrief.source = aliasSource;
+
+    assert.throws(() => prepareRenderMediaBundle(input), /symbolic link|symlink/i);
+    assert.equal(fs.readFileSync(realSource, 'utf8'), 'aliased-source');
+  });
+
+  await t.test('project chain', () => {
+    const fixture = makeFixture(t);
+    const realParent = path.join(fixture.directory, 'real-project-parent');
+    const aliasParent = path.join(fixture.directory, 'project-alias');
+    const realWorkspace = path.join(realParent, 'nested-project');
+    writeFile(path.join(realWorkspace, 'assets', 'broll', 'image.png'), 'image');
+    fs.symlinkSync(realParent, aliasParent, 'dir');
+    const input = bundleInput(fixture, [{ scene: 'broll', brollSrc: 'assets/broll/image.png' }]);
+    input.workspace = { dir: path.join(aliasParent, 'nested-project') };
+
+    assert.throws(() => prepareRenderMediaBundle(input), /symbolic link|symlink/i);
+  });
+
+  await t.test('repository chain', () => {
+    const fixture = makeFixture(t);
+    const realParent = path.join(fixture.directory, 'real-repository-parent');
+    const aliasParent = path.join(fixture.directory, 'repository-alias');
+    fs.mkdirSync(path.join(realParent, 'nested-repository', 'public'), { recursive: true });
+    fs.symlinkSync(realParent, aliasParent, 'dir');
+    const input = bundleInput(fixture, []);
+    input.root = path.join(aliasParent, 'nested-repository');
+
+    assert.throws(() => prepareRenderMediaBundle(input), /symbolic link|symlink/i);
+  });
+});
+
+test('inode dedup rejects incompatible media roles and never rewrites an image to the source extension', (t) => {
+  const fixture = makeFixture(t);
+  const imageReference = 'assets/broll/images/hardlink.webp';
+  const imagePath = path.join(fixture.workspace.dir, ...imageReference.split('/'));
+  fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+  fs.linkSync(fixture.sourcePath, imagePath);
+  const input = bundleInput(fixture, [{
+    scene: 'broll',
+    brollMedia: {
+      kind: 'image',
+      src: imageReference,
+      sha256: sha256(fs.readFileSync(fixture.sourcePath)),
+      fit: 'cover',
+    },
+  }]);
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle(input, () => {
+    invoked = true;
+  }), /incompatible|role|extension/i);
+  assert.equal(invoked, false);
+});
+
+test('primitive operation throws survive cleanup failure without being masked', async (t) => {
+  const values = [0, false, null, undefined];
+  for (let index = 0; index < values.length; index += 1) {
+    await t.test(String(values[index]), () => {
+      const fixture = makeFixture(t);
+      const input = {
+        ...bundleInput(fixture, []),
+        temporaryId: `99999999-9999-4999-8999-99999999999${index}`,
+      };
+      let caught = Symbol('not thrown');
+      try {
+        withRenderMediaBundle(input, (lease) => {
+          const moved = `${lease.directory}.owned`;
+          fs.renameSync(lease.directory, moved);
+          fs.mkdirSync(lease.directory);
+          fs.writeFileSync(path.join(lease.directory, 'foreign.txt'), 'foreign');
+          throw values[index];
+        });
+      } catch (error) {
+        caught = error;
+      }
+      assert.equal(caught, values[index]);
+    });
+  }
+});
