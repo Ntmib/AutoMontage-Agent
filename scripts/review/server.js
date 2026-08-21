@@ -275,6 +275,17 @@ function sameAssetIdentity(left, right) {
   });
 }
 
+function registeredAssetIdentityIsCurrent(asset) {
+  if (!sameSnapshotIdentity(asset, snapshotFile(asset.filePath))) return false;
+  if (!asset.previewPath) return true;
+  return sameSnapshotIdentity({
+    dev: asset.previewDev,
+    ino: asset.previewIno,
+    size: asset.previewSize,
+    mtimeNs: asset.previewMtimeNs,
+  }, snapshotFile(asset.previewPath));
+}
+
 function descriptorForAsset(id, asset) {
   return {
     id,
@@ -872,7 +883,7 @@ async function routeRequest({
   const previewMatch = /^\/media\/assets\/(asset-[1-9]\d*)\/preview$/.exec(pathname);
   if (previewMatch) {
     const asset = runtime.assetFiles.get(previewMatch[1]);
-    if (!asset || !asset.previewPath) {
+    if (!asset || !asset.previewPath || !registeredAssetIdentityIsCurrent(asset)) {
       sendError(response, 404, request.method === 'HEAD');
       return;
     }
@@ -888,7 +899,7 @@ async function routeRequest({
   const assetMatch = /^\/media\/assets\/(asset-[1-9]\d*)$/.exec(pathname);
   if (assetMatch) {
     const file = runtime.assetFiles.get(assetMatch[1]);
-    if (!file) {
+    if (!file || !registeredAssetIdentityIsCurrent(file)) {
       sendError(response, 404, request.method === 'HEAD');
       return;
     }

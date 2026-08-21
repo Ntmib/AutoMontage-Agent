@@ -1831,6 +1831,44 @@ test('imported proxy is authenticated, ranged, pinned and never follows replacem
   assert.doesNotMatch(replacedCanonical.body.toString('utf8'), /outside secret/);
 });
 
+test('replacing an imported canonical master expires its paired preview handle', async (t) => {
+  const fixture = makeReviewProject(t);
+  const bundle = writeImportedVideoBundle(fixture.projectDir);
+  const session = await startTestReviewServer({ root: ROOT, projectDir: fixture.projectDir, open: false });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const asset = state.assets.find((candidate) => candidate.label === 'Product demo.mov');
+
+  const replacement = path.join(bundle.mediaDirectory, 'replacement.mp4');
+  fs.writeFileSync(replacement, 'replacement canonical bytes');
+  fs.renameSync(replacement, bundle.canonicalPath);
+
+  const response = await request(session, asset.previewUrl, { token: session.token });
+  assert.equal(response.status, 404);
+  assert.doesNotMatch(response.body.toString('utf8'), /preview video/);
+});
+
+test('replacing an imported proxy expires its paired canonical handle', async (t) => {
+  const fixture = makeReviewProject(t);
+  const bundle = writeImportedVideoBundle(fixture.projectDir);
+  const session = await startTestReviewServer({ root: ROOT, projectDir: fixture.projectDir, open: false });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const asset = state.assets.find((candidate) => candidate.label === 'Product demo.mov');
+
+  const replacement = path.join(path.dirname(bundle.previewPath), 'replacement.webm');
+  fs.writeFileSync(replacement, 'replacement proxy bytes');
+  fs.renameSync(replacement, bundle.previewPath);
+
+  const response = await request(session, asset.url, { token: session.token });
+  assert.equal(response.status, 404);
+  assert.doesNotMatch(response.body.toString('utf8'), /canonical video/);
+});
+
 test('startup and idle refresh clean only stale owned import remnants', async (t) => {
   const fixture = makeReviewProject(t);
   const stage = path.join(fixture.projectDir, 'assets', 'broll', 'video', `.${IMPORT_UUID}.stage`);
