@@ -348,7 +348,7 @@ Legacy image scenes remain valid without byte changes:
 ```json
 {
   "scene": "broll",
-  "brollSrc": "broll/example.png"
+  "brollSrc": "broll/growth.png"
 }
 ```
 

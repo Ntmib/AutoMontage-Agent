@@ -82,7 +82,7 @@ module.exports = {
 
 Add cases to `tests/lesson-brief.test.js` that prove:
 
-- the existing `brollSrc: 'broll/example.png'` brief remains valid and its serialized bytes do not need migration;
+- the existing `brollSrc: 'broll/growth.png'` brief remains valid and its serialized bytes do not need migration;
 - a strict image `brollMedia` object is valid;
 - a strict video `brollMedia` object is valid;
 - exactly one of `brollSrc` and `brollMedia` is required for a `broll` scene;
