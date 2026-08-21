@@ -115,8 +115,9 @@ test('approved brief cannot be rendered against another source', () => {
 });
 
 test('approved brief prepares ReelScenes with frozen geometry', () => {
+  const brief = makeBrief();
   const prepared = prepareLessonRender({
-    brief: makeBrief(),
+    brief,
     theme: { colors: { bg: '#16120E' } },
     sourceVideo: '/videos/source.mp4',
   });
@@ -127,6 +128,10 @@ test('approved brief prepares ReelScenes with frozen geometry', () => {
   assert.equal(prepared.props.fps, 30);
   assert.equal(prepared.props.durationInFrames, 300);
   assert.equal(prepared.props.audioSrc, 'source.mp4');
+  assert.deepEqual(prepared.approvedMedia, {
+    brief,
+    sourcePath: '/videos/source.mp4',
+  });
 });
 
 test('approved lesson keeps music out of Remotion and prepares post-render ducking', () => {
@@ -267,7 +272,7 @@ test('lesson rejects source-changing flags that invalidate approved timings', ()
   }));
 });
 
-test('approved lesson props use one temporary public lease and remove it after render', (t) => {
+test('approved lesson props use one temporary media bundle and remove it after render', (t) => {
   const id = `lease-lesson-${process.pid}-${Date.now()}`;
   const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);
   t.after(() => fs.rmSync(propsPath, { force: true }));
@@ -282,7 +287,7 @@ test('approved lesson props use one temporary public lease and remove it after r
 
   assert.equal(result.status, 0, result.stderr);
   const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
-  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/source\.mp4$/);
+  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/media-1\.mp4$/);
   assert.equal(props.audioSrc, props.faceSrc);
   assert.ok(invocations.some((entry) => entry.args.includes('ReelScenes')));
   assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
@@ -315,7 +320,7 @@ test('approved lesson rebinds legacy scene faceSrc to the same temporary source 
   const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
   assert.equal(props.scenes[0].faceSrc, props.faceSrc);
   assert.equal(props.audioSrc, props.faceSrc);
-  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/source\.mp4$/);
+  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/media-1\.mp4$/);
   assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
 });
 

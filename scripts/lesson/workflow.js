@@ -103,7 +103,15 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
     mixArgs: buildLessonMusicMixArgs(brief.music, durationSec),
   } : null;
 
-  return { composition: 'ReelScenes', props, music };
+  return {
+    composition: 'ReelScenes',
+    props,
+    music,
+    approvedMedia: {
+      brief,
+      sourcePath: requestedSource,
+    },
+  };
 }
 
 function bindLessonSourceLease(props, publicPath) {

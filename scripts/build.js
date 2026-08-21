@@ -38,7 +38,6 @@ const { REMOTION_AUDIO_ADVANCE_MS } = require('./finish-audio');
 const {
   LESSON_DEFAULT_THEME,
   assertLessonOptions,
-  bindLessonSourceLease,
   buildGenBriefArgs,
   getLessonAction,
   prepareLessonRender,
@@ -52,6 +51,7 @@ const {
   runRenderLifecycle,
 } = require('./project/workspace');
 const { withPublicMediaLease } = require('./public-media');
+const { withRenderMediaBundle } = require('./render-media-bundle');
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -357,17 +357,20 @@ if (lessonAction === 'render') {
     }
   }
 
-  const finalL = withPublicMediaLease({
+  const finalL = withRenderMediaBundle({
     root: ROOT,
-    sourcePath: srcVideo,
+    workspace: buildContext.project,
+    props: prepared.props,
+    approvedBrief: prepared.approvedMedia.brief,
+    sourcePath: prepared.approvedMedia.sourcePath,
     namespace: buildContext.project ? buildContext.project.manifest.slug : 'dynamic',
   }, (lease) => {
-    bindLessonSourceLease(prepared.props, lease.publicPath);
+    const lessonProps = lease.props;
     const lessonPropsPath = buildContext.paths.props;
     const rawMp4L = buildContext.paths.raw;
     const outMp4L = buildContext.paths.final;
     fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
-    fs.writeFileSync(lessonPropsPath, JSON.stringify(prepared.props, null, 2));
+    fs.writeFileSync(lessonPropsPath, JSON.stringify(lessonProps, null, 2));
     const lessonRender = buildContext.project
       ? {
         version: buildContext.paths.render.version,
