@@ -989,6 +989,7 @@ test('failed state reload quarantines stale commands and keeps discard unavailab
 
     await expect(page.locator('[data-conflict]')).toContainText(/устаревш.*не.*примен/i);
     await expect(page.locator('[data-edit-status]')).toContainText(/устаревш.*1/i);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
     await expect(page.locator('[data-revision]')).toContainText('v01');
     await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
     await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
@@ -1147,22 +1148,34 @@ test('real MP4 MOV and VP8 WebM media import use only playable authenticated pro
     await waitForEditReady(page);
     const selectedBefore = await page.locator('[data-broll-select]').inputValue();
     await recordImportPhases(page);
-    for (const filePath of [media.mp4, media.mov, media.webm]) {
+    for (const filePath of [media.slow, media.mov, media.webm]) {
       await importFileFromBrowser(page, filePath);
       await expect(page.locator('[data-broll-select]')).toHaveValue(selectedBefore);
       await expect(page.locator('[data-edit-status]')).toHaveText('Изменений нет');
     }
 
     const phases = await page.evaluate(() => window.__importPhaseLog);
-    expect(phases).toContainEqual(expect.objectContaining({
-      phase: 'uploading', hidden: false, hasValue: true,
-    }));
-    expect(phases).toContainEqual(expect.objectContaining({
-      phase: 'processing', hidden: false, hasValue: false,
-    }));
-    expect(phases).toContainEqual(expect.objectContaining({
-      phase: 'success', hidden: true, hasValue: false,
-    }));
+    const positiveUpload = phases.findIndex((phase) => (
+      phase.phase === 'uploading'
+      && phase.hidden === false
+      && phase.hasValue === true
+      && Number(phase.value) > 0
+    ));
+    const processing = phases.findIndex((phase, index) => (
+      index > positiveUpload
+      && phase.phase === 'processing'
+      && phase.hidden === false
+      && phase.hasValue === false
+    ));
+    const terminal = phases.findIndex((phase, index) => (
+      index > processing
+      && phase.phase === 'success'
+      && phase.hidden === true
+      && phase.hasValue === false
+    ));
+    expect(positiveUpload).toBeGreaterThanOrEqual(0);
+    expect(processing).toBeGreaterThan(positiveUpload);
+    expect(terminal).toBeGreaterThan(processing);
     await expect(page.locator('[data-media-progress]')).toBeHidden();
     await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
     await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'success');
@@ -1355,9 +1368,164 @@ test('concurrent tab busy import preserves unsaved commands diff and redo', asyn
       await expect(page.locator('[data-conflict]')).toBeHidden();
       await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
       await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+      await expect(page.locator('[data-transient-busy]')).toBeVisible();
+      await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+      await expect(page.locator('[data-boundary="0"]')).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeDisabled();
+
+      const blockedRequests = [];
+      page.on('request', (request) => {
+        if (/\/api\/(?:validate|save)$/.test(new URL(request.url()).pathname)) blockedRequests.push(request);
+      });
+      await page.getByRole('button', { name: /^отменить$/i }).dispatchEvent('click');
+      await page.getByRole('button', { name: /^повторить$/i }).dispatchEvent('click');
+      await page.locator('[data-boundary="0"]').dispatchEvent('keydown', { key: 'ArrowRight' });
+      await page.getByRole('button', { name: /^сохранить$/i }).dispatchEvent('click');
+      await page.waitForTimeout(100);
+      expect(blockedRequests).toHaveLength(0);
+
+      const stillBusy = page.waitForResponse((response) => (
+        response.url().endsWith('/api/validate') && response.status() === 409
+      ));
+      await page.getByRole('button', { name: /повторить проверку/i }).click();
+      await stillBusy;
+      await expect(page.locator('[data-transient-busy]')).toBeVisible();
+      await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+      await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+
+      await other.getByRole('button', { name: /отменить загрузку/i }).click();
+      await expect(other.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'aborted');
+      await page.waitForTimeout(500);
+      const recovered = page.waitForResponse((response) => (
+        response.url().endsWith('/api/validate') && response.status() === 200
+      ));
+      await page.getByRole('button', { name: /повторить проверку/i }).click();
+      await recovered;
+      await expect(page.locator('[data-transient-busy]')).toBeHidden();
+      await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'idle');
       await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
       await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
-      await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeEnabled();
+      await expect(page.locator('[data-boundary="0"]')).toBeEnabled();
+    } finally {
+      const abort = other.getByRole('button', { name: /отменить загрузку/i });
+      if (await abort.isVisible()) await abort.click();
+      await other.close();
+    }
+  });
+});
+
+test('busy validation rolls back undo redo and boundary attempts to the last verified edit', async ({ page, context }) => {
+  test.setTimeout(180_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await dragBoundary(page, 0, 2.2);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 2/i);
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
+
+    const other = await context.newPage();
+    const expectQueuePreserved = async () => {
+      await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+      await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+      await expect(page.locator('[data-server-diff]')).toContainText('00:02.000 → 00:02.120');
+      await expect(page.locator('[data-conflict]')).toBeHidden();
+    };
+    const beginOtherImport = async () => {
+      await other.locator('[data-media-input]').setInputFiles(media.slow);
+      await expect(other.locator('[data-media-import-status]')).toContainText(/проверяем/i);
+    };
+    const finishOtherImportAndRecover = async () => {
+      await other.getByRole('button', { name: /отменить загрузку/i }).click();
+      await expect(other.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'aborted');
+      await page.waitForTimeout(500);
+      const recovered = page.waitForResponse((response) => (
+        response.url().endsWith('/api/validate') && response.status() === 200
+      ));
+      await page.getByRole('button', { name: /повторить проверку/i }).click();
+      await recovered;
+      await expect(page.locator('[data-transient-busy]')).toBeHidden();
+      await expectQueuePreserved();
+    };
+    const exerciseBusyMutation = async (mutate) => {
+      await beginOtherImport();
+      const busy = page.waitForResponse((response) => (
+        response.url().endsWith('/api/validate') && response.status() === 409
+      ));
+      await mutate();
+      await busy;
+      await expect(page.locator('[data-transient-busy]')).toBeVisible();
+      await expectQueuePreserved();
+      await finishOtherImportAndRecover();
+    };
+
+    try {
+      await openReview(other, session.url);
+      await waitForEditReady(other);
+      await exerciseBusyMutation(() => page.getByRole('button', { name: /^отменить$/i }).click());
+      await exerciseBusyMutation(() => page.getByRole('button', { name: /^повторить$/i }).click());
+      await exerciseBusyMutation(() => dragBoundary(page, 0, 2.3));
+      await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+      await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
+    } finally {
+      const abort = other.getByRole('button', { name: /отменить загрузку/i });
+      if (await abort.isVisible()) await abort.click();
+      await other.close();
+    }
+  });
+});
+
+test('busy save preserves verified edits and disk until the user explicitly retries save', async ({ page, context }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    const briefBefore = fs.readFileSync(session.fixture.briefPath);
+    const manifestBefore = fs.readFileSync(path.join(session.fixture.workspace.dir, 'project.json'));
+
+    const other = await context.newPage();
+    try {
+      await openReview(other, session.url);
+      await waitForEditReady(other);
+      await other.locator('[data-media-input]').setInputFiles(media.slow);
+      await expect(other.locator('[data-media-import-status]')).toContainText(/проверяем/i);
+
+      const busySave = page.waitForResponse((response) => (
+        response.url().endsWith('/api/save') && response.status() === 409
+      ));
+      page.once('dialog', (dialog) => dialog.accept());
+      await page.getByRole('button', { name: /^сохранить$/i }).click();
+      await busySave;
+
+      expect(fs.readFileSync(session.fixture.briefPath)).toEqual(briefBefore);
+      expect(fs.readFileSync(path.join(session.fixture.workspace.dir, 'project.json'))).toEqual(manifestBefore);
+      await expect(page.locator('[data-transient-busy]')).toBeVisible();
+      await expect(page.locator('[data-conflict]')).toBeHidden();
+      await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+      await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+
+      await other.getByRole('button', { name: /отменить загрузку/i }).click();
+      await expect(other.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'aborted');
+      await page.waitForTimeout(500);
+      const recovered = page.waitForResponse((response) => (
+        response.url().endsWith('/api/validate') && response.status() === 200
+      ));
+      await page.getByRole('button', { name: /повторить проверку/i }).click();
+      await recovered;
+
+      await expect(page.locator('[data-transient-busy]')).toBeHidden();
+      await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeEnabled();
+      expect(fs.readFileSync(session.fixture.briefPath)).toEqual(briefBefore);
+      expect(fs.readFileSync(path.join(session.fixture.workspace.dir, 'project.json'))).toEqual(manifestBefore);
     } finally {
       const abort = other.getByRole('button', { name: /отменить загрузку/i });
       if (await abort.isVisible()) await abort.click();
@@ -1416,6 +1584,17 @@ test('abort then immediate busy retry preserves unsaved commands diff and redo',
     await expect(page.locator('[data-conflict]')).toBeHidden();
     await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
     await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.locator('[data-transient-busy]')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+
+    await page.waitForTimeout(1_000);
+    const recovered = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await page.getByRole('button', { name: /повторить проверку/i }).click();
+    await recovered;
+    await expect(page.locator('[data-transient-busy]')).toBeHidden();
     await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
     await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
   });

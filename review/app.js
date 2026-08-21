@@ -163,6 +163,17 @@ function createEditControls() {
   );
   discardConflict.type = 'button';
   discardConflict.hidden = true;
+  const transientBusy = element('p', 'edit-conflict');
+  transientBusy.dataset.transientBusy = '';
+  transientBusy.hidden = true;
+  const retryBusy = element(
+    'button',
+    'edit-button edit-conflict-action',
+    'Повторить проверку',
+  );
+  retryBusy.type = 'button';
+  retryBusy.dataset.busyRetry = '';
+  retryBusy.hidden = true;
   const error = element('p', 'edit-error');
   error.dataset.editError = '';
   error.setAttribute('role', 'alert');
@@ -207,7 +218,16 @@ function createEditControls() {
   broll.dataset.brollControls = '';
   brollSection.append(brollTitle, broll);
   body.append(importSection, diffSection, brollSection);
-  panel.append(heading, status, conflict, discardConflict, error, body);
+  panel.append(
+    heading,
+    status,
+    conflict,
+    discardConflict,
+    transientBusy,
+    retryBusy,
+    error,
+    body,
+  );
   document.querySelector('.timeline-panel').before(panel);
   return {
     panel,
@@ -217,6 +237,8 @@ function createEditControls() {
     status,
     conflict,
     discardConflict,
+    transientBusy,
+    retryBusy,
     error,
     diff,
     broll,
@@ -305,6 +327,8 @@ function createEditor(initialState, token) {
   let invalid = false;
   let conflict = false;
   let conflictFreshStateReady = false;
+  let transientServerBusy = false;
+  let busyExpectedState = null;
   let conflictedCommandCount = 0;
   let lastSnap = null;
   let focusBoundary = null;
@@ -321,7 +345,7 @@ function createEditor(initialState, token) {
   document.querySelector('.mode-badge').textContent = 'Редактирование';
 
   function mutationLocked() {
-    return saving || importing || conflict;
+    return saving || importing || conflict || transientServerBusy;
   }
 
   function allControlsLocked() {
@@ -518,6 +542,12 @@ function createEditor(initialState, token) {
       : '';
     controls.discardConflict.hidden = !conflict;
     controls.discardConflict.disabled = !conflict || !conflictFreshStateReady || pending || saving || importing;
+    controls.transientBusy.hidden = !transientServerBusy;
+    controls.transientBusy.textContent = transientServerBusy
+      ? 'Другой файл ещё обрабатывается. Правки сохранены и временно заблокированы.'
+      : '';
+    controls.retryBusy.hidden = !transientServerBusy;
+    controls.retryBusy.disabled = !transientServerBusy || pending || saving || importing;
     controls.importButton.disabled = allControlsLocked() || importer?.busy() === true;
     controls.mediaInput.disabled = allControlsLocked() || importer?.busy() === true;
     controls.abortImport.hidden = !importing;
@@ -582,107 +612,40 @@ function createEditor(initialState, token) {
     document.querySelector('main').dataset.reviewReady = '';
   }
 
-  async function reloadAfterConflict(generation) {
-    if (generation !== validationGeneration) return;
-    conflictedCommandCount = commands.length + redoStack.length;
-    commands.length = 0;
-    redoStack.length = 0;
-    validation = { destinationRevision: null, diff: [], timing: state.timing };
-    pending = true;
-    saving = false;
-    invalid = false;
-    conflict = true;
-    conflictFreshStateReady = false;
-    conflictStatusMessage = '';
-    lastSnap = null;
-    focusBoundary = null;
-    focusBroll = null;
-    clearEditError();
-    renderAll();
-    let latest;
-    try {
-      latest = await loadState(token);
-    } catch (_) {
-      if (generation !== validationGeneration) return;
-      pending = false;
-      saving = false;
-      invalid = true;
-      showEditError('Не удалось загрузить последнюю ревизию. Перезапустите проверку.');
-      renderAll();
-      return;
-    }
-    if (generation !== validationGeneration) return;
-    state = prepareBrowserState(latest, token);
-    validation = { destinationRevision: null, diff: [], timing: state.timing };
-    pending = false;
-    saving = false;
-    invalid = false;
-    conflict = true;
-    conflictFreshStateReady = true;
-    lastSnap = null;
-    clearEditError();
-    renderAll();
-  }
-
   function sameSessionIdentity(left, right) {
     return left?.session?.baseRevision === right?.session?.baseRevision
       && left?.session?.baseHash === right?.session?.baseHash
       && left?.session?.manifestHash === right?.session?.manifestHash;
   }
 
-  async function refreshAfterImport() {
-    const latest = await loadState(token);
-    if (!sameSessionIdentity(state, latest)) {
-      conflictedCommandCount = commands.length + redoStack.length;
-      commands.length = 0;
-      redoStack.length = 0;
-      state = prepareBrowserState(latest, token);
-      validation = { destinationRevision: null, diff: [], timing: state.timing };
-      pending = false;
-      saving = false;
-      invalid = false;
-      conflict = true;
-      conflictFreshStateReady = true;
-      conflictStatusMessage = '';
-      lastSnap = null;
-      focusBoundary = null;
-      focusBroll = null;
-      return;
-    }
-    state = prepareBrowserState(latest, token);
+  function sessionIdentitySnapshot() {
+    return { session: { ...state.session } };
   }
 
-  async function resolveImport409(expectedState, generation) {
-    let latest;
-    try {
-      latest = await loadState(token);
-    } catch (_) {
-      if (generation !== validationGeneration) return;
-      conflictedCommandCount = commands.length + redoStack.length;
-      pending = false;
-      saving = false;
-      invalid = true;
-      conflict = true;
-      conflictFreshStateReady = false;
-      conflictStatusMessage = `Не удалось проверить актуальность проекта. Правки (${conflictedCommandCount}) сохранены в карантине; продолжение заблокировано до безопасного обновления.`;
-      lastSnap = null;
-      focusBoundary = null;
-      focusBroll = null;
-      showEditError('Не удалось проверить актуальность проекта. Обновите страницу перед продолжением.');
-      renderAll();
-      return;
-    }
-    if (generation !== validationGeneration) return;
-    if (sameSessionIdentity(expectedState, latest)) {
-      state = prepareBrowserState(latest, token);
-      conflict = false;
-      conflictFreshStateReady = false;
-      conflictStatusMessage = '';
-      importStatusMessage = 'Другой файл ещё обрабатывается. Повторите загрузку чуть позже.';
-      showEditError('Другой файл ещё обрабатывается. Текущие правки сохранены; повторите загрузку чуть позже.');
-      renderAll();
-      return;
-    }
+  function captureMutationState() {
+    return {
+      commands: commands.slice(),
+      redoStack: redoStack.slice(),
+      validation,
+      invalid,
+      lastSnap,
+      focusBoundary,
+      focusBroll,
+    };
+  }
+
+  function restoreMutationState(snapshot) {
+    if (!snapshot) return;
+    commands.splice(0, commands.length, ...snapshot.commands);
+    redoStack.splice(0, redoStack.length, ...snapshot.redoStack);
+    validation = snapshot.validation;
+    invalid = snapshot.invalid;
+    lastSnap = snapshot.lastSnap;
+    focusBoundary = snapshot.focusBoundary;
+    focusBroll = snapshot.focusBroll;
+  }
+
+  function enterConfirmedConflict(latest) {
     conflictedCommandCount = commands.length + redoStack.length;
     commands.length = 0;
     redoStack.length = 0;
@@ -694,11 +657,86 @@ function createEditor(initialState, token) {
     conflict = true;
     conflictFreshStateReady = true;
     conflictStatusMessage = '';
+    transientServerBusy = false;
+    busyExpectedState = null;
     lastSnap = null;
     focusBoundary = null;
     focusBroll = null;
     clearEditError();
+  }
+
+  async function classifyMutation409({
+    expectedState,
+    generation,
+    rollbackSnapshot = null,
+    source = 'mutation',
+  }) {
+    if (generation !== validationGeneration) return 'superseded';
+    conflictedCommandCount = commands.length + redoStack.length;
+    pending = true;
+    saving = false;
+    conflict = true;
+    conflictFreshStateReady = false;
+    conflictStatusMessage = '';
+    transientServerBusy = false;
+    busyExpectedState = null;
+    clearEditError();
     renderAll();
+
+    let latest;
+    try {
+      latest = await loadState(token);
+    } catch (_) {
+      if (generation !== validationGeneration) return 'superseded';
+      restoreMutationState(rollbackSnapshot);
+      conflictedCommandCount = commands.length + redoStack.length;
+      pending = false;
+      saving = false;
+      invalid = true;
+      conflict = true;
+      conflictFreshStateReady = false;
+      conflictStatusMessage = `Статус устаревших правок не подтверждён: правки (${conflictedCommandCount}) сохранены в карантине и не будут применены до безопасного обновления.`;
+      transientServerBusy = false;
+      busyExpectedState = null;
+      lastSnap = null;
+      focusBoundary = null;
+      focusBroll = null;
+      showEditError('Не удалось загрузить последнюю ревизию и проверить актуальность проекта. Обновите страницу перед продолжением.');
+      renderAll();
+      return 'unverified';
+    }
+    if (generation !== validationGeneration) return 'superseded';
+    if (!sameSessionIdentity(expectedState, latest)) {
+      enterConfirmedConflict(latest);
+      renderAll();
+      return 'conflict';
+    }
+
+    restoreMutationState(rollbackSnapshot);
+    state = prepareBrowserState(latest, token);
+    pending = false;
+    saving = false;
+    conflict = false;
+    conflictFreshStateReady = false;
+    conflictStatusMessage = '';
+    conflictedCommandCount = 0;
+    transientServerBusy = true;
+    busyExpectedState = { session: { ...latest.session } };
+    if (source === 'import') {
+      importStatusMessage = 'Другой файл ещё обрабатывается. Повторите проверку чуть позже.';
+    }
+    showEditError('Другой файл ещё обрабатывается. Правки сохранены; повторите проверку чуть позже.');
+    renderAll();
+    return 'busy';
+  }
+
+  async function refreshAfterImport() {
+    const latest = await loadState(token);
+    if (!sameSessionIdentity(state, latest)) {
+      enterConfirmedConflict(latest);
+      return;
+    }
+    state = prepareBrowserState(latest, token);
   }
 
   function importFailureMessage(status) {
@@ -711,7 +749,7 @@ function createEditor(initialState, token) {
 
   async function startImport(file) {
     if (!(file instanceof File) || pending || mutationLocked() || importer.busy()) return;
-    const expectedState = { session: { ...state.session } };
+    const expectedState = sessionIdentitySnapshot();
     importing = true;
     importPhase = 'uploading';
     importFilename = file.name;
@@ -726,7 +764,11 @@ function createEditor(initialState, token) {
     } catch (error) {
       if (error?.status === 409) {
         importPhase = 'error';
-        await resolveImport409(expectedState, ++validationGeneration);
+        await classifyMutation409({
+          expectedState,
+          generation: ++validationGeneration,
+          source: 'import',
+        });
       } else if (error?.code === 'MEDIA_IMPORT_ABORTED') {
         importPhase = 'aborted';
       } else {
@@ -740,14 +782,17 @@ function createEditor(initialState, token) {
     }
   }
 
-  async function validateCommands(snap = null) {
+  async function validateCommands(snap = null, rollbackSnapshot = null, options = {}) {
     const generation = ++validationGeneration;
+    const expectedState = options.expectedState || sessionIdentitySnapshot();
     pending = true;
     saving = false;
     invalid = false;
     conflict = false;
     conflictFreshStateReady = false;
     conflictStatusMessage = '';
+    transientServerBusy = false;
+    busyExpectedState = null;
     lastSnap = snap;
     clearEditError();
     renderEditChrome();
@@ -759,10 +804,24 @@ function createEditor(initialState, token) {
     }
     if (generation !== validationGeneration) return;
     if (result && result.response.status === 409) {
-      await reloadAfterConflict(generation);
+      await classifyMutation409({
+        expectedState,
+        generation,
+        rollbackSnapshot,
+        source: 'validate',
+      });
       return;
     }
     if (!result || !result.response.ok || !validValidation(result.data)) {
+      if (options.retryingBusy) {
+        restoreMutationState(rollbackSnapshot);
+        pending = false;
+        transientServerBusy = true;
+        busyExpectedState = expectedState;
+        showEditError('Не удалось повторить проверку. Правки заблокированы; попробуйте ещё раз.');
+        renderAll();
+        return;
+      }
       pending = false;
       invalid = true;
       lastSnap = null;
@@ -772,6 +831,13 @@ function createEditor(initialState, token) {
     }
     validation = result.data;
     pending = false;
+    transientServerBusy = false;
+    busyExpectedState = null;
+    if (options.retryingBusy && importStatusMessage) {
+      importPhase = 'idle';
+      importFilename = '';
+      importStatusMessage = '';
+    }
     invalid = validation.timing.errors.length > 0;
     if (invalid) showEditError('В тайминге есть ошибка. Исправьте границу перед сохранением.');
     renderAll();
@@ -779,32 +845,42 @@ function createEditor(initialState, token) {
 
   function dispatch(command, snap = null) {
     if (mutationLocked()) return;
+    const rollbackSnapshot = captureMutationState();
     focusBoundary = snap && snap.restoreFocus ? snap.index : null;
     commands.push(command);
     redoStack.length = 0;
-    void validateCommands(snap);
+    void validateCommands(snap, rollbackSnapshot);
   }
 
   function undo() {
     if (mutationLocked()) return;
+    const rollbackSnapshot = captureMutationState();
     const command = commands.pop();
     if (!command) return;
     redoStack.push(command);
     lastSnap = null;
     focusBoundary = null;
     focusBroll = null;
-    void validateCommands();
+    void validateCommands(null, rollbackSnapshot);
   }
 
   function redo() {
     if (mutationLocked()) return;
+    const rollbackSnapshot = captureMutationState();
     const command = redoStack.pop();
     if (!command) return;
     commands.push(command);
     lastSnap = null;
     focusBoundary = null;
     focusBroll = null;
-    void validateCommands();
+    void validateCommands(null, rollbackSnapshot);
+  }
+
+  function retryBusyValidation() {
+    if (!transientServerBusy || pending || saving || importing || !busyExpectedState) return;
+    const rollbackSnapshot = captureMutationState();
+    const expectedState = busyExpectedState;
+    void validateCommands(null, rollbackSnapshot, { retryingBusy: true, expectedState });
   }
 
   function discardConflictAndContinue() {
@@ -813,6 +889,8 @@ function createEditor(initialState, token) {
     conflict = false;
     conflictFreshStateReady = false;
     conflictStatusMessage = '';
+    transientServerBusy = false;
+    busyExpectedState = null;
     conflictedCommandCount = 0;
     invalid = false;
     lastSnap = null;
@@ -830,6 +908,8 @@ function createEditor(initialState, token) {
       `Будет создана ревизия ${destination}:\n\n${lines.map((line) => `• ${line}`).join('\n')}`,
     );
     if (!accepted) return;
+    const rollbackSnapshot = captureMutationState();
+    const expectedState = sessionIdentitySnapshot();
     const generation = ++validationGeneration;
     const payload = editPayload(state, commands);
     saving = true;
@@ -845,7 +925,12 @@ function createEditor(initialState, token) {
     }
     if (generation !== validationGeneration) return;
     if (result && result.response.status === 409) {
-      await reloadAfterConflict(generation);
+      await classifyMutation409({
+        expectedState,
+        generation,
+        rollbackSnapshot,
+        source: 'save',
+      });
       return;
     }
     if (!result || result.response.status !== 201) {
@@ -874,6 +959,8 @@ function createEditor(initialState, token) {
     invalid = false;
     conflict = false;
     conflictFreshStateReady = false;
+    transientServerBusy = false;
+    busyExpectedState = null;
     lastSnap = null;
     clearEditError();
     renderAll();
@@ -905,6 +992,7 @@ function createEditor(initialState, token) {
   controls.undo.addEventListener('click', undo);
   controls.redo.addEventListener('click', redo);
   controls.discardConflict.addEventListener('click', discardConflictAndContinue);
+  controls.retryBusy.addEventListener('click', retryBusyValidation);
   controls.save.addEventListener('click', () => { void save(); });
   renderAll();
 }
