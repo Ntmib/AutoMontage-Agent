@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Ajv = require('ajv');
+const { frameSnapSeconds, isCanonicalBrollReference } = require('./broll-media');
 
 const OFFICIAL_SCENES = [
   'fullscreen',
@@ -67,11 +68,26 @@ function validateLessonBrief(brief, {
       && scene.start < scenes[index - 1].end) {
       errors.push(`scenes[${index}]: тайминг пересекается с предыдущей сценой`);
     }
-    if (scene.scene === 'broll'
+    if (scene.scene === 'broll' && typeof scene.brollSrc === 'string'
       && !isRenderableBrollSource(scene.brollSrc, {
         allowOpaqueAssetId: allowOpaqueBrollAssetIds,
       })) {
       errors.push(`scenes[${index}].brollSrc: b-roll поддерживает только изображения`);
+    }
+    if (scene.scene === 'broll' && scene.brollMedia) {
+      if (!isCanonicalBrollReference(scene.brollMedia.src)) {
+        errors.push(`scenes[${index}].brollMedia.src: ссылка на b-roll должна быть канонической относительной`);
+      }
+      if (scene.brollMedia.kind === 'video') {
+        try {
+          if (frameSnapSeconds(scene.brollMedia.trimStartSec, brief?.output?.fps)
+            !== scene.brollMedia.trimStartSec) {
+            errors.push(`scenes[${index}].brollMedia.trimStartSec: должен совпадать с границей кадра`);
+          }
+        } catch (_) {
+          errors.push(`scenes[${index}].brollMedia.trimStartSec: время b-roll некорректно`);
+        }
+      }
     }
   });
 
@@ -135,7 +151,7 @@ function sceneSummary(scene) {
   if (scene.scene === 'text-only') return `«${scene.quoteCream} ${scene.quoteOrange}»`;
   if (scene.scene === 'stat') return `${scene.statCream}${scene.statOrange}: ${scene.headCream} ${scene.headOrange}`;
   if (scene.scene === 'blur-overlay') return `${scene.big}: ${scene.headCream} ${scene.headOrange}`;
-  if (scene.scene === 'broll') return `${scene.headCream} ${scene.headOrange} (${scene.brollSrc})`;
+  if (scene.scene === 'broll') return `${scene.headCream} ${scene.headOrange} (${scene.brollMedia?.src ?? scene.brollSrc})`;
   return `${scene.headCream} ${scene.headOrange}: ${(scene.bullets || []).join('; ')}`;
 }
 
