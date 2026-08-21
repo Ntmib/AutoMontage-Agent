@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -8,6 +9,7 @@ const { test, expect } = require('playwright/test');
 const ROOT = path.resolve(__dirname, '..');
 const { startReviewServer } = require('../scripts/review/server');
 const { makeReviewProject, registerHigherBrief } = require('./helpers/review-project');
+const { ffmpegEncoderAvailable, runTool } = require('./helpers/media-fixtures');
 
 let reviewSession;
 let reviewUrl;
@@ -226,6 +228,54 @@ async function saveExternalBoundary(session, seconds) {
   } finally {
     await closeServer(external.server);
   }
+}
+
+function makeBrowserImportFixtures() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-ui-media-'));
+  cleanups.push(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const files = {
+    jpeg: path.join(directory, 'browser-image.jpg'),
+    mp4: path.join(directory, 'browser-with-audio.mp4'),
+    mov: path.join(directory, 'browser-with-audio.mov'),
+    webm: path.join(directory, 'browser-silent.webm'),
+    slow: path.join(directory, 'browser-processing.mp4'),
+  };
+  runTool('ffmpeg', [
+    '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=#d86b3c:s=80x60',
+    '-frames:v', '1', files.jpeg,
+  ], directory);
+  runTool('ffmpeg', [
+    '-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=25:d=4',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:d=4',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', files.mp4,
+  ], directory);
+  runTool('ffmpeg', [
+    '-y', '-v', 'error', '-i', files.mp4, '-c', 'copy', files.mov,
+  ], directory);
+  runTool('ffmpeg', [
+    '-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=20:d=4',
+    '-c:v', 'libvpx', '-b:v', '100k', '-an', files.webm,
+  ], directory);
+  runTool('ffmpeg', [
+    '-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=25:d=8',
+    '-f', 'lavfi', '-i', 'sine=frequency=330:sample_rate=48000:d=8',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-shortest', files.slow,
+  ], directory);
+  return files;
+}
+
+async function importFileFromBrowser(page, filePath) {
+  const input = page.locator('[data-media-input]');
+  const responsePromise = page.waitForResponse((candidate) => (
+    candidate.url().endsWith('/api/assets/import') && candidate.request().method() === 'POST'
+  ));
+  await input.setInputFiles(filePath);
+  await expect(page.locator('[data-media-import-status]')).toContainText(/загрузка|проверяем/i);
+  await expect(page.locator('[data-media-progress]')).toHaveAttribute('value', /\d+/);
+  const response = await responsePromise;
+  expect(response.status()).toBe(201);
+  await expect(page.locator('[data-media-import-status]')).toContainText(/добавлено/i);
 }
 
 test.beforeAll(async () => {
@@ -533,6 +583,9 @@ test('b-roll controls expose only eligible scenes and send an opaque asset id', 
     await expect(selects.locator('option', { hasText: 'clip.mp4' })).toHaveCount(0);
     await selects.selectOption({ label: 'replacement.png' });
     await expect(page.locator('[data-server-diff]')).toContainText('Медиа сцены 2');
+    const imageControls = page.locator('[data-broll-scene="1"]');
+    await expect(imageControls.locator('[data-broll-fit]')).toHaveValue('cover');
+    await expect(imageControls.locator('[data-broll-video], [data-broll-start], [data-broll-audio]')).toHaveCount(0);
     await expect.poll(() => validationBody).toBeTruthy();
 
     expect(validationBody.commands.at(-1)).toEqual({
@@ -1025,5 +1078,237 @@ test('validate conflict locks immediately and resumes only from the loaded fresh
       leftSceneIndex: 0,
       seconds: 2.44,
     }]);
+  });
+});
+
+test('media import control is edit-only and keeps the read-only surface inert', async ({ page }) => {
+  await openReview(page);
+  await expect(page.getByRole('button', { name: /добавить медиа/i })).toHaveCount(0);
+  await expect(page.locator('[data-media-input], [data-media-import]')).toHaveCount(0);
+
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeVisible();
+    await expect(page.locator('[data-media-input]')).toHaveAttribute(
+      'accept',
+      '.avif,.gif,.jpeg,.jpg,.png,.webp,.mp4,.mov,.m4v,.webm',
+    );
+  });
+});
+
+test('real JPEG media import shows bytes then processing and never auto-selects the thumbnail', async ({ page }) => {
+  test.setTimeout(120_000);
+  test.skip(!ffmpegEncoderAvailable('libwebp'), 'local ffmpeg lacks required libwebp image normalization');
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    const selectedBefore = await page.locator('[data-broll-select]').inputValue();
+    await importFileFromBrowser(page, media.jpeg);
+    const imported = page.locator('[data-asset-label]', { hasText: 'browser-image.jpg' });
+    await expect(imported).toHaveCount(1);
+    await expect(imported.locator('xpath=ancestor::li[1]').locator('img[data-asset-image]')).toBeVisible();
+    await expect(page.locator('[data-broll-select]')).toHaveValue(selectedBefore);
+    await expect(page.locator('[data-edit-status]')).toHaveText('Изменений нет');
+  });
+});
+
+test('real MP4 MOV and VP8 WebM media import use only playable authenticated proxies', async ({ page }) => {
+  test.setTimeout(180_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    for (const filePath of [media.mp4, media.mov, media.webm]) {
+      await importFileFromBrowser(page, filePath);
+    }
+
+    const importedVideos = page.locator('video[data-asset-video]');
+    await expect(importedVideos).toHaveCount(3);
+    for (let index = 0; index < 3; index += 1) {
+      const source = new URL(await importedVideos.nth(index).getAttribute('src'), session.origin);
+      expect(source.pathname).toMatch(/^\/media\/assets\/asset-[1-9]\d*\/preview$/);
+      expect(source.searchParams.get('token')).toBe(session.token);
+      await expect.poll(() => importedVideos.nth(index).evaluate((video) => video.readyState))
+        .toBeGreaterThan(0);
+    }
+    await expect(page.locator('[data-assets]')).toContainText('со звуком');
+    await expect(page.locator('[data-assets]')).toContainText('без звука');
+    expect(await page.locator('[data-assets]').innerHTML()).not.toContain('assets/broll/video');
+  });
+});
+
+test('video b-roll defaults and fit start audio commands round-trip through validation undo and redo', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    const validationBodies = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) validationBodies.push(request.postDataJSON());
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await importFileFromBrowser(page, media.mp4);
+    const select = page.locator('[data-broll-select]');
+    const selected = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await select.selectOption({ label: 'browser-with-audio.mp4' });
+    await selected;
+    await expect(select).toBeFocused();
+
+    const sceneControls = page.locator('[data-broll-scene="1"]');
+    const preview = sceneControls.locator('video[data-broll-video]');
+    await expect(preview).toBeVisible();
+    await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('contain');
+    await expect(sceneControls.locator('[data-broll-start]')).toHaveText(/00:00\.000/);
+    await expect(sceneControls.locator('[data-broll-audio]')).toHaveValue('mute');
+    await expect(page.locator('[data-server-diff]')).toContainText(/вписать целиком/i);
+
+    await preview.evaluate((video) => { video.currentTime = 0.419; });
+    const startValidated = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await sceneControls.getByRole('button', { name: /начать с текущего места/i }).click();
+    await startValidated;
+    expect(validationBodies.at(-1).commands.at(-1)).toEqual({
+      type: 'set-broll-video-start', sceneIndex: 1, trimStartSec: expect.closeTo(0.419, 3),
+    });
+    await expect(sceneControls.locator('[data-broll-start]')).toHaveText('00:00.400');
+
+    const fitValidated = page.waitForResponse((response) => response.url().endsWith('/api/validate'));
+    await sceneControls.locator('[data-broll-fit]').selectOption('cover');
+    await fitValidated;
+    expect(validationBodies.at(-1).commands.at(-1)).toEqual({
+      type: 'set-broll-fit', sceneIndex: 1, fit: 'cover',
+    });
+    await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('cover');
+    await expect(sceneControls.locator('[data-broll-fit]')).toBeFocused();
+    const audioValidated = page.waitForResponse((response) => response.url().endsWith('/api/validate'));
+    await sceneControls.locator('[data-broll-audio]').selectOption('mix');
+    await audioValidated;
+    await expect(sceneControls.locator('[data-broll-audio]')).toBeFocused();
+    await expect(page.locator('[data-server-diff]')).toContainText(/тихо поверх голоса/i);
+    await expect(page.locator('[data-server-diff]')).toContainText('00:00.400');
+
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(sceneControls.locator('[data-broll-audio]')).toHaveValue('mute');
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('contain');
+    await page.getByRole('button', { name: /^повторить$/i }).click();
+    await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('cover');
+    await page.getByRole('button', { name: /^повторить$/i }).click();
+    await expect(sceneControls.locator('[data-broll-audio]')).toHaveValue('mix');
+  });
+});
+
+test('silent video b-roll disables ineligible audio and renders hostile labels as text only', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  const hostile = path.join(path.dirname(media.webm), '<img onerror=alert(1)>.webm');
+  fs.copyFileSync(media.webm, hostile);
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await page.setViewportSize({ width: 360, height: 900 });
+    await page.addInitScript(() => {
+      window.__assetXss = 0;
+      window.alert = () => { window.__assetXss += 1; };
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await importFileFromBrowser(page, hostile);
+    await page.locator('[data-broll-select]').selectOption({ label: path.basename(hostile) });
+    const controls = page.locator('[data-broll-scene="1"]');
+    await expect(controls.locator('[data-broll-audio] option[value="mix"]')).toHaveAttribute('disabled', '');
+    await expect(controls.locator('[data-broll-audio] option[value="replace"]')).toHaveAttribute('disabled', '');
+    await expect(controls.locator('[data-broll-audio]')).toHaveValue('mute');
+    await expect(page.locator('[data-assets] img[onerror]')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__assetXss)).toBe(0);
+    await expect(page.locator('[data-asset-label]', { hasText: '<img onerror=alert(1)>.webm' })).toHaveCount(1);
+    await expectNoPageOverflow(page);
+  });
+});
+
+test('media import owns the mutation lock, blocks a second import and abort restores the existing diff', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    const importRequests = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/assets/import')) importRequests.push(request);
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+
+    await page.locator('[data-media-input]').setInputFiles(media.slow);
+    await expect(page.locator('[data-media-import-status]')).toContainText(/проверяем/i);
+    await expect(page.locator('[data-boundary="0"]')).toBeDisabled();
+    await expect(page.locator('[data-broll-select]')).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeDisabled();
+    await page.locator('[data-media-input]').evaluate((input) => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForTimeout(100);
+    expect(importRequests).toHaveLength(1);
+
+    await page.getByRole('button', { name: /отменить загрузку/i }).click();
+    await expect(page.locator('[data-media-import-status]')).toContainText(/отменена/i);
+    await expect(page.locator('[data-boundary="0"]')).toBeEnabled();
+    await expect(page.locator('[data-broll-select]')).toBeEnabled();
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+  });
+});
+
+test('failed media import restores controls while 409 enters explicit stale conflict quarantine', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  const invalid = path.join(path.dirname(media.mp4), 'broken.mp4');
+  fs.writeFileSync(invalid, 'not a video');
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await page.locator('[data-media-input]').setInputFiles(invalid);
+    await expect(page.locator('[data-media-import-status]')).toContainText(/не удалось/i);
+    await expect(page.locator('[data-boundary="0"]')).toBeEnabled();
+    await expect(page.locator('[data-broll-select]')).toBeEnabled();
+    await expect(page.getByRole('alert')).not.toContainText(/ffmpeg|Users|private/i);
+
+    const diagram = path.join(session.fixture.workspace.dir, 'assets', 'broll', 'diagram.png');
+    const original = path.join(session.fixture.workspace.dir, 'assets', 'broll', 'diagram.original');
+    const changed = path.join(session.fixture.workspace.dir, 'assets', 'broll', 'diagram.changed');
+    let restored = false;
+    await page.route('**/api/state', async (route) => {
+      if (!restored) {
+        fs.renameSync(diagram, changed);
+        fs.renameSync(original, diagram);
+        restored = true;
+      }
+      await route.continue();
+    });
+    const conflictResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/assets/import') && response.status() === 409
+    ));
+    await page.locator('[data-media-input]').setInputFiles(media.slow);
+    await expect(page.locator('[data-media-import-status]')).toContainText(/проверяем/i);
+    fs.renameSync(diagram, original);
+    fs.writeFileSync(diagram, 'changed while import is processing');
+    await conflictResponse;
+    await expect(page.locator('[data-conflict]')).toContainText(/конфликт/i);
+    const discard = page.getByRole('button', {
+      name: /отбросить устаревшие правки и продолжить/i,
+    });
+    await expect(discard).toBeVisible();
+    await expect(discard).toBeEnabled();
+    await expect(page.locator('[data-boundary="0"]')).toBeDisabled();
+    await discard.click();
+    await expect(page.locator('[data-conflict]')).toBeHidden();
+    await expect(page.locator('[data-boundary="0"]')).toBeEnabled();
   });
 });

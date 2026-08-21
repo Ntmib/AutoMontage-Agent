@@ -361,18 +361,36 @@ function renderAssets(list, assets) {
   assets.forEach((asset) => {
     const item = document.createElement('li');
     item.className = 'asset-chip';
-    if (/\.(?:avif|gif|jpe?g|png|webp)$/i.test(asset.label)) {
+    if (asset.mediaKind === 'image' && asset.mediaUrl) {
       const thumbnail = document.createElement('img');
       thumbnail.className = 'asset-thumbnail';
+      thumbnail.dataset.assetImage = '';
       thumbnail.src = asset.mediaUrl;
       thumbnail.alt = '';
       item.append(thumbnail);
+    } else if (asset.mediaKind === 'video' && asset.previewMediaUrl) {
+      const preview = document.createElement('video');
+      preview.className = 'asset-video';
+      preview.dataset.assetVideo = '';
+      preview.src = asset.previewMediaUrl;
+      preview.controls = true;
+      preview.preload = 'metadata';
+      preview.setAttribute('aria-label', `Предпросмотр ${asset.label}`);
+      item.append(preview);
     }
     const meta = document.createElement('span');
     meta.className = 'asset-meta';
     const kind = document.createElement('span');
-    kind.textContent = asset.kind === 'project' ? 'проект' : 'библиотека';
+    if (asset.mediaKind === 'video' && Number.isFinite(asset.durationSec)) {
+      const dimensions = Number.isFinite(asset.width) && Number.isFinite(asset.height)
+        ? `${asset.width}×${asset.height}`
+        : 'видео';
+      kind.textContent = `${formatTime(asset.durationSec)} · ${dimensions} · ${asset.hasAudio ? 'со звуком' : 'без звука'}`;
+    } else {
+      kind.textContent = asset.kind === 'project' ? 'проект' : 'библиотека';
+    }
     const label = document.createElement('strong');
+    label.dataset.assetLabel = '';
     label.textContent = asset.label;
     meta.append(kind, label);
     item.append(meta);

@@ -1,4 +1,5 @@
 import { formatTime, renderTimeline } from './timeline.js';
+import { createMediaImporter } from './media-import.js';
 
 function takeSessionToken() {
   const fragment = new URLSearchParams(window.location.hash.slice(1));
@@ -18,12 +19,23 @@ async function loadState(token) {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });
-  if (!response.ok) throw new Error('review state request failed');
+  if (!response.ok) {
+    const error = new Error('review state request failed');
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
 }
 
 function statusLabel(status) {
   return status === 'approved' ? 'Утверждён' : 'Черновик';
+}
+
+function formatBytes(bytes) {
+  const safe = Math.max(0, Number(bytes) || 0);
+  if (safe >= 1024 * 1024) return `${(safe / (1024 * 1024)).toFixed(1)} МБ`;
+  if (safe >= 1024) return `${(safe / 1024).toFixed(1)} КБ`;
+  return `${Math.round(safe)} Б`;
 }
 
 function renderDiagnostics(timing) {
@@ -80,6 +92,9 @@ function prepareBrowserState(state, token) {
     assets: state.assets.map((asset) => ({
       ...asset,
       mediaUrl: authenticatedMediaUrl(asset.url, token),
+      ...(asset.previewUrl ? {
+        previewMediaUrl: authenticatedMediaUrl(asset.previewUrl, token),
+      } : {}),
     })),
   };
 }
@@ -154,6 +169,34 @@ function createEditControls() {
   error.hidden = true;
 
   const body = element('div', 'edit-body');
+  const importSection = element('section', 'media-import');
+  importSection.setAttribute('aria-labelledby', 'media-import-title');
+  const importHeading = element('div', 'media-import__heading');
+  const importTitle = element('h3', '', 'Медиа проекта');
+  importTitle.id = 'media-import-title';
+  const importButton = element('button', 'edit-button media-import__button', 'Добавить медиа');
+  importButton.type = 'button';
+  importButton.dataset.mediaImport = '';
+  const mediaInput = element('input', 'visually-hidden');
+  mediaInput.type = 'file';
+  mediaInput.accept = '.avif,.gif,.jpeg,.jpg,.png,.webp,.mp4,.mov,.m4v,.webm';
+  mediaInput.dataset.mediaInput = '';
+  const abortImport = element('button', 'edit-button media-import__abort', 'Отменить загрузку');
+  abortImport.type = 'button';
+  abortImport.hidden = true;
+  abortImport.dataset.mediaAbort = '';
+  importHeading.append(importTitle, importButton, mediaInput, abortImport);
+  const importStatus = element('p', 'media-import__status', 'Можно добавить изображение или видео');
+  importStatus.dataset.mediaImportStatus = '';
+  importStatus.setAttribute('role', 'status');
+  importStatus.setAttribute('aria-live', 'polite');
+  const importProgress = element('progress', 'media-import__progress');
+  importProgress.max = 100;
+  importProgress.value = 0;
+  importProgress.dataset.mediaProgress = '';
+  importProgress.hidden = true;
+  importProgress.setAttribute('aria-label', 'Загрузка медиа');
+  importSection.append(importHeading, importStatus, importProgress);
   const diffSection = element('section', 'edit-diff');
   const diffTitle = element('h3', '', 'Проверенные изменения');
   const diff = element('ul', 'edit-diff-list');
@@ -164,7 +207,7 @@ function createEditControls() {
   const broll = element('div', 'broll-controls');
   broll.dataset.brollControls = '';
   brollSection.append(brollTitle, broll);
-  body.append(diffSection, brollSection);
+  body.append(importSection, diffSection, brollSection);
   panel.append(heading, status, conflict, discardConflict, error, body);
   document.querySelector('.timeline-panel').before(panel);
   return {
@@ -178,6 +221,11 @@ function createEditControls() {
     error,
     diff,
     broll,
+    importButton,
+    mediaInput,
+    abortImport,
+    importStatus,
+    importProgress,
   };
 }
 
@@ -186,7 +234,26 @@ function diffLine(change, state) {
     return `Граница сцен ${change.leftScene + 1}–${change.rightScene + 1}: ${formatTime(change.from, true)} → ${formatTime(change.to, true)}`;
   }
   const labels = new Map(state.assets.map((asset) => [asset.id, asset.label]));
-  return `Медиа сцены ${change.scene + 1}: ${labels.get(change.from) || 'не выбрано'} → ${labels.get(change.to) || 'не выбрано'}`;
+  if (change.kind === 'asset') {
+    return `Медиа сцены ${change.scene + 1}: ${labels.get(change.from) || 'не выбрано'} → ${labels.get(change.to) || 'не выбрано'}`;
+  }
+  if (change.kind === 'fit') {
+    const fit = { contain: 'Вписать целиком', cover: 'Заполнить кадр' };
+    return `Кадр сцены ${change.scene + 1}: ${fit[change.from] || 'не задан'} → ${fit[change.to]}`;
+  }
+  if (change.kind === 'clip-start') {
+    const from = change.from === null ? 'не задан' : formatTime(change.from, true);
+    return `Старт видео сцены ${change.scene + 1}: ${from} → ${formatTime(change.to, true)}`;
+  }
+  if (change.kind === 'audio-mode') {
+    const audio = {
+      mute: 'Без звука',
+      mix: 'Тихо поверх голоса',
+      replace: 'Вместо голоса',
+    };
+    return `Звук сцены ${change.scene + 1}: ${audio[change.from] || 'не задан'} → ${audio[change.to]}`;
+  }
+  return `Изменение сцены ${change.scene + 1}`;
 }
 
 function validValidation(value) {
@@ -235,16 +302,30 @@ function createEditor(initialState, token) {
   let validation = { destinationRevision: null, diff: [], timing: state.timing };
   let pending = false;
   let saving = false;
+  let importing = false;
   let invalid = false;
   let conflict = false;
   let conflictFreshStateReady = false;
   let conflictedCommandCount = 0;
   let lastSnap = null;
   let focusBoundary = null;
+  let focusBroll = null;
   let timelineCleanup = null;
   let validationGeneration = 0;
+  let importPhase = 'idle';
+  let importFilename = '';
+  let importProgress = { loaded: 0, total: 0 };
+  let importer = null;
   const controls = createEditControls();
   document.querySelector('.mode-badge').textContent = 'Редактирование';
+
+  function mutationLocked() {
+    return saving || importing || conflict;
+  }
+
+  function allControlsLocked() {
+    return pending || mutationLocked();
+  }
 
   function showEditError(message) {
     controls.error.textContent = message;
@@ -256,10 +337,117 @@ function createEditor(initialState, token) {
     controls.error.hidden = true;
   }
 
+  function selectedMediaForScene(index) {
+    const original = state.brief.scenes[index]?.brollMedia;
+    let selected = original ? structuredClone(original) : null;
+    for (const command of commands) {
+      if (command.sceneIndex !== index) continue;
+      if (command.type === 'replace-broll') {
+        const asset = state.assets.find((candidate) => candidate.id === command.assetId);
+        selected = asset?.mediaKind === 'video'
+          ? { kind: 'video', assetId: command.assetId, trimStartSec: 0, fit: 'contain', audioMode: 'mute' }
+          : { kind: 'image', assetId: command.assetId, fit: 'cover' };
+      } else if (selected && command.type === 'set-broll-fit') {
+        selected.fit = command.fit;
+      } else if (selected?.kind === 'video' && command.type === 'set-broll-video-start') {
+        selected.trimStartSec = Math.round(command.trimStartSec * state.output.fps) / state.output.fps;
+      } else if (selected?.kind === 'video' && command.type === 'set-broll-audio-mode') {
+        selected.audioMode = command.audioMode;
+      }
+    }
+    const serverStart = validation.diff.find((change) => (
+      change.scene === index && change.kind === 'clip-start'
+    ));
+    if (selected?.kind === 'video' && serverStart) selected.trimStartSec = serverStart.to;
+    return selected;
+  }
+
+  function option(value, label) {
+    const result = element('option', '', label);
+    result.value = value;
+    return result;
+  }
+
+  function labeledSelect(labelText, dataName, values, value, disabled) {
+    const label = element('label', 'broll-setting');
+    label.append(element('span', '', labelText));
+    const select = element('select', 'broll-select');
+    select.dataset[dataName] = '';
+    values.forEach(([optionValue, optionLabel]) => select.append(option(optionValue, optionLabel)));
+    select.value = value;
+    select.disabled = disabled;
+    label.append(select);
+    return { label, select };
+  }
+
+  function renderSelectedMediaControls(wrapper, index, selected, asset) {
+    if (!selected || !asset) return;
+    const settings = element('div', 'broll-settings');
+    const fit = labeledSelect('Положение', 'brollFit', [
+      ['contain', 'Вписать целиком'],
+      ['cover', 'Заполнить кадр'],
+    ], selected.fit, allControlsLocked());
+    fit.select.addEventListener('change', () => {
+      if (mutationLocked()) return;
+      focusBroll = { sceneIndex: index, control: 'fit' };
+      dispatch({ type: 'set-broll-fit', sceneIndex: index, fit: fit.select.value });
+    });
+    settings.append(fit.label);
+
+    if (selected.kind === 'video' && asset.previewMediaUrl) {
+      const preview = element('video', 'broll-video');
+      preview.dataset.brollVideo = '';
+      preview.src = asset.previewMediaUrl;
+      preview.controls = true;
+      preview.preload = 'metadata';
+      preview.setAttribute('aria-label', `Предпросмотр ${asset.label}`);
+      const startRow = element('div', 'broll-start-row');
+      const start = element('output', 'broll-start', formatTime(selected.trimStartSec, true));
+      start.dataset.brollStart = '';
+      const useCurrent = element('button', 'edit-button', 'Начать с текущего места');
+      useCurrent.type = 'button';
+      useCurrent.disabled = allControlsLocked();
+      useCurrent.addEventListener('click', () => {
+        if (mutationLocked() || !Number.isFinite(preview.currentTime)) return;
+        focusBroll = { sceneIndex: index, control: 'start' };
+        dispatch({
+          type: 'set-broll-video-start',
+          sceneIndex: index,
+          trimStartSec: preview.currentTime,
+        });
+      });
+      startRow.append(start, useCurrent);
+
+      const audio = labeledSelect('Звук', 'brollAudio', [
+        ['mute', 'Без звука'],
+        ['mix', 'Тихо поверх голоса'],
+        ['replace', 'Вместо голоса'],
+      ], selected.audioMode, allControlsLocked());
+      if (asset.hasAudio !== true) {
+        audio.select.querySelector('option[value="mix"]').disabled = true;
+        audio.select.querySelector('option[value="replace"]').disabled = true;
+        audio.select.value = 'mute';
+      }
+      audio.select.addEventListener('change', () => {
+        if (mutationLocked()) return;
+        focusBroll = { sceneIndex: index, control: 'audio' };
+        dispatch({
+          type: 'set-broll-audio-mode',
+          sceneIndex: index,
+          audioMode: audio.select.value,
+        });
+      });
+      settings.prepend(preview, startRow);
+      settings.append(audio.label);
+    }
+    wrapper.append(settings);
+  }
+
   function renderBrollControls() {
     controls.broll.replaceChildren();
     const assets = state.assets.filter((asset) => (
-      /^asset-[1-9]\d*$/.test(asset.id) && asset.capabilities?.brollImage === true
+      /^asset-[1-9]\d*$/.test(asset.id)
+      && (asset.capabilities?.brollImage === true || asset.capabilities?.brollVideo === true)
     ));
     const eligible = state.brief.scenes
       .map((scene, index) => ({ scene, index }))
@@ -269,33 +457,45 @@ function createEditor(initialState, token) {
       return;
     }
     eligible.forEach(({ index }) => {
-      const wrapper = element('label', 'broll-field');
-      wrapper.append(element('span', '', `Сцена ${index + 1}`));
+      const wrapper = element('div', 'broll-field');
+      wrapper.dataset.brollScene = String(index);
+      const label = element('label', 'broll-asset-label');
+      label.append(element('span', '', `Сцена ${index + 1}`));
       const select = element('select', 'broll-select');
       select.dataset.brollSelect = '';
       select.dataset.sceneIndex = String(index);
-      const placeholder = element('option', '', 'Выберите медиа');
-      placeholder.value = '';
+      const placeholder = option('', 'Выберите медиа');
       placeholder.disabled = true;
       select.append(placeholder);
-      assets.forEach((asset) => {
-        const option = element('option', '', asset.label);
-        option.value = asset.id;
-        select.append(option);
-      });
-      const selected = validation.diff.find((change) => (
-        change.kind === 'asset' && change.scene === index
-      ));
-      select.value = selected ? selected.to : '';
-      select.disabled = pending || saving || conflict;
+      assets.forEach((asset) => select.append(option(asset.id, asset.label)));
+      const selected = selectedMediaForScene(index);
+      select.value = selected?.assetId || '';
+      select.disabled = allControlsLocked();
       select.addEventListener('change', () => {
-        if (saving || conflict) return;
+        if (mutationLocked()) return;
         if (!/^asset-[1-9]\d*$/.test(select.value)) return;
+        focusBroll = { sceneIndex: index, control: 'asset' };
         dispatch({ type: 'replace-broll', sceneIndex: index, assetId: select.value });
       });
-      wrapper.append(select);
+      label.append(select);
+      wrapper.append(label);
+      const asset = selected
+        ? state.assets.find((candidate) => candidate.id === selected.assetId)
+        : null;
+      renderSelectedMediaControls(wrapper, index, selected, asset);
       controls.broll.append(wrapper);
     });
+    if (focusBroll && !allControlsLocked()) {
+      const scene = controls.broll.querySelector(`[data-broll-scene="${focusBroll.sceneIndex}"]`);
+      const selectors = {
+        asset: '[data-broll-select]',
+        fit: '[data-broll-fit]',
+        start: '.broll-start-row button',
+        audio: '[data-broll-audio]',
+      };
+      scene?.querySelector(selectors[focusBroll.control])?.focus({ preventScroll: true });
+      focusBroll = null;
+    }
   }
 
   function renderEditChrome() {
@@ -303,9 +503,9 @@ function createEditor(initialState, token) {
     controls.status.textContent = conflict
       ? `Ожидают решения устаревшие правки: ${conflictedCommandCount}`
       : count === 0 ? 'Изменений нет' : `Изменений: ${count}`;
-    controls.undo.disabled = count === 0 || pending || saving || conflict;
-    controls.redo.disabled = redoStack.length === 0 || pending || saving || conflict;
-    controls.save.disabled = pending || saving || invalid || conflict
+    controls.undo.disabled = count === 0 || allControlsLocked();
+    controls.redo.disabled = redoStack.length === 0 || allControlsLocked();
+    controls.save.disabled = allControlsLocked() || invalid
       || !validation || validation.diff.length === 0;
     controls.conflict.hidden = !conflict;
     controls.conflict.textContent = conflict
@@ -316,7 +516,30 @@ function createEditor(initialState, token) {
           : `Конфликт ревизий: устаревшие правки (${conflictedCommandCount}) не будут применены. Последнюю версию загрузить не удалось; продолжение заблокировано.`
       : '';
     controls.discardConflict.hidden = !conflict;
-    controls.discardConflict.disabled = !conflict || !conflictFreshStateReady || pending || saving;
+    controls.discardConflict.disabled = !conflict || !conflictFreshStateReady || pending || saving || importing;
+    controls.importButton.disabled = allControlsLocked() || importer?.busy() === true;
+    controls.mediaInput.disabled = allControlsLocked() || importer?.busy() === true;
+    controls.abortImport.hidden = !importing;
+    controls.abortImport.disabled = !importing;
+    controls.importProgress.hidden = importPhase === 'idle';
+    const total = Math.max(importProgress.total, 0);
+    const percent = total > 0 ? Math.min(100, Math.round((importProgress.loaded / total) * 100)) : 0;
+    controls.importProgress.value = percent;
+    if (importPhase === 'uploading') {
+      controls.importStatus.textContent = (
+        `Загрузка ${importFilename} · ${formatBytes(importProgress.loaded)} / ${formatBytes(total)} · ${percent}%`
+      );
+    } else if (importPhase === 'processing') {
+      controls.importStatus.textContent = `Проверяем и готовим предпросмотр… ${importFilename}`;
+    } else if (importPhase === 'success') {
+      controls.importStatus.textContent = `Добавлено: ${importFilename}`;
+    } else if (importPhase === 'aborted') {
+      controls.importStatus.textContent = `Загрузка отменена: ${importFilename}`;
+    } else if (importPhase === 'error') {
+      controls.importStatus.textContent = `Не удалось добавить: ${importFilename}`;
+    } else {
+      controls.importStatus.textContent = 'Можно добавить изображение или видео';
+    }
     controls.diff.replaceChildren();
     if (validation.diff.length === 0) {
       controls.diff.append(element('li', 'edit-diff-empty', 'Проверенных изменений нет'));
@@ -341,7 +564,7 @@ function createEditor(initialState, token) {
       edit: {
         lastSnap,
         invalid,
-        locked: saving || conflict,
+        locked: mutationLocked(),
         focusBoundary,
         onBoundaryFocus: (index) => { focusBoundary = index; },
         onBoundaryChange: dispatch,
@@ -364,6 +587,7 @@ function createEditor(initialState, token) {
     conflictFreshStateReady = false;
     lastSnap = null;
     focusBoundary = null;
+    focusBroll = null;
     clearEditError();
     renderAll();
     let latest;
@@ -389,6 +613,70 @@ function createEditor(initialState, token) {
     lastSnap = null;
     clearEditError();
     renderAll();
+  }
+
+  function sameSessionIdentity(left, right) {
+    return left?.session?.baseRevision === right?.session?.baseRevision
+      && left?.session?.baseHash === right?.session?.baseHash
+      && left?.session?.manifestHash === right?.session?.manifestHash;
+  }
+
+  async function refreshAfterImport() {
+    const latest = await loadState(token);
+    if (!sameSessionIdentity(state, latest)) {
+      conflictedCommandCount = commands.length + redoStack.length;
+      commands.length = 0;
+      redoStack.length = 0;
+      state = prepareBrowserState(latest, token);
+      validation = { destinationRevision: null, diff: [], timing: state.timing };
+      pending = false;
+      saving = false;
+      invalid = false;
+      conflict = true;
+      conflictFreshStateReady = true;
+      lastSnap = null;
+      focusBoundary = null;
+      focusBroll = null;
+      return;
+    }
+    state = prepareBrowserState(latest, token);
+  }
+
+  function importFailureMessage(status) {
+    if (status === 413) return 'Файл превышает допустимый размер.';
+    if (status === 415) return 'Этот формат файла не поддерживается.';
+    if (status === 422) return 'Файл не удалось прочитать как изображение или видео.';
+    if (status === 507) return 'На диске недостаточно места для обработки файла.';
+    return 'Не удалось добавить медиа. Текущие правки сохранены в памяти.';
+  }
+
+  async function startImport(file) {
+    if (!(file instanceof File) || pending || mutationLocked() || importer.busy()) return;
+    importing = true;
+    importPhase = 'uploading';
+    importFilename = file.name;
+    importProgress = { loaded: 0, total: file.size };
+    focusBroll = null;
+    clearEditError();
+    renderAll();
+    try {
+      await importer.importFile(file);
+      importPhase = conflict ? 'error' : 'success';
+    } catch (error) {
+      if (error?.status === 409) {
+        importPhase = 'error';
+        await reloadAfterConflict(++validationGeneration);
+      } else if (error?.code === 'MEDIA_IMPORT_ABORTED') {
+        importPhase = 'aborted';
+      } else {
+        importPhase = 'error';
+        showEditError(importFailureMessage(error?.status));
+      }
+    } finally {
+      importing = false;
+      controls.mediaInput.value = '';
+      renderAll();
+    }
   }
 
   async function validateCommands(snap = null) {
@@ -428,7 +716,7 @@ function createEditor(initialState, token) {
   }
 
   function dispatch(command, snap = null) {
-    if (saving || conflict) return;
+    if (mutationLocked()) return;
     focusBoundary = snap && snap.restoreFocus ? snap.index : null;
     commands.push(command);
     redoStack.length = 0;
@@ -436,27 +724,29 @@ function createEditor(initialState, token) {
   }
 
   function undo() {
-    if (saving || conflict) return;
+    if (mutationLocked()) return;
     const command = commands.pop();
     if (!command) return;
     redoStack.push(command);
     lastSnap = null;
     focusBoundary = null;
+    focusBroll = null;
     void validateCommands();
   }
 
   function redo() {
-    if (saving || conflict) return;
+    if (mutationLocked()) return;
     const command = redoStack.pop();
     if (!command) return;
     commands.push(command);
     lastSnap = null;
     focusBoundary = null;
+    focusBroll = null;
     void validateCommands();
   }
 
   function discardConflictAndContinue() {
-    if (!conflict || !conflictFreshStateReady || pending || saving) return;
+    if (!conflict || !conflictFreshStateReady || pending || saving || importing) return;
     validationGeneration += 1;
     conflict = false;
     conflictFreshStateReady = false;
@@ -464,6 +754,7 @@ function createEditor(initialState, token) {
     invalid = false;
     lastSnap = null;
     focusBoundary = null;
+    focusBroll = null;
     clearEditError();
     renderAll();
   }
@@ -480,6 +771,7 @@ function createEditor(initialState, token) {
     const payload = editPayload(state, commands);
     saving = true;
     focusBoundary = null;
+    focusBroll = null;
     clearEditError();
     renderAll();
     let result;
@@ -524,6 +816,29 @@ function createEditor(initialState, token) {
     renderAll();
   }
 
+  importer = createMediaImporter({
+    endpoint: '/api/assets/import',
+    token,
+    origin: window.location.origin,
+    onPhase: ({ phase, file }) => {
+      importPhase = phase;
+      importFilename = file.name;
+      renderEditChrome();
+    },
+    onProgress: ({ loaded, total }) => {
+      importProgress = { loaded, total };
+      renderEditChrome();
+    },
+    onSuccess: refreshAfterImport,
+  });
+  controls.importButton.addEventListener('click', () => {
+    if (!allControlsLocked() && !importer.busy()) controls.mediaInput.click();
+  });
+  controls.mediaInput.addEventListener('change', () => {
+    const [file] = controls.mediaInput.files;
+    if (file) void startImport(file);
+  });
+  controls.abortImport.addEventListener('click', () => importer.abort());
   controls.undo.addEventListener('click', undo);
   controls.redo.addEventListener('click', redo);
   controls.discardConflict.addEventListener('click', discardConflictAndContinue);

@@ -43,6 +43,7 @@ const STATIC_FILES = new Map([
   ['/', 'index.html'],
   ['/index.html', 'index.html'],
   ['/app.js', 'app.js'],
+  ['/media-import.js', 'media-import.js'],
   ['/timeline.js', 'timeline.js'],
   ['/player-sync.js', 'player-sync.js'],
   ['/styles.css', 'styles.css'],
