@@ -40,7 +40,10 @@ export const getMusicPlaybackProps = ({ trimBeforeFrames = 0, playbackRate = 1 }
 // Мягкое появление сцены (кроссфейд-cut)
 const FadeIn = ({ children, dur }) => {
   const frame = useCurrentFrame();
-  const op = interpolate(frame, [0, 8, dur - 6, dur], [0, 1, 1, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+  const fadeEnd = Math.min(8, Math.max(1, dur - 1));
+  const op = dur === 1
+    ? 1
+    : interpolate(frame, [0, fadeEnd], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   return <AbsoluteFill style={{ opacity: op }}>{children}</AbsoluteFill>;
 };
 
@@ -84,7 +87,7 @@ export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc =
         {timedScenes.map(({ scene: sc, from, durationInFrames: sceneDuration, sourceStartFrame }, i) => {
           const Comp = SCENES[sc.scene] || SCENES.fullscreen;
           return (
-            <Sequence key={i} from={from} durationInFrames={sceneDuration} premountFor={Math.round(fps)} layout="none">
+            <Sequence key={i} from={from} durationInFrames={sceneDuration} premountFor={Math.round(fps)}>
               <FadeIn dur={sceneDuration}>
                 <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} sourceStartFrame={sourceStartFrame} durationInFrames={sceneDuration} videoTitle={sc.videoTitle || videoTitle} />
               </FadeIn>
