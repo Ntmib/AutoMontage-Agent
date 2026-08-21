@@ -228,10 +228,12 @@ Project lesson planning использует уникальную JSON/Markdown 
 генератора к transactional publisher. После успеха и ошибки удаляются лишь заранее снятые inode;
 подмена сохраняется в private tombstone и завершает planning fail closed.
 
-SIGINT/SIGTERM Review сначала abort-ит активный import, затем закрывает HTTP server. Media child
-получает `SIGTERM`, а после ограниченного grace period — `SIGKILL`; import в любом случае освобождает
-controller и делает bounded retry shared lease release. Persistent release error остаётся явным и
-прикрепляется к исходной ошибке операции, не маскируя её.
+SIGINT/SIGTERM Review сначала abort-ит активный import и начинает закрытие HTTP server, но процесс
+завершает только после всех tracked import-finalizers: quarantine cleanup, controller release и
+bounded retry shared lease release. Media child получает `SIGTERM`, а после ограниченного grace
+period — `SIGKILL`. Persistent release error остаётся явным и прикрепляется к исходной ошибке
+операции, не маскируя её. Публичный `automontage review` запускает Review неблокирующим child,
+пересылает каждый shutdown signal ровно один раз и принимает его exit code лишь после cleanup.
 
 Save не доверяет browser descriptor. Он повторно сканирует immutable bundle, открывает master
 без следования symlink, передаёт тот же descriptor в bounded ffprobe, хэширует те же байты и
@@ -259,8 +261,9 @@ Token обычно передаётся только существующему 
 launch сервер вместо URL в stdout создаёт в системной temp-папке exclusive regular URL-файл
 mode `0600`; stdout содержит лишь путь. Owned файл удаляется при закрытии сервера либо через
 10 минут, а collision, symlink или ошибка записи закрывают старт сервера. CLI обрабатывает
-обычные `SIGINT` и `SIGTERM` через `server.close()`: close-listener удаляет owned handoff до
-завершения процесса. Для не перехватываемого `SIGKILL` cleanup намеренно не обещается.
+обычные `SIGINT` и `SIGTERM`: close-listener удаляет owned handoff, а import-finalizer освобождает
+lease/quarantine до завершения прямого CLI или публичной wrapper-команды. Для не перехватываемого
+`SIGKILL` cleanup намеренно не обещается.
 
 `scripts/review/waveform.js` best-effort создаёт через argv-only ffmpeg изображение
 `previews/review-waveform-<fingerprint>.png`. Fingerprint включает workspace-relative identity,

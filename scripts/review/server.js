@@ -1101,7 +1101,10 @@ async function routeRequest({
       return;
     }
     const importAbortController = new AbortController();
+    let resolveImportFinalized;
+    const importFinalized = new Promise((resolve) => { resolveImportFinalized = resolve; });
     runtime.activeImportAbortControllers.add(importAbortController);
+    runtime.activeImportFinalizers.add(importFinalized);
     const socket = request.socket;
     let importPending = true;
     const abortPendingImport = () => {
@@ -1133,9 +1136,11 @@ async function routeRequest({
     } finally {
       importPending = false;
       runtime.activeImportAbortControllers.delete(importAbortController);
+      runtime.activeImportFinalizers.delete(importFinalized);
       request.off('aborted', abortPendingImport);
       response.off('close', abortPendingImport);
       socket?.off('close', abortPendingImport);
+      resolveImportFinalized();
     }
     return;
   }
@@ -1395,6 +1400,7 @@ async function startReviewServer({
     importController,
     fileSystem,
     activeImportAbortControllers: new Set(),
+    activeImportFinalizers: new Set(),
   };
   const token = randomBytes(32).toString('base64url');
   let origin = 'http://127.0.0.1';
@@ -1475,6 +1481,11 @@ async function startReviewServer({
     handoffPath: handoff ? handoff.path : null,
     abortActiveImports() {
       for (const controller of runtime.activeImportAbortControllers) controller.abort();
+    },
+    async waitForActiveImports() {
+      while (runtime.activeImportFinalizers.size > 0) {
+        await Promise.allSettled([...runtime.activeImportFinalizers]);
+      }
     },
   };
 }

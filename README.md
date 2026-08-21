@@ -274,7 +274,9 @@ live/foreign owner не удаляется. Browser import и его startup cle
 объекты с durable owner record и совпавшим inode. UUID и возраст файла ownership не доказывают.
 Cleanup сначала уносит exact target в private tombstone и сохраняет позднюю подмену. При завершении
 Review по SIGINT/SIGTERM активный import отменяется, зависший child ограниченно эскалируется до
-SIGKILL, а controller и project lease освобождаются для следующего запуска.
+SIGKILL, а CLI ждёт полного import-finalizer: controller, quarantine и project lease освобождаются
+до exit 130/143 и доступны следующему запуску. Это одинаково для прямого Review CLI и публичной
+команды `automontage review`, которая пересылает сигнал дочернему серверу и ждёт его cleanup.
 При
 `409` браузер блокирует timeline, b-roll и Save до безопасной повторной проверки либо загрузки
 свежего disk state; устаревшие команды не применяются автоматически. Approved-ревизии остаются

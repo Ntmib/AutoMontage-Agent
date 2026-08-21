@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -68,6 +68,158 @@ function successfulImageProcessor(invocation) {
     fs.writeFileSync(invocation.args.at(-1), 'normalized image');
   }
   return Promise.resolve({ stdout: '', stderr: '', code: 0, signal: null });
+}
+
+async function waitFor(predicate, message, timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(message);
+}
+
+function childExit(child, timeoutMs = 12_000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('CLI child did not exit in time')), timeoutMs);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    });
+  });
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error && error.code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+function childProcessPid(parentPid, commandPattern) {
+  const result = spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
+  if (result.status !== 0) return null;
+  for (const line of result.stdout.split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+    if (match && Number(match[2]) === parentPid && commandPattern.test(match[3])) {
+      return Number(match[1]);
+    }
+  }
+  return null;
+}
+
+async function startRealReviewCommand(t, fixture, { publicCommand = false } = {}) {
+  const commandArgs = publicCommand
+    ? [path.join(ROOT, 'scripts', 'cli.js'), 'review']
+    : [path.join(ROOT, 'scripts', 'review', 'cli.js')];
+  commandArgs.push('--project-dir', fixture.projectDir, '--edit', '--no-open');
+  const child = spawn(process.execPath, commandArgs, {
+    cwd: ROOT,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  t.after(async () => {
+    if (!processIsAlive(child.pid)) return;
+    child.kill('SIGTERM');
+    try { await childExit(child, 3_000); } catch (_) { child.kill('SIGKILL'); }
+  });
+  await waitFor(
+    () => /Secure session URL file: .+\n/.test(stdout),
+    `review command did not start: ${stderr}`,
+  );
+  const handoffPath = /Secure session URL file: (.+)\n/.exec(stdout)[1];
+  const url = new URL(fs.readFileSync(handoffPath, 'utf8').trim());
+  const token = url.hash.slice('#token='.length);
+  let nestedReviewPid = null;
+  if (publicCommand) {
+    await waitFor(() => {
+      nestedReviewPid = childProcessPid(child.pid, /scripts\/review\/cli\.js/);
+      return Number.isInteger(nestedReviewPid);
+    }, 'public review wrapper did not expose its review child');
+    t.after(async () => {
+      if (!processIsAlive(nestedReviewPid)) return;
+      process.kill(nestedReviewPid, 'SIGTERM');
+      await waitFor(() => !processIsAlive(nestedReviewPid), 'review child survived test cleanup');
+    });
+  }
+  return {
+    child,
+    nestedReviewPid,
+    origin: url.origin,
+    token,
+    handoffPath,
+  };
+}
+
+function beginImport(command, { bytes, declaredLength, filename, contentType }) {
+  const url = new URL('/api/assets/import', command.origin);
+  const request = http.request({
+    host: url.hostname,
+    port: url.port,
+    path: url.pathname,
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${command.token}`,
+      origin: command.origin,
+      'content-length': String(declaredLength),
+      'content-type': contentType,
+      'x-automontage-filename': filename,
+    },
+  });
+  request.on('error', () => {});
+  request.write(bytes);
+  if (bytes.length === declaredLength) request.end();
+  return request;
+}
+
+function activeQuarantines(projectDir) {
+  const parent = path.join(projectDir, 'tmp', 'review-imports');
+  if (!fs.existsSync(parent)) return [];
+  return fs.readdirSync(parent).filter((name) => /^[0-9a-f-]{36}$/.test(name));
+}
+
+async function assertCleanSignalExit({ t, fixture, command, signal, request }) {
+  const exit = childExit(command.child);
+  command.child.kill(signal);
+  assert.deepEqual(await exit, {
+    code: signal === 'SIGINT' ? 130 : 143,
+    signal: null,
+  });
+  request.destroy();
+  assert.equal(fs.existsSync(path.join(fixture.projectDir, '.project-mutation.lock')), false);
+  const quarantines = activeQuarantines(fixture.projectDir);
+  assert.deepEqual(quarantines, [], JSON.stringify(quarantines.map((name) => ({
+    name,
+    entries: fs.readdirSync(path.join(fixture.projectDir, 'tmp', 'review-imports', name)),
+  }))));
+  assert.equal(fs.existsSync(command.handoffPath), false);
+  if (command.nestedReviewPid) {
+    await waitFor(
+      () => !processIsAlive(command.nestedReviewPid),
+      'public review child survived its wrapper signal',
+    );
+  }
+
+  const retry = await startRealReviewCommand(t, fixture, {
+    publicCommand: Boolean(command.nestedReviewPid),
+  });
+  const retryExit = childExit(retry.child);
+  retry.child.kill(signal);
+  assert.deepEqual(await retryExit, {
+    code: signal === 'SIGINT' ? 130 : 143,
+    signal: null,
+  });
 }
 
 test('review requires an existing project directory', (t) => {
@@ -185,6 +337,44 @@ test('review CLI signal handlers close the server, remove handoff and restore li
   }
 });
 
+test('review CLI retains signal guards until tracked import finalizers settle', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const session = await startReviewServer({
+    root: ROOT,
+    projectDir,
+    open: false,
+    runToolImpl: () => { throw new Error('waveform unavailable'); },
+  });
+  t.after(() => closeServer(session.server));
+  let resolveFinalizers;
+  const finalizers = new Promise((resolve) => { resolveFinalizers = resolve; });
+  const processLike = new EventEmitter();
+  let aborts = 0;
+  let exitCode = null;
+  processLike.exit = (code) => { exitCode = code; };
+  const restore = installReviewShutdownHandlers({
+    server: session.server,
+    processLike,
+    abortActiveImport: () => { aborts += 1; },
+    waitForActiveImports: () => finalizers,
+  });
+  t.after(restore);
+
+  const closed = new Promise((resolve) => session.server.once('close', resolve));
+  processLike.emit('SIGTERM');
+  await closed;
+  assert.equal(exitCode, null);
+  assert.equal(processLike.listenerCount('SIGTERM'), 1);
+  processLike.emit('SIGTERM');
+  assert.equal(aborts, 1);
+  assert.equal(exitCode, null);
+
+  resolveFinalizers();
+  await waitFor(() => exitCode !== null, 'shutdown did not finish after import finalizers');
+  assert.equal(exitCode, 143);
+  assert.equal(processLike.listenerCount('SIGTERM'), 0);
+});
+
 test('CLI shutdown aborts a real active import, escalates its child, and permits immediate retry', async (t) => {
   const fixture = makeReviewProject(t);
   const marker = path.join(fixture.root, 'shutdown-child-sigterm.txt');
@@ -254,6 +444,85 @@ test('CLI shutdown aborts a real active import, escalates its child, and permits
   });
   t.after(() => closeServer(retrySession.server));
   assert.equal(await postImport(retrySession, 'retry.png'), 201);
+});
+
+test('real review CLI waits for partial-upload cleanup before signal exit', {
+  skip: process.platform === 'win32' ? 'POSIX signal lifecycle' : false,
+  timeout: 45_000,
+}, async (t) => {
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    await t.test(signal, async (signalTest) => {
+      const fixture = makeReviewProject(signalTest);
+      const command = await startRealReviewCommand(signalTest, fixture);
+      const request = beginImport(command, {
+        bytes: Buffer.from('partial'),
+        declaredLength: 1024 * 1024,
+        filename: 'partial.mp4',
+        contentType: 'video/mp4',
+      });
+      await waitFor(
+        () => fs.existsSync(path.join(fixture.projectDir, '.project-mutation.lock'))
+          && activeQuarantines(fixture.projectDir).length === 1,
+        'partial upload never acquired its lease and quarantine',
+      );
+      await assertCleanSignalExit({
+        t: signalTest, fixture, command, signal, request,
+      });
+    });
+  }
+});
+
+test('real review CLI waits for real ffmpeg cleanup before signal exit', {
+  skip: process.platform === 'win32' ? 'POSIX signal lifecycle' : false,
+  timeout: 60_000,
+}, async (t) => {
+  const video = fs.readFileSync(path.join(ROOT, 'examples', 'demo-preview.mp4'));
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    await t.test(signal, async (signalTest) => {
+      const fixture = makeReviewProject(signalTest);
+      const command = await startRealReviewCommand(signalTest, fixture);
+      const request = beginImport(command, {
+        bytes: video,
+        declaredLength: video.length,
+        filename: 'processing.mp4',
+        contentType: 'video/mp4',
+      });
+      await waitFor(
+        () => Number.isInteger(childProcessPid(command.child.pid, /(?:^|\/)ffmpeg(?:\s|$)/)),
+        'real ffmpeg child never started',
+        20_000,
+      );
+      await assertCleanSignalExit({
+        t: signalTest, fixture, command, signal, request,
+      });
+    });
+  }
+});
+
+test('public review wrapper forwards signals and waits for child import cleanup', {
+  skip: process.platform === 'win32' ? 'POSIX signal lifecycle' : false,
+  timeout: 45_000,
+}, async (t) => {
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    await t.test(signal, async (signalTest) => {
+      const fixture = makeReviewProject(signalTest);
+      const command = await startRealReviewCommand(signalTest, fixture, { publicCommand: true });
+      const request = beginImport(command, {
+        bytes: Buffer.from('partial'),
+        declaredLength: 1024 * 1024,
+        filename: 'public-partial.mp4',
+        contentType: 'video/mp4',
+      });
+      await waitFor(
+        () => fs.existsSync(path.join(fixture.projectDir, '.project-mutation.lock'))
+          && activeQuarantines(fixture.projectDir).length === 1,
+        'public partial upload never acquired its lease and quarantine',
+      );
+      await assertCleanSignalExit({
+        t: signalTest, fixture, command, signal, request,
+      });
+    });
+  }
 });
 
 test('top-level CLI dispatches review without forwarding its arguments to build', (t) => {

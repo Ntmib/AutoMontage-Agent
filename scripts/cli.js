@@ -7,7 +7,7 @@
 //   automontage --help                      – помощь
 const path = require('path');
 const fs = require('fs');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { buildDemoArgs, ensureOutputDestination } = require('./project/cli-options');
 const { configureMediaToolPath } = require('./env');
 
@@ -71,17 +71,40 @@ if (argv[0] === 'doctor') {
 
 // локальная проверка проекта: аргументы review никогда не попадают в build.js
 if (argv[0] === 'review') {
-  try {
-    execFileSync(
-      process.execPath,
-      [path.join(ROOT, 'scripts', 'review', 'cli.js'), ...argv.slice(1)],
-      { stdio: 'inherit', cwd: process.cwd(), shell: false },
-    );
-  } catch (e) {
-    process.exit(e.status || 1);
+  const child = spawn(
+    process.execPath,
+    [path.join(ROOT, 'scripts', 'review', 'cli.js'), ...argv.slice(1)],
+    { stdio: 'inherit', cwd: process.cwd(), shell: false },
+  );
+  const signalExitCodes = { SIGINT: 130, SIGTERM: 143 };
+  let forwardedSignal = null;
+  let settled = false;
+  const handlers = {};
+  const restore = () => {
+    for (const signal of Object.keys(signalExitCodes)) {
+      process.removeListener(signal, handlers[signal]);
+    }
+  };
+  const finish = (code) => {
+    if (settled) return;
+    settled = true;
+    restore();
+    process.exit(code);
+  };
+  for (const signal of Object.keys(signalExitCodes)) {
+    handlers[signal] = () => {
+      if (forwardedSignal) return;
+      forwardedSignal = signal;
+      child.kill(signal);
+    };
+    process.on(signal, handlers[signal]);
   }
-  process.exit(0);
-}
+  child.once('error', () => finish(1));
+  child.once('exit', (code) => {
+    if (Number.isInteger(code)) finish(code);
+    else finish(forwardedSignal ? signalExitCodes[forwardedSignal] : 1);
+  });
+} else {
 
 const buildJs = path.join(ROOT, 'scripts', 'build.js');
 
@@ -108,4 +131,5 @@ try {
   execFileSync(process.execPath, [buildJs, ...forward], { stdio: 'inherit', cwd: process.cwd() });
 } catch (e) {
   process.exit(e.status || 1);
+}
 }

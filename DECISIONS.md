@@ -211,8 +211,11 @@ Review Save публикует Markdown и канонический JSON до ma
 Bearer URL не выводится в обычный stdout. Если автоматический browser launch не используется
 или падает, выбран временный exclusive regular-файл mode `0600` с bounded TTL; stdout показывает
 только путь. Это сохраняет ручной запуск, не расширяя token exposure за browser-launch contract.
-Обычные `SIGINT`/`SIGTERM` закрывают сервер штатно, чтобы его close-listener удалил owned handoff;
-неперехватываемый `SIGKILL` вне этого обещания.
+Обычные `SIGINT`/`SIGTERM` начинают штатное закрытие сервера, но exit ждёт tracked import-finalizers,
+чтобы lease/quarantine исчезли до кода 130/143. Публичный wrapper использует asynchronous child,
+пересылает сигнал ровно один раз и ждёт тот же cleanup outcome; синхронный `execFileSync` отвергнут,
+потому что сигнал завершал wrapper и оставлял Review child жить отдельно. Неперехватываемый
+`SIGKILL` вне этого обещания.
 
 ## D-014 – Video b-roll импортируется как immutable normalized asset
 

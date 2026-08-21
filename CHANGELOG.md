@@ -32,6 +32,8 @@
   quarantine/stage/claim bytes; live/foreign/malformed/replaced и name-only UUID остаются нетронуты.
 - Stage/claim/canonical identities теперь журналируются до записи bytes, cleanup переносит цель в
   private tombstone до проверки и удаления, а shutdown abort-ит import с bounded SIGTERM→SIGKILL.
+- Прямой Review CLI и публичный `automontage review` теперь ждут tracked import-finalizers перед
+  exit 130/143; wrapper пересылает сигнал дочернему серверу и не оставляет lease/quarantine orphan.
 
 ### Исправлено
 

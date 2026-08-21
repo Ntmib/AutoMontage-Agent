@@ -1142,12 +1142,12 @@ function cleanupOwnedImport(owned, fileSystem) {
       && bundleEntries.length === expectedBundle.size
       && bundleEntries.every((entry) => expectedBundle.has(entry))) {
       const contentRemoved = [
-        [owned.canonicalPath, owned.canonicalIdentity],
-        [owned.normalizedPreviewPath, owned.previewIdentity],
-        [owned.uploadPath, owned.uploadIdentity],
-        [owned.claimPrivatePath, owned.claimIdentity],
-      ].every(([target, expected]) => !target || !expected
-        || removeIfOwnedFile(fileSystem, target, expected));
+        [owned.canonicalPath, owned.canonicalIdentity, 'mutable-file'],
+        [owned.normalizedPreviewPath, owned.previewIdentity, 'mutable-file'],
+        [owned.uploadPath, owned.uploadIdentity, 'mutable-file'],
+        [owned.claimPrivatePath, owned.claimIdentity, 'file'],
+      ].every(([target, expected, kind]) => !target || !expected
+        || claimAndRemoveOwnedPath({ target, expected, kind, fileSystem }));
       if (contentRemoved
         && removeIfOwnedFile(fileSystem, owned.ownerAnchorPath, owned.ownerIdentity)
         && removeIfOwnedFile(fileSystem, owned.ownerPath, owned.ownerIdentity)

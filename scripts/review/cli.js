@@ -63,6 +63,7 @@ async function main(argv = process.argv.slice(2)) {
     installReviewShutdownHandlers({
       server: session.server,
       abortActiveImport: session.abortActiveImports,
+      waitForActiveImports: session.waitForActiveImports,
     });
     for (const message of formatReviewSessionMessages({ session, editable: options.editable })) {
       console.log(message);
@@ -77,48 +78,54 @@ function installReviewShutdownHandlers({
   server,
   processLike = process,
   abortActiveImport = () => {},
+  waitForActiveImports = async () => {},
 } = {}) {
   if (!server || typeof server.close !== 'function'
     || !processLike || typeof processLike.on !== 'function'
     || typeof processLike.removeListener !== 'function'
     || typeof processLike.exit !== 'function'
-    || typeof abortActiveImport !== 'function') {
+    || typeof abortActiveImport !== 'function'
+    || typeof waitForActiveImports !== 'function') {
     throw new Error('review shutdown handler requires a server and process');
   }
   let installed = true;
   let shuttingDown = false;
   const handlers = {};
+  const restoreAfterExternalClose = () => {
+    if (!shuttingDown) restore();
+  };
   const restore = () => {
     if (!installed) return;
     installed = false;
     for (const signal of Object.keys(SIGNAL_EXIT_CODES)) {
       processLike.removeListener(signal, handlers[signal]);
     }
-    server.removeListener('close', restore);
+    server.removeListener('close', restoreAfterExternalClose);
   };
-  const shutdown = (signal) => {
+  const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
     try { abortActiveImport(); } catch (_) { /* shutdown must still close the server */ }
+    const closed = new Promise((resolve) => {
+      if (!server.listening) {
+        resolve();
+        return;
+      }
+      try { server.close(() => resolve()); } catch (_) { resolve(); }
+    });
+    try { await waitForActiveImports(); } catch (_) { /* cleanup outcome reached */ }
+    await closed;
     const finish = () => {
       restore();
       processLike.exit(SIGNAL_EXIT_CODES[signal]);
     };
-    if (!server.listening) {
-      finish();
-      return;
-    }
-    try {
-      server.close(finish);
-    } catch (_) {
-      finish();
-    }
+    finish();
   };
   for (const signal of Object.keys(SIGNAL_EXIT_CODES)) {
     handlers[signal] = () => shutdown(signal);
     processLike.on(signal, handlers[signal]);
   }
-  server.once('close', restore);
+  server.once('close', restoreAfterExternalClose);
   return restore;
 }
 
