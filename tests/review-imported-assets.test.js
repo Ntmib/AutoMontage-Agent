@@ -374,7 +374,7 @@ test('review state exposes imported media through opaque URLs without server-onl
   assert.doesNotMatch(JSON.stringify(state.assets), /assets\/broll|previews\/broll|[a-f0-9]{64}|\/Users\//);
 });
 
-test('orphan cleanup only removes owned UUID stages and previews without a published bundle', (t) => {
+test('orphan cleanup preserves UUID stages and previews without a durable ownership record', (t) => {
   const projectDir = makeProject(t);
   const orphanId = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1';
   const publishedId = '7c0f5b6a-a921-4a51-8787-467a3a5c7c20';
@@ -390,9 +390,9 @@ test('orphan cleanup only removes owned UUID stages and previews without a publi
   fs.symlinkSync(stage, symlinkStage);
 
   const removed = cleanupOrphanImportedStages({ projectDir });
-  assert.deepEqual(removed.sort(), [preview, stage].sort());
-  assert.equal(fs.existsSync(stage), false);
-  assert.equal(fs.existsSync(preview), false);
+  assert.deepEqual(removed, []);
+  assert.equal(fs.existsSync(stage), true);
+  assert.equal(fs.existsSync(preview), true);
   assert.equal(fs.existsSync(publishedStage), true);
   assert.equal(fs.lstatSync(symlinkStage).isSymbolicLink(), true);
 });
@@ -419,7 +419,7 @@ test('orphan cleanup removes an exactly claimed crash remnant without asset.json
   }
 });
 
-test('orphan cleanup recovers the real directory-null crash stage with its owned preview', (t) => {
+test('orphan cleanup preserves a directory absent from the last durable claim', (t) => {
   const projectDir = makeProject(t);
   const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
   const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
@@ -431,15 +431,13 @@ test('orphan cleanup recovers the real directory-null crash stage with its owned
     claimOverrides: { directory: null, canonical: null },
   });
 
-  assert.deepEqual(new Set(cleanupOrphanImportedStages({ projectDir })), new Set([
-    previewPath, mediaDirectory, claimPath,
-  ]));
+  assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), []);
   for (const target of [previewPath, mediaDirectory, claimPath]) {
-    assert.equal(fs.existsSync(target), false, target);
+    assert.equal(fs.existsSync(target), true, target);
   }
 });
 
-test('orphan cleanup uses the last complete claim when the next append was torn', (t) => {
+test('orphan cleanup preserves unrecorded directory state when the next claim append was torn', (t) => {
   const projectDir = makeProject(t);
   const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
   const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
@@ -452,9 +450,10 @@ test('orphan cleanup uses the last complete claim when the next append was torn'
   });
   fs.appendFileSync(claimPath, '{"version":1,"id":"torn');
 
-  assert.deepEqual(new Set(cleanupOrphanImportedStages({ projectDir })), new Set([
-    previewPath, mediaDirectory, claimPath,
-  ]));
+  assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), []);
+  assert.equal(fs.existsSync(previewPath), true);
+  assert.equal(fs.existsSync(mediaDirectory), true);
+  assert.equal(fs.existsSync(claimPath), true);
 });
 
 test('orphan cleanup preserves a non-empty directory absent from the last durable claim', (t) => {

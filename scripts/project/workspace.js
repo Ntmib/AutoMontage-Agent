@@ -175,6 +175,7 @@ function stageOwnedSiblingFile(destination, data, {
     handle = fileSystem.openSync(temporaryPath, flags, 0o600);
     identity = fileSystem.fstatSync(handle);
     if (!identity.isFile()) throw new Error('temporary project file must be regular');
+    if (typeof fileSystem.fchmodSync === 'function') fileSystem.fchmodSync(handle, 0o600);
     fileSystem.writeFileSync(handle, data, { encoding: 'utf8' });
     fileSystem.fsyncSync(handle);
   } catch (error) {

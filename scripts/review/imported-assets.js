@@ -47,11 +47,6 @@ function ownedDirectory(fileSystem, projectDir, segments) {
   return directory;
 }
 
-function sameOwnedIdentity(left, right) {
-  return left && right && left.dev === right.dev && left.ino === right.ino
-    && left.size === right.size && left.mtimeMs === right.mtimeMs;
-}
-
 function fileSnapshot(stat, nanosecondStat) {
   return {
     dev: stat.dev,
@@ -413,28 +408,6 @@ function targetIdentityState(fileSystem, target, expected, kind) {
   return { matches, exists: true };
 }
 
-function unrecordedEmptyDirectoryState(fileSystem, target) {
-  let stat;
-  try {
-    stat = fileSystem.lstatSync(target, { bigint: true });
-  } catch (error) {
-    return error.code === 'ENOENT'
-      ? { matches: true, exists: false, identity: null }
-      : { matches: false };
-  }
-  if (!stat.isDirectory() || stat.isSymbolicLink()) return { matches: false, exists: true };
-  try {
-    if (fileSystem.readdirSync(target).length !== 0) return { matches: false, exists: true };
-  } catch (_) {
-    return { matches: false, exists: true };
-  }
-  return {
-    matches: true,
-    exists: true,
-    identity: { dev: String(stat.dev), ino: String(stat.ino) },
-  };
-}
-
 function removeClaimSnapshot(fileSystem, target, expected) {
   try {
     const stat = fileSystem.lstatSync(target);
@@ -489,9 +462,9 @@ function cleanupPublicationClaim({
   const previewPath = previewParent ? path.join(previewParent, `${id}.webm`) : null;
 
   const directoryState = claim.directory === null
-    ? unrecordedEmptyDirectoryState(fileSystem, mediaDirectory)
+    ? targetIdentityState(fileSystem, mediaDirectory, null, 'directory')
     : targetIdentityState(fileSystem, mediaDirectory, claim.directory, 'directory');
-  const directoryRemovalIdentity = claim.directory || directoryState.identity;
+  const directoryRemovalIdentity = claim.directory;
   const previewState = previewPath
     ? targetIdentityState(fileSystem, previewPath, claim.preview, 'file')
     : { matches: claim.preview === null, exists: false };
@@ -585,11 +558,18 @@ function cleanupPublicationClaim({
   return removed;
 }
 
-function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
+function cleanupOrphanImportedStages({
+  projectDir,
+  fileSystem = fs,
+  mutationLease = null,
+} = {}) {
   if (typeof projectDir !== 'string') return [];
+  const lease = mutationLease || require('../project/workspace')
+    .acquireProjectMutationLease(projectDir, { fileSystem });
+  const ownsLease = !mutationLease;
+  try {
   const resolvedProject = path.resolve(projectDir);
   const removed = [];
-  const published = new Set();
   const stageParents = [
     {
       parent: ownedDirectory(fileSystem, resolvedProject, ['assets', 'broll', 'images']),
@@ -608,7 +588,6 @@ function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
       continue;
     }
     for (const entry of entries) {
-      if (UUID.test(entry.name)) published.add(entry.name);
       const claimMatch = /^\.([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.claim$/.exec(entry.name);
       if (claimMatch && entry.isFile() && !entry.isSymbolicLink()) {
         removed.push(...cleanupPublicationClaim({
@@ -622,54 +601,10 @@ function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
       }
     }
   }
-  for (const { parent } of stageParents) {
-    let entries;
-    try {
-      entries = fileSystem.readdirSync(parent, { withFileTypes: true });
-    } catch (_) {
-      continue;
-    }
-    for (const entry of entries) {
-      const match = /^\.([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.stage$/.exec(entry.name);
-      if (!match || entry.isSymbolicLink() || published.has(match[1])) continue;
-      const target = path.join(parent, entry.name);
-      try {
-        const before = fileSystem.lstatSync(target);
-        if (before.isSymbolicLink() || (!before.isDirectory() && !before.isFile())) continue;
-        const current = fileSystem.lstatSync(target);
-        if (!sameOwnedIdentity(before, current) || current.isSymbolicLink()) continue;
-        fileSystem.rmSync(target, { recursive: before.isDirectory(), force: false });
-        removed.push(target);
-      } catch (_) {
-        // A concurrent publisher owns the remainder; leave it untouched.
-      }
-    }
+    return removed;
+  } finally {
+    if (ownsLease) lease.release();
   }
-  const previewParent = ownedDirectory(fileSystem, resolvedProject, ['previews', 'broll']);
-  if (previewParent) {
-    let entries;
-    try {
-      entries = fileSystem.readdirSync(previewParent, { withFileTypes: true });
-    } catch (_) {
-      entries = [];
-    }
-    for (const entry of entries) {
-      const match = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.webm$/.exec(entry.name);
-      if (!match || entry.isSymbolicLink() || published.has(match[1])) continue;
-      const target = path.join(previewParent, entry.name);
-      try {
-        const before = fileSystem.lstatSync(target);
-        if (!before.isFile() || before.isSymbolicLink()) continue;
-        const current = fileSystem.lstatSync(target);
-        if (!sameOwnedIdentity(before, current) || current.isSymbolicLink() || !current.isFile()) continue;
-        fileSystem.unlinkSync(target);
-        removed.push(target);
-      } catch (_) {
-        // Never broaden a cleanup after an identity race.
-      }
-    }
-  }
-  return removed;
 }
 
 module.exports = {

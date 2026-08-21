@@ -269,7 +269,10 @@ node scripts/build.js \
 brief: он атомарно создаёт новую пару `vNN-draft.lesson.md` + `.json` и одну запись manifest.
 Общий project mutation lease не даёт Save, approval и render одновременно менять один manifest;
 после аварийного завершения lease умершего локального PID восстанавливается автоматически, а
-live/foreign owner не удаляется. При
+live/foreign owner не удаляется. Browser import и его startup cleanup используют этот же lease:
+второй Review сохраняет активные quarantine/stage bytes, а после hard exit удаляются только
+объекты с durable owner record и совпавшим inode. UUID и возраст файла ownership не доказывают.
+При
 `409` браузер блокирует timeline, b-roll и Save до безопасной повторной проверки либо загрузки
 свежего disk state; устаревшие команды не применяются автоматически. Approved-ревизии остаются
 неизменными.

@@ -145,6 +145,38 @@ const runNodeCapture = (script, scriptArgs, stage = script) => captureTool(
 ).trim();
 const remotion = resolveRemotionCommand();
 
+function snapshotGeneratedTemp(filePath) {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) return null;
+    return { filePath, dev: stat.dev, ino: stat.ino };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function cleanupGeneratedTemps(snapshots) {
+  let identityError = null;
+  for (const snapshot of snapshots.filter(Boolean)) {
+    let current;
+    try {
+      current = fs.lstatSync(snapshot.filePath);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') continue;
+      identityError ||= error;
+      continue;
+    }
+    if (!current.isFile() || current.isSymbolicLink()
+      || current.dev !== snapshot.dev || current.ino !== snapshot.ino) {
+      identityError ||= new Error('generated lesson temporary file identity changed');
+      continue;
+    }
+    fs.unlinkSync(snapshot.filePath);
+  }
+  if (identityError) throw identityError;
+}
+
 // ── ранние проверки (до тяжёлых шагов: транскрипции, рендера) ──
 // Ключ нужен только для нового ТЗ. Утверждённый brief рендерится без LLM.
 if (lessonAction === 'plan' && !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
@@ -291,6 +323,8 @@ if (lessonAction === 'plan') {
   });
   fs.mkdirSync(path.dirname(briefPath), { recursive: true });
   log(`собираю черновик ТЗ из 7 готовых сцен (${geometry.width}x${geometry.height})…`);
+  let generationError = null;
+  let generatedTemps = [];
   try {
     runNodeTool(path.join(ROOT, 'scripts/gen-brief.js'), genArgs.map(String), {
       cwd: ROOT,
@@ -298,21 +332,41 @@ if (lessonAction === 'plan') {
       stage: 'gen-brief',
     });
   } catch (error) {
-    console.error(`❌ gen-brief не собрал ТЗ: ${error.message}`);
-    process.exit(1);
+    generationError = error;
+  } finally {
+    if (buildContext.project) {
+      generatedTemps = [snapshotGeneratedTemp(briefPath), snapshotGeneratedTemp(markdownPath)];
+    }
   }
   let publishedBrief = { jsonPath: briefPath, markdownPath };
-  if (buildContext.project) {
-    const generatedBrief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
-    const generatedMarkdown = fs.readFileSync(markdownPath, 'utf8');
-    publishedBrief = publishBriefRevision(buildContext.project, {
-      kind: 'lesson',
-      brief: generatedBrief,
-      markdown: generatedMarkdown,
-      status: 'draft',
-      theme,
-      aspect: geometry.aspect,
-    });
+  try {
+    if (generationError) throw generationError;
+    if (buildContext.project) {
+      const generatedBrief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+      const generatedMarkdown = fs.readFileSync(markdownPath, 'utf8');
+      publishedBrief = publishBriefRevision(buildContext.project, {
+        kind: 'lesson',
+        brief: generatedBrief,
+        markdown: generatedMarkdown,
+        status: 'draft',
+        theme,
+        aspect: geometry.aspect,
+      });
+    }
+  } catch (error) {
+    generationError = error;
+  } finally {
+    if (buildContext.project) {
+      try {
+        cleanupGeneratedTemps(generatedTemps);
+      } catch (cleanupError) {
+        generationError ||= cleanupError;
+      }
+    }
+  }
+  if (generationError) {
+    console.error(`❌ gen-brief не собрал ТЗ: ${generationError.message}`);
+    process.exit(1);
   }
   console.log('\n⏸ Черновик готов. Покажи Markdown-ТЗ Дмитрию и дождись явного «утверждаю».');
   console.log(`   ТЗ: ${publishedBrief.markdownPath}`);

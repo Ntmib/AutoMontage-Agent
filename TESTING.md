@@ -43,7 +43,8 @@ npm test
   на Save, manifest-last visibility и byte-identical approved;
 - media import: exact-length streaming в owned quarantine, type/size/geometry/duration/disk
   limits, abort/semaphore, real ffprobe/decode, WebP/H.264 master + WebM proxy, UUID publication,
-  отсутствие auto-select, browser path/hash privacy и immutable cleanup boundaries;
+  отсутствие auto-select, browser path/hash privacy, общий project lease, durable owner journal,
+  hard-exit recovery и identity-only immutable cleanup boundaries;
 - approval/render media: descriptor probe/hash, normalized metadata/proxy, silent/audio rules,
   repeated asset dedup, одноразовый render bundle, безопасный полный rehash при File Provider
   `ctime`-only drift, bounded retry при drift во время hash, fail-closed same-size/append/overwrite
@@ -66,6 +67,8 @@ npm test
 ```bash
 node --test tests/review-waveform.test.js tests/process-security.test.js
 node --test tests/project-mutation-transaction.test.js
+node --test tests/review-import-ownership.test.js tests/review-media-import.test.js \
+  tests/review-imported-assets.test.js tests/review-server-security.test.js
 npm run test:review-ui
 ```
 

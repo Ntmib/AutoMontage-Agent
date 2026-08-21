@@ -1,19 +1,29 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const { parseMediaProbeJson } = require('../media-probe');
 const {
   buildImportedAssetRecord,
   buildImportedPublicationClaim,
+  cleanupOrphanImportedStages,
   verifyImportedAssetFiles,
 } = require('./imported-assets');
+const { acquireProjectMutationLease } = require('../project/workspace');
 
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 1024 * 1024 * 1024;
 const DISK_RESERVE_BYTES = 512n * 1024n * 1024n;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CONTROL = /\p{Cc}/u;
+const OWNER_PURPOSE = 'review-media-import-owner';
+const OWNER_MAX_BYTES = 64 * 1024;
+const OWNER_RECORD_KEYS = [
+  'version', 'purpose', 'id', 'hostname', 'pid', 'token', 'quarantine', 'bundle',
+  'upload', 'canonical', 'preview', 'claim', 'previewStage', 'previewFinal',
+  'assetDirectory', 'canonicalFinal', 'metadataFinal', 'committed',
+];
 const IMAGE_TYPES = new Map([
   ['.avif', 'image/avif'],
   ['.gif', 'image/gif'],
@@ -134,6 +144,73 @@ function openedFileIdentity(stat, nanosecondStat) {
   };
 }
 
+function persistedFileIdentity(value) {
+  return value ? {
+    dev: String(value.dev), ino: String(value.ino), size: String(value.size),
+    mtimeNs: String(value.mtimeNs),
+  } : null;
+}
+
+function persistedDirectoryIdentity(value) {
+  return value ? { dev: String(value.dev), ino: String(value.ino) } : null;
+}
+
+function ownerRecord(owned) {
+  return {
+    version: 1,
+    purpose: OWNER_PURPOSE,
+    id: owned.id,
+    hostname: owned.ownerHostname,
+    pid: owned.ownerPid,
+    token: owned.ownerToken,
+    quarantine: persistedDirectoryIdentity(owned.quarantineIdentity),
+    bundle: persistedDirectoryIdentity(owned.bundleIdentity),
+    upload: persistedFileIdentity(owned.uploadIdentity),
+    canonical: persistedFileIdentity(owned.canonicalIdentity),
+    preview: persistedFileIdentity(owned.previewIdentity),
+    claim: persistedFileIdentity(owned.claimIdentity),
+    previewStage: persistedFileIdentity(owned.previewStageIdentity),
+    previewFinal: persistedFileIdentity(owned.publishedPreviewIdentity),
+    assetDirectory: persistedDirectoryIdentity(owned.assetFinalIdentity),
+    canonicalFinal: persistedFileIdentity(owned.canonicalFinalIdentity),
+    metadataFinal: persistedFileIdentity(owned.metadataFinalIdentity),
+    committed: owned.published === true,
+  };
+}
+
+function appendOwnerRecord(owned, fileSystem) {
+  if (owned.ownerFd === null || owned.ownerFd === undefined) throw unsafeFilesystem();
+  const bytes = Buffer.from(`${JSON.stringify(ownerRecord(owned))}\n`);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = fileSystem.writeSync(
+      owned.ownerFd, bytes, offset, bytes.length - offset, null,
+    );
+    if (!Number.isSafeInteger(written) || written <= 0) throw unsafeFilesystem();
+    offset += written;
+  }
+  fileSystem.fsyncSync(owned.ownerFd);
+}
+
+function createOwnedOutputPlaceholder(fileSystem, filePath) {
+  const constants = fileSystem.constants || fs.constants;
+  const descriptor = fileSystem.openSync(
+    filePath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0),
+    0o600,
+  );
+  try {
+    fileSystem.fchmodSync(descriptor, 0o600);
+    fileSystem.fsyncSync(descriptor);
+    return openedFileIdentity(
+      fileSystem.fstatSync(descriptor),
+      fileSystem.fstatSync(descriptor, { bigint: true }),
+    );
+  } finally {
+    fileSystem.closeSync(descriptor);
+  }
+}
+
 function sameFileIdentity(left, right) {
   return left && right && left.dev === right.dev && left.ino === right.ino
     && left.size === right.size && left.mtimeNs === right.mtimeNs;
@@ -199,7 +276,7 @@ function assertOwnedDirectory(fileSystem, directory, expected, projectReal) {
   }
 }
 
-function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem) {
+function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease) {
   if (!UUID.test(id)) throw unsafeFilesystem();
   const quarantineParent = ensureOwnedDirectories(fileSystem, projectDir, ['tmp', 'review-imports']);
   const assetParent = ensureOwnedDirectories(fileSystem, projectDir, [
@@ -265,11 +342,39 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem) {
       previewFinalPath: previewParent ? path.join(previewParent.directory, `${id}.webm`) : null,
       published: false,
       publishedPreviewIdentity: null,
+      ownerHostname: lease.owner.hostname,
+      ownerPid: lease.owner.pid,
+      ownerToken: lease.owner.token,
+      ownerPath: path.join(quarantinePath, 'owner.jsonl'),
+      ownerAnchorPath: path.join(quarantinePath, 'owner.anchor'),
+      ownerFd: null,
     };
+    owned.ownerFd = fileSystem.openSync(
+      owned.ownerPath,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL
+        | (constants.O_NOFOLLOW || 0),
+      0o600,
+    );
+    fileSystem.fchmodSync(owned.ownerFd, 0o600);
+    owned.ownerIdentity = identity(fileSystem.fstatSync(owned.ownerFd));
+    fileSystem.linkSync(owned.ownerPath, owned.ownerAnchorPath);
+    owned.canonicalIdentity = createOwnedOutputPlaceholder(
+      fileSystem, owned.canonicalPath,
+    );
+    if (owned.normalizedPreviewPath) {
+      owned.previewIdentity = createOwnedOutputPlaceholder(
+        fileSystem, owned.normalizedPreviewPath,
+      );
+    }
+    appendOwnerRecord(owned, fileSystem);
+    fsyncDirectoryIfSupported(fileSystem, quarantinePath);
     return owned;
   } catch (error) {
     if (owned?.uploadFd !== null && owned?.uploadFd !== undefined) {
       try { fileSystem.closeSync(owned.uploadFd); } catch (_) { /* owned cleanup only */ }
+    }
+    if (owned?.ownerFd !== null && owned?.ownerFd !== undefined) {
+      try { fileSystem.closeSync(owned.ownerFd); } catch (_) { /* owned descriptor */ }
     }
     try {
       const current = fileSystem.lstatSync(quarantinePath);
@@ -371,6 +476,7 @@ async function streamExactBody(request, owned, expectedBytes, signal, fileSystem
       fileSystem.fstatSync(owned.uploadFd),
       fileSystem.fstatSync(owned.uploadFd, { bigint: true }),
     );
+    appendOwnerRecord(owned, fileSystem);
   } finally {
     signal?.removeEventListener('abort', onAbort);
     if (owned.uploadFd !== null) {
@@ -437,7 +543,7 @@ function imageInvocation(owned, signal) {
       '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', owned.uploadPath,
       '-map', '0:v:0', '-map_metadata', '-1', '-frames:v', '1',
       '-vf', 'format=rgba', '-c:v', 'libwebp', '-quality', '90', '-pix_fmt', 'yuva420p',
-      owned.canonicalPath,
+      '-y', owned.canonicalPath,
     ],
     cwd: owned.quarantinePath,
     signal,
@@ -463,7 +569,7 @@ function videoMasterInvocation(owned, source, outputFps, signal) {
   } else {
     args.push('-an');
   }
-  args.push('-movflags', '+faststart', owned.canonicalPath);
+  args.push('-movflags', '+faststart', '-y', owned.canonicalPath);
   return {
     command: 'ffmpeg', args, cwd: owned.quarantinePath, signal,
     timeoutMs: 2 * 60 * 60_000,
@@ -489,7 +595,7 @@ function videoProxyInvocation(owned, source, outputFps, signal) {
   } else {
     args.push('-an');
   }
-  args.push(owned.normalizedPreviewPath);
+  args.push('-y', owned.normalizedPreviewPath);
   return {
     command: 'ffmpeg', args, cwd: owned.quarantinePath, signal,
     timeoutMs: 2 * 60 * 60_000,
@@ -519,18 +625,21 @@ async function normalizeIntoQuarantine({ source, outputFps, owned, signal, fileS
     await run(imageInvocation(owned, signal));
     assertOwnedImport(fileSystem, owned);
     owned.canonicalIdentity = captureOwnedFile(fileSystem, owned.canonicalPath, { chmod: true });
+    appendOwnerRecord(owned, fileSystem);
   } else {
     await run(videoMasterInvocation(owned, source, outputFps, signal));
     assertOwnedImport(fileSystem, owned);
     owned.canonicalIdentity = captureOwnedFile(fileSystem, owned.canonicalPath, { chmod: true });
+    appendOwnerRecord(owned, fileSystem);
     assertOutputIdentities(fileSystem, owned);
     await run(videoProxyInvocation(owned, source, outputFps, signal));
-    assertOutputIdentities(fileSystem, owned);
+    assertOwnedFile(fileSystem, owned.canonicalPath, owned.canonicalIdentity);
     owned.previewIdentity = captureOwnedFile(
       fileSystem,
       owned.normalizedPreviewPath,
       { chmod: true },
     );
+    appendOwnerRecord(owned, fileSystem);
   }
   assertOwnedImport(fileSystem, owned);
   assertOutputIdentities(fileSystem, owned);
@@ -712,6 +821,7 @@ function openPublicationClaim(owned, fileSystem) {
   owned.claimIdentity = identity(fileSystem.fstatSync(owned.claimFd));
   writePublicationClaimState(owned, fileSystem);
   fsyncDirectoryIfSupported(fileSystem, owned.assetParent);
+  appendOwnerRecord(owned, fileSystem);
 }
 
 function copyExclusiveFile({
@@ -874,15 +984,18 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
     owned.previewStageIdentity = previewCopy.identity;
     owned.publishedPreviewIdentity = previewCopy.identity;
     writePublicationClaimState(owned, fileSystem);
+    appendOwnerRecord(owned, fileSystem);
     fileSystem.linkSync(owned.previewStagePath, owned.previewFinalPath);
     assertOwnedFile(fileSystem, owned.previewFinalPath, owned.publishedPreviewIdentity);
     if (removeIfOwnedFile(fileSystem, owned.previewStagePath, owned.previewStageIdentity)) {
       owned.previewStageIdentity = null;
+      appendOwnerRecord(owned, fileSystem);
     }
   }
   assertOwnedDirectory(fileSystem, owned.assetParent, owned.assetParentIdentity, owned.projectReal);
   claimFinalDirectory(owned, fileSystem);
   writePublicationClaimState(owned, fileSystem);
+  appendOwnerRecord(owned, fileSystem);
   const finalCanonicalPath = path.join(
     owned.assetFinalPath,
     metadata.mediaKind === 'image' ? 'media.webp' : 'media.mp4',
@@ -898,6 +1011,7 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
   if (canonicalCopy.sha256 !== metadata.canonicalSha256) throw unsafeFilesystem();
   owned.canonicalFinalIdentity = canonicalCopy.identity;
   writePublicationClaimState(owned, fileSystem);
+  appendOwnerRecord(owned, fileSystem);
   const verified = verifyImportedAssetFiles({
     id: owned.id,
     mediaKind: metadata.mediaKind,
@@ -935,6 +1049,7 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
     (value) => { owned.metadataFinalIdentity = value; },
   );
   owned.published = true;
+  appendOwnerRecord(owned, fileSystem);
   return record;
 }
 
@@ -947,6 +1062,10 @@ function cleanupOwnedImport(owned, fileSystem) {
   if (owned.claimFd !== null) {
     try { fileSystem.closeSync(owned.claimFd); } catch (_) { /* owned descriptor */ }
     owned.claimFd = null;
+  }
+  if (owned.ownerFd !== null) {
+    try { fileSystem.closeSync(owned.ownerFd); } catch (_) { /* owned descriptor */ }
+    owned.ownerFd = null;
   }
   if (!owned.published) {
     const targetsRemoved = [
@@ -980,14 +1099,240 @@ function cleanupOwnedImport(owned, fileSystem) {
     }
   }
   try {
-    const stat = fileSystem.lstatSync(owned.quarantinePath);
-    if (stat.isDirectory() && !stat.isSymbolicLink()
-      && sameIdentity(stat, owned.quarantineIdentity)) {
-      fileSystem.rmSync(owned.quarantinePath, { recursive: true, force: false });
+    const expectedRoot = new Set(['owner.jsonl', 'owner.anchor', 'bundle', 'upload.bin']);
+    if (owned.previewIdentity) expectedRoot.add('preview.webm');
+    const expectedBundle = new Set(owned.canonicalIdentity
+      ? [owned.previewIdentity ? 'media.mp4' : 'media.webp'] : []);
+    const rootEntries = fileSystem.readdirSync(owned.quarantinePath);
+    const bundleEntries = fileSystem.readdirSync(owned.bundlePath);
+    if (rootEntries.length === expectedRoot.size
+      && rootEntries.every((entry) => expectedRoot.has(entry))
+      && bundleEntries.length === expectedBundle.size
+      && bundleEntries.every((entry) => expectedBundle.has(entry))) {
+      removeIfOwnedFile(fileSystem, owned.canonicalPath, owned.canonicalIdentity);
+      removeIfOwnedFile(fileSystem, owned.normalizedPreviewPath, owned.previewIdentity);
+      removeIfOwnedFile(fileSystem, owned.uploadPath, owned.uploadIdentity);
+      const owner = fileSystem.lstatSync(owned.ownerPath);
+      const anchor = fileSystem.lstatSync(owned.ownerAnchorPath);
+      if (owner.isFile() && !owner.isSymbolicLink() && anchor.isFile()
+        && !anchor.isSymbolicLink() && sameIdentity(owner, owned.ownerIdentity)
+        && sameIdentity(anchor, owned.ownerIdentity)) {
+        fileSystem.unlinkSync(owned.ownerAnchorPath);
+        fileSystem.unlinkSync(owned.ownerPath);
+        fileSystem.rmdirSync(owned.bundlePath);
+        fileSystem.rmdirSync(owned.quarantinePath);
+      }
     }
-  } catch (_) { /* an identity race leaves the UUID-owned remnant for startup cleanup */ }
+  } catch (_) { /* an identity race leaves the exact remnant for lease recovery */ }
   if (owned.published) {
     removeIfOwnedFile(fileSystem, owned.previewStagePath, owned.previewStageIdentity);
+  }
+}
+
+function numericIdentity(value, directory = false) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const keys = directory ? ['dev', 'ino'] : ['dev', 'ino', 'size', 'mtimeNs'];
+  if (Object.keys(value).length !== keys.length
+    || !keys.every((key) => typeof value[key] === 'string' && /^(0|[1-9][0-9]*)$/.test(value[key]))) {
+    return null;
+  }
+  return value;
+}
+
+function readRecoveryOwner(fileSystem, quarantinePath, id) {
+  const ownerPath = path.join(quarantinePath, 'owner.jsonl');
+  const anchorPath = path.join(quarantinePath, 'owner.anchor');
+  let ownerStat;
+  let anchorStat;
+  let bytes;
+  try {
+    ownerStat = fileSystem.lstatSync(ownerPath, { bigint: true });
+    anchorStat = fileSystem.lstatSync(anchorPath, { bigint: true });
+    if (!ownerStat.isFile() || ownerStat.isSymbolicLink() || !anchorStat.isFile()
+      || anchorStat.isSymbolicLink() || ownerStat.dev !== anchorStat.dev
+      || ownerStat.ino !== anchorStat.ino || (ownerStat.mode & 0o777n) !== 0o600n
+      || ownerStat.size <= 0n || ownerStat.size > BigInt(OWNER_MAX_BYTES)) return null;
+    bytes = fileSystem.readFileSync(ownerPath);
+    const after = fileSystem.lstatSync(ownerPath, { bigint: true });
+    if (after.dev !== ownerStat.dev || after.ino !== ownerStat.ino
+      || after.size !== ownerStat.size || after.mtimeNs !== ownerStat.mtimeNs) return null;
+  } catch (_) {
+    return null;
+  }
+  const text = bytes.toString('utf8');
+  const lastNewline = text.lastIndexOf('\n');
+  if (lastNewline < 0) return null;
+  const records = text.slice(0, lastNewline).split('\n');
+  let latest = null;
+  for (const line of records) {
+    let record;
+    try { record = JSON.parse(line); } catch (_) { return null; }
+    if (!record || typeof record !== 'object' || Array.isArray(record)
+      || Object.keys(record).length !== OWNER_RECORD_KEYS.length
+      || !OWNER_RECORD_KEYS.every((key) => Object.hasOwn(record, key))
+      || record.version !== 1 || record.purpose !== OWNER_PURPOSE
+      || record.id !== id
+      || typeof record.hostname !== 'string' || !Number.isInteger(record.pid) || record.pid <= 0
+      || typeof record.token !== 'string' || !/^[A-Za-z0-9_-]+$/.test(record.token)
+      || !numericIdentity(record.quarantine, true) || !numericIdentity(record.bundle, true)
+      || !numericIdentity(record.upload)
+      || !['canonical', 'preview', 'claim', 'previewStage', 'previewFinal',
+        'assetDirectory', 'canonicalFinal', 'metadataFinal'].every((key) => (
+        record[key] === null || numericIdentity(record[key], key === 'assetDirectory')
+      )) || typeof record.committed !== 'boolean') return null;
+    if (latest && (record.hostname !== latest.hostname || record.pid !== latest.pid
+      || record.token !== latest.token
+      || JSON.stringify(record.quarantine) !== JSON.stringify(latest.quarantine)
+      || JSON.stringify(record.bundle) !== JSON.stringify(latest.bundle))) return null;
+    latest = record;
+  }
+  return latest ? {
+    record: latest,
+    ownerIdentity: { dev: String(ownerStat.dev), ino: String(ownerStat.ino) },
+    ownerPath,
+    anchorPath,
+  } : null;
+}
+
+function recoveryTargetMatches(fileSystem, target, expected, directory = false) {
+  if (!expected) return false;
+  try {
+    const stat = fileSystem.lstatSync(target, { bigint: true });
+    if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile())) return false;
+    return String(stat.dev) === expected.dev && String(stat.ino) === expected.ino
+      && (directory || (String(stat.size) === expected.size
+        && String(stat.mtimeNs) === expected.mtimeNs));
+  } catch (_) {
+    return false;
+  }
+}
+
+function recoveryNodeMatches(fileSystem, target, expected) {
+  if (!expected) return false;
+  try {
+    const stat = fileSystem.lstatSync(target, { bigint: true });
+    return stat.isFile() && !stat.isSymbolicLink()
+      && String(stat.dev) === expected.dev && String(stat.ino) === expected.ino;
+  } catch (_) {
+    return false;
+  }
+}
+
+function removeRecoveryFile(fileSystem, target, expected) {
+  try {
+    fileSystem.lstatSync(target);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return true;
+    return false;
+  }
+  if (!recoveryTargetMatches(fileSystem, target, expected)) return false;
+  fileSystem.unlinkSync(target);
+  return true;
+}
+
+function removeRecoveryNode(fileSystem, target, expected) {
+  try {
+    fileSystem.lstatSync(target);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return true;
+    return false;
+  }
+  if (!recoveryNodeMatches(fileSystem, target, expected)) return false;
+  fileSystem.unlinkSync(target);
+  return true;
+}
+
+function recoverQuarantine({ projectDir, quarantinePath, id, fileSystem, hostname, killProcess }) {
+  const owned = readRecoveryOwner(fileSystem, quarantinePath, id);
+  if (!owned || owned.record.hostname !== hostname) return [];
+  try {
+    killProcess(owned.record.pid, 0);
+    return [];
+  } catch (error) {
+    if (!error || error.code !== 'ESRCH') return [];
+  }
+  const { record } = owned;
+  if (!recoveryTargetMatches(fileSystem, quarantinePath, record.quarantine, true)
+    || !recoveryTargetMatches(fileSystem, path.join(quarantinePath, 'bundle'), record.bundle, true)) {
+    return [];
+  }
+  const bundlePath = path.join(quarantinePath, 'bundle');
+  const expectedRoot = new Set(['owner.jsonl', 'owner.anchor', 'bundle', 'upload.bin']);
+  if (record.preview) expectedRoot.add('preview.webm');
+  const expectedBundle = new Set(record.canonical
+    ? [record.preview === null ? 'media.webp' : 'media.mp4'] : []);
+  let rootEntries;
+  let bundleEntries;
+  try {
+    rootEntries = fileSystem.readdirSync(quarantinePath);
+    bundleEntries = fileSystem.readdirSync(bundlePath);
+  } catch (_) {
+    return [];
+  }
+  if (!rootEntries.includes('owner.jsonl') || !rootEntries.includes('owner.anchor')
+    || !rootEntries.includes('bundle')
+    || rootEntries.some((entry) => !expectedRoot.has(entry))
+    || bundleEntries.some((entry) => !expectedBundle.has(entry))) return [];
+
+  const removed = [];
+  for (const [target, expected, mutable] of [
+    [record.previewStage ? path.join(projectDir, 'previews', 'broll', `.${id}.stage.webm`) : null, record.previewStage, false],
+    [path.join(bundlePath, record.preview === null ? 'media.webp' : 'media.mp4'), record.canonical, true],
+    [path.join(quarantinePath, 'preview.webm'), record.preview, true],
+    [path.join(quarantinePath, 'upload.bin'), record.upload, true],
+  ]) {
+    if (!target || !expected) continue;
+    try {
+      if (!(mutable
+        ? removeRecoveryNode(fileSystem, target, expected)
+        : removeRecoveryFile(fileSystem, target, expected))) return removed;
+      removed.push(target);
+    } catch (_) { return removed; }
+  }
+  try {
+    const anchor = fileSystem.lstatSync(owned.anchorPath, { bigint: true });
+    const owner = fileSystem.lstatSync(owned.ownerPath, { bigint: true });
+    if (String(anchor.dev) !== owned.ownerIdentity.dev || String(anchor.ino) !== owned.ownerIdentity.ino
+      || String(owner.dev) !== owned.ownerIdentity.dev || String(owner.ino) !== owned.ownerIdentity.ino) {
+      return removed;
+    }
+    fileSystem.unlinkSync(owned.anchorPath);
+    fileSystem.unlinkSync(owned.ownerPath);
+    fileSystem.rmdirSync(bundlePath);
+    fileSystem.rmdirSync(quarantinePath);
+    removed.push(owned.anchorPath, owned.ownerPath, bundlePath, quarantinePath);
+  } catch (_) { /* resumable on the next lease owner */ }
+  return removed;
+}
+
+function cleanupOrphanImportQuarantines({
+  projectDir,
+  fileSystem = fs,
+  mutationLease = null,
+  hostname = os.hostname(),
+  killProcess = process.kill,
+} = {}) {
+  const lease = mutationLease || acquireProjectMutationLease(projectDir, { fileSystem });
+  const ownsLease = !mutationLease;
+  const removed = [];
+  try {
+    const parent = path.join(path.resolve(projectDir), 'tmp', 'review-imports');
+    let entries;
+    try { entries = fileSystem.readdirSync(parent, { withFileTypes: true }); } catch (_) { return removed; }
+    for (const entry of entries) {
+      if (!UUID.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+      removed.push(...recoverQuarantine({
+        projectDir: path.resolve(projectDir),
+        quarantinePath: path.join(parent, entry.name),
+        id: entry.name,
+        fileSystem,
+        hostname,
+        killProcess,
+      }));
+    }
+    return removed;
+  } finally {
+    if (ownsLease) lease.release();
   }
 }
 
@@ -1005,6 +1350,7 @@ async function importReviewMedia({
 }) {
   if (!controller?.acquire()) throw mediaImportError(409, 'MEDIA_IMPORT_BUSY');
   let owned;
+  let mutationLease;
   try {
     const parsedHeaders = parseImportHeaders(headers);
     let filesystemStats;
@@ -1017,7 +1363,19 @@ async function importReviewMedia({
     if (availableBytes < requiredFreeBytes(parsedHeaders.contentLength)) {
       throw mediaImportError(507, 'MEDIA_IMPORT_DISK_FULL');
     }
-    owned = createOwnedQuarantine(projectDir, randomId(), parsedHeaders.mediaKind, fileSystem);
+    try {
+      mutationLease = acquireProjectMutationLease(projectDir, { fileSystem });
+    } catch (error) {
+      if (error && error.code === 'PROJECT_MANIFEST_CONFLICT') {
+        throw mediaImportError(409, 'MEDIA_IMPORT_BUSY');
+      }
+      throw error;
+    }
+    cleanupOrphanImportQuarantines({ projectDir, fileSystem, mutationLease });
+    cleanupOrphanImportedStages({ projectDir, fileSystem, mutationLease });
+    owned = createOwnedQuarantine(
+      projectDir, randomId(), parsedHeaders.mediaKind, fileSystem, mutationLease,
+    );
     await streamExactBody(request, owned, parsedHeaders.contentLength, signal, fileSystem);
     assertOwnedFile(fileSystem, owned.uploadPath, owned.uploadIdentity);
 
@@ -1065,6 +1423,7 @@ async function importReviewMedia({
     }
   } finally {
     cleanupOwnedImport(owned, fileSystem);
+    if (mutationLease) mutationLease.release();
     controller.release();
   }
 }
@@ -1073,6 +1432,7 @@ module.exports = {
   IMAGE_MAX_BYTES,
   VIDEO_MAX_BYTES,
   createImportController,
+  cleanupOrphanImportQuarantines,
   importReviewMedia,
   mediaImportError,
   parseImportHeaders,

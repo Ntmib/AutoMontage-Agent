@@ -2101,7 +2101,7 @@ test('replacing an imported proxy expires its paired canonical handle', async (t
   assert.doesNotMatch(response.body.toString('utf8'), /canonical video/);
 });
 
-test('startup and idle refresh clean only stale owned import remnants', async (t) => {
+test('startup and idle refresh preserve unrecorded UUID-shaped import remnants', async (t) => {
   const fixture = makeReviewProject(t);
   const stage = path.join(fixture.projectDir, 'assets', 'broll', 'video', `.${IMPORT_UUID}.stage`);
   const orphanPreview = path.join(fixture.projectDir, 'previews', 'broll', `${IMPORT_UUID}.webm`);
@@ -2120,8 +2120,8 @@ test('startup and idle refresh clean only stale owned import remnants', async (t
 
   const session = await startTestReviewServer({ root: ROOT, projectDir: fixture.projectDir, open: false });
   t.after(() => closeServer(session.server));
-  assert.equal(fs.existsSync(stage), false);
-  assert.equal(fs.existsSync(orphanPreview), false);
+  assert.equal(fs.existsSync(stage), true);
+  assert.equal(fs.existsSync(orphanPreview), true);
   assert.equal(fs.readFileSync(unrelated, 'utf8'), 'unrelated');
   assert.equal(fs.readFileSync(outside, 'utf8'), 'outside');
   assert.equal(fs.lstatSync(symlink).isSymbolicLink(), true);
@@ -2133,5 +2133,5 @@ test('startup and idle refresh clean only stale owned import remnants', async (t
   const idleOrphan = path.join(fixture.projectDir, 'previews', 'broll', `${IMPORT_UUID}.webm`);
   fs.writeFileSync(idleOrphan, 'idle orphan');
   assert.equal((await request(session, '/api/state', { token: session.token })).status, 200);
-  assert.equal(fs.existsSync(idleOrphan), false);
+  assert.equal(fs.existsSync(idleOrphan), true);
 });

@@ -201,6 +201,13 @@ manifest. Поэтому `/api/state` продолжает видеть стар
 `POST /api/assets/import` доступен только в edit-сессии и принимает один raw body за раз.
 Заявленный размер, MIME и безопасное имя проверяются до обработки; поток пишется в отдельный
 owner-only quarantine с точным `Content-Length`, abort signal и фиксированным запасом диска.
+До создания quarantine импорт берёт тот же project mutation lease, что Save, approval и render,
+но чтения Review остаются доступными. Quarantine `0700` до upload публикует append-only `0600`
+owner journal с hard-link anchor; master/proxy inode создаются и фиксируются до запуска encoder.
+После hard exit следующий владелец lease удаляет только записи умершего local PID с совпавшими
+inode и ожидаемым набором детей. UUID, имя и возраст не доказывают ownership; malformed/foreign,
+symlink, replacement и неожиданный child сохраняются. Publication claim так же удаляет только
+identity-записанные stage/final paths, а валидный bundle с marker-last `asset.json` неизменяем.
 Затем ffprobe и полный decode подтверждают реальный контейнер, codec, геометрию, длительность и
 аудио. Изображение нормализуется в WebP; видео — в H.264/yuv420p master с AAC 48 kHz stereo при
 наличии звука и отдельный VP8/Opus WebM proxy для браузера. Metadata удаляется. Публикация
@@ -209,6 +216,10 @@ owner-only quarantine с точным `Content-Length`, abort signal и фикс
 относительные ссылки сервер выводит из UUID и типа медиа.
 Импорт не отправляет `replace-broll`: после refresh новая карточка появляется в media lane, но
 пользователь обязан отдельно назначить её сцене.
+
+Project lesson planning использует уникальную JSON/Markdown temp-пару только как handoff от
+генератора к transactional publisher. После успеха и ошибки удаляются лишь заранее снятые inode;
+подмена сохраняется и завершает planning fail closed.
 
 Save не доверяет browser descriptor. Он повторно сканирует immutable bundle, открывает master
 без следования symlink, передаёт тот же descriptor в bounded ffprobe, хэширует те же байты и

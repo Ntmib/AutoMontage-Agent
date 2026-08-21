@@ -288,3 +288,16 @@ D-012 заменено: прежний порядок manifest до approved JSO
 `currentBrief`, а rollback после publication не мог защитить от hard exit. Отклонены отдельные
 locks для Review/approval/render: они сериализовали каждый путь сам с собой, но не закрывали
 межпроцессную гонку разных writers одного `project.json`.
+
+## D-016 – Media import и recovery разделяют project mutation lease
+
+**Дата:** 2026-08-22
+**Статус:** принято
+
+Import publication и startup/refresh cleanup являются project mutations, поэтому используют
+lease из D-015, а не второй lock. Долгий import сериализует Save/approval/render, зато второй
+процесс не может удалить live quarantine или частично опубликованные bytes; обычные GET/HEAD
+lease не берут. Crash recovery доверяет только append-only owner/publication records и точным
+inode, никогда UUID или TTL. Encoder outputs создаются как private owned inode заранее, чтобы
+hard exit во время записи оставался доказуемым. Marker-last сохраняет committed bundle, а
+неподтверждённые replacement/unexpected children намеренно остаются для ручной диагностики.

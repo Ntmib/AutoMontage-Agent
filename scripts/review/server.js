@@ -9,6 +9,7 @@ const { validateLessonBrief } = require('../lesson/brief');
 const { parseMediaProbeJson } = require('../media-probe');
 const { assertProcessResult } = require('../process');
 const {
+  acquireProjectMutationLease,
   nextBriefPaths,
   readProjectManifest,
   resolveProjectPath,
@@ -25,7 +26,11 @@ const {
 } = require('./commands');
 const { diffLessonBrief } = require('./diff');
 const { cleanupOrphanImportedStages } = require('./imported-assets');
-const { createImportController, importReviewMedia } = require('./media-import');
+const {
+  cleanupOrphanImportQuarantines,
+  createImportController,
+  importReviewMedia,
+} = require('./media-import');
 const { runMediaProcess } = require('./media-process');
 const {
   buildReviewState,
@@ -338,8 +343,20 @@ function descriptorForPublished(imported, assetFiles) {
 }
 
 function cleanupIdleImportedStages({ projectDir, runtime, fileSystem }) {
-  if (!runtime.importController.busy) {
-    cleanupOrphanImportedStages({ projectDir, fileSystem });
+  if (runtime.importController.busy) return;
+  let lease;
+  try {
+    lease = acquireProjectMutationLease(projectDir, { fileSystem });
+  } catch (error) {
+    if (error && error.code === 'PROJECT_MANIFEST_CONFLICT') return;
+    throw error;
+  }
+  try {
+    if (runtime.importController.busy) return;
+    cleanupOrphanImportQuarantines({ projectDir, fileSystem, mutationLease: lease });
+    cleanupOrphanImportedStages({ projectDir, fileSystem, mutationLease: lease });
+  } finally {
+    lease.release();
   }
 }
 
@@ -1351,7 +1368,11 @@ async function startReviewServer({
     runToolImpl,
   });
   const waveformFile = waveformPreview.available ? snapshotFile(waveformPreview.path) : null;
-  cleanupOrphanImportedStages({ projectDir: resolvedProjectDir, fileSystem });
+  cleanupIdleImportedStages({
+    projectDir: resolvedProjectDir,
+    runtime: { importController },
+    fileSystem,
+  });
   const assetFiles = buildAssetFiles({ root: resolvedRoot, projectDir: resolvedProjectDir });
   const base = loadReviewBase({ projectDir: resolvedProjectDir });
   const state = buildReviewState({

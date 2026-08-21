@@ -12,12 +12,16 @@ const {
   getLessonAction,
   prepareLessonRender,
 } = require('../scripts/lesson/workflow');
+const { createOrOpenProject } = require('../scripts/project/workspace');
 
 const ROOT = path.resolve(__dirname, '..');
 
 function runLessonBuildWithIntercept(t, args, {
   failRender = false,
   materializeFinish = false,
+  materializePlan = false,
+  failPlan = false,
+  replacePlanJson = false,
 } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-lesson-intercept-'));
   const hook = path.join(directory, 'hook.js');
@@ -28,9 +32,22 @@ function runLessonBuildWithIntercept(t, args, {
     "const path = require('node:path');",
     "const calls = process.env.AUTOMONTAGE_LESSON_CAPTURE;",
     `const materializeFinish = ${JSON.stringify(materializeFinish)};`,
+    `const materializePlan = ${JSON.stringify(materializePlan)};`,
+    `const failPlan = ${JSON.stringify(failPlan)};`,
+    `const replacePlanJson = ${JSON.stringify(replacePlanJson)};`,
+    'let generatedPlanJson = null;',
     'childProcess.spawnSync = (command, args) => {',
     "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
+    "  if (args.length === 1 && args[0] === '--version') return { status: 0, stdout: 'Python 3.12.0', stderr: '' };",
     "  if (command === 'ffprobe') return { status: 0, stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1080, height: 1920, r_frame_rate: '25/1' }], format: { duration: '20' } }) };",
+    "  if (materializePlan && command === process.execPath && path.basename(args[0]) === 'gen-brief.js') {",
+    "    const jsonPath = args[2];",
+    '    generatedPlanJson = jsonPath;',
+    "    const markdownPath = args[args.indexOf('--markdown') + 1];",
+    "    fs.writeFileSync(jsonPath, JSON.stringify({ version: 1, status: 'draft', title: 'PLAN', theme: 'lesson-neutral', output: { aspect: 'vertical' } }) + '\\n');",
+    "    fs.writeFileSync(markdownPath, '# PLAN\\n');",
+    "    return { status: failPlan ? 1 : 0, stdout: '', stderr: failPlan ? 'gen failed' : '' };",
+    '  }',
     "  if (process.env.AUTOMONTAGE_LESSON_FAIL_RENDER && args.includes('render')) return { status: 1, stdout: '', stderr: 'render failed' };",
     "  if (materializeFinish && command === process.execPath && path.basename(args[0]) === 'finish.js') {",
     "    fs.mkdirSync(path.dirname(args[2]), { recursive: true });",
@@ -39,6 +56,16 @@ function runLessonBuildWithIntercept(t, args, {
     '  }',
     "  return { status: 0, stdout: '' };",
     '};',
+    "if (replacePlanJson) {",
+    "  const workspace = require(path.join(process.cwd(), 'scripts/project/workspace'));",
+    '  const publish = workspace.publishBriefRevision;',
+    '  workspace.publishBriefRevision = (...publishArgs) => {',
+    '    const result = publish(...publishArgs);',
+    "    fs.renameSync(generatedPlanJson, generatedPlanJson + '.original');",
+    "    fs.writeFileSync(generatedPlanJson, 'foreign replacement');",
+    '    return result;',
+    '  };',
+    '}',
     '',
   ].join('\n'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -49,6 +76,7 @@ function runLessonBuildWithIntercept(t, args, {
       ...process.env,
       AUTOMONTAGE_LESSON_CAPTURE: calls,
       AUTOMONTAGE_LESSON_FAIL_RENDER: failRender ? '1' : '',
+      ...(materializePlan ? { OPENAI_API_KEY: 'test-only-placeholder' } : {}),
       NODE_OPTIONS: `--require=${hook}`,
     },
   });
@@ -56,6 +84,17 @@ function runLessonBuildWithIntercept(t, args, {
     ? fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
     : [];
   return { result, invocations };
+}
+
+function makePlanProject(t) {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-plan-project-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  return createOrOpenProject({
+    projectDir: path.join(parent, 'project'),
+    name: 'Plan cleanup',
+    sourcePath: path.join(ROOT, 'examples', 'demo-source.mp4'),
+    now: new Date('2026-08-22T10:00:00.000Z'),
+  });
 }
 
 test('lesson workflow exposes one public default theme', () => {
@@ -251,6 +290,55 @@ test('gen-brief arguments freeze an optional speaker zoom', () => {
   });
 
   assert.deepEqual(args.slice(-2), ['--face-zoom', '1.08']);
+});
+
+test('project lesson planning removes its exact generated temporary pair after success and failure', async (t) => {
+  for (const failPlan of [false, true]) {
+    await t.test(failPlan ? 'failure' : 'success', (subtest) => {
+      const workspace = makePlanProject(subtest);
+      const { result, invocations } = runLessonBuildWithIntercept(subtest, [
+        'examples/demo-source.mp4',
+        '--template', 'lesson',
+        '--no-transcribe',
+        '--project-dir', workspace.dir,
+      ], { materializePlan: true, failPlan });
+      assert.equal(result.status, failPlan ? 1 : 0, result.stderr);
+      const generated = invocations.find((entry) => (
+        entry.command === process.execPath && path.basename(entry.args[0]) === 'gen-brief.js'
+      ));
+      assert.ok(generated);
+      const jsonPath = generated.args[2];
+      const markdownPath = generated.args[generated.args.indexOf('--markdown') + 1];
+      assert.equal(fs.existsSync(jsonPath), false);
+      assert.equal(fs.existsSync(markdownPath), false);
+    });
+  }
+});
+
+test('project lesson planning preserves a foreign replacement of its generated temp file and fails closed', (t) => {
+  const workspace = makePlanProject(t);
+  const { result, invocations } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--no-transcribe',
+    '--project-dir', workspace.dir,
+  ], { materializePlan: true, replacePlanJson: true });
+  assert.equal(result.status, 1);
+  const generated = invocations.find((entry) => (
+    entry.command === process.execPath && path.basename(entry.args[0]) === 'gen-brief.js'
+  ));
+  assert.ok(generated, result.stderr);
+  const jsonPath = generated.args[2];
+  const markdownPath = generated.args[generated.args.indexOf('--markdown') + 1];
+  t.after(() => {
+    for (const target of [jsonPath, `${jsonPath}.original`, markdownPath]) {
+      try { fs.unlinkSync(target); } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+  });
+  assert.equal(fs.readFileSync(jsonPath, 'utf8'), 'foreign replacement');
+  assert.equal(fs.existsSync(markdownPath), false);
 });
 
 test('lesson rejects source-changing flags that invalidate approved timings', () => {

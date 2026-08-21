@@ -316,7 +316,9 @@ test('video process argv is exact and metadata is the asset-last publication mar
   const publicationOrder = [];
   const fileSystem = Object.create(fs);
   fileSystem.linkSync = (from, to) => {
-    publicationOrder.push(path.relative(projectDir, to));
+    if (to === path.join(projectDir, 'previews', 'broll', `${UUID}.webm`)) {
+      publicationOrder.push(path.relative(projectDir, to));
+    }
     return fs.linkSync(from, to);
   };
   fileSystem.openSync = (target, flags, mode) => {
@@ -344,7 +346,7 @@ test('video process argv is exact and metadata is the asset-last publication mar
     '-vf', 'fps=24', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
     '-crf', '18', '-preset', 'medium',
     '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-b:a', '160k',
-    '-movflags', '+faststart', master.args.at(-1),
+    '-movflags', '+faststart', '-y', master.args.at(-1),
   ]);
   assert.deepEqual(proxy.args, [
     '-hide_banner', '-loglevel', 'error', '-i', master.args.at(-1),
@@ -352,7 +354,7 @@ test('video process argv is exact and metadata is the asset-last publication mar
     '-vf', "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=24",
     '-c:v', 'libvpx', '-crf', '32', '-b:v', '0',
     '-c:a', 'libopus', '-ar', '48000', '-ac', '2', '-b:a', '96k',
-    proxy.args.at(-1),
+    '-y', proxy.args.at(-1),
   ]);
   const probeEntry = 'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels:stream_tags=rotate:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration:format_tags=major_brand,compatible_brands';
   for (const call of calls.filter((entry) => entry.command === 'ffprobe')) {
@@ -405,7 +407,7 @@ test('image normalization argv is exact, single-frame, oriented, metadata-free, 
     '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', uploadPath,
     '-map', '0:v:0', '-map_metadata', '-1', '-frames:v', '1',
     '-vf', 'format=rgba', '-c:v', 'libwebp', '-quality', '90', '-pix_fmt', 'yuva420p',
-    encode.args.at(-1),
+    '-y', encode.args.at(-1),
   ]);
 });
 
@@ -460,6 +462,14 @@ test('a second import is rejected before body consumption while the first owns t
   abort.abort();
   await assert.rejects(first, (error) => error.code === 'MEDIA_IMPORT_ABORTED');
   assert.equal(controller.busy, false);
+  const retry = await importReviewMedia({
+    request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+    headers: rawHeaders('retry.png', 'image/png', 1), controller,
+    statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }),
+    randomId: () => '7c0f5b6a-a921-4a51-8787-467a3a5c7c20',
+    runMediaProcessImpl: fakeProcessor({ source: probeJson({ kind: 'image' }) }),
+  });
+  assert.equal(retry.mediaKind, 'image');
 });
 
 test('parent replacement during processing and dangling final destinations abort publication', async (t) => {
