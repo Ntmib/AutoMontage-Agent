@@ -501,6 +501,7 @@ function prepareRenderMediaBundle({
   let cleanupPhase = 'original';
   let cleanupContainer = null;
   let cleanupContainerIdentity = null;
+  let cleanupContainerCreateStatus = null;
   let claimedDirectory = null;
 
   function assertOwnedDirectoryCurrent() {
@@ -590,6 +591,59 @@ function prepareRenderMediaBundle({
     assertBundlePathIdentitiesCurrent();
   }
 
+  function attemptCleanupContainerCreate() {
+    cleanupContainerCreateStatus = 'attempting';
+    try {
+      fileSystem.mkdirSync(cleanupContainer, { mode: 0o700 });
+      cleanupContainerCreateStatus = 'exclusive';
+    } catch (error) {
+      cleanupContainerCreateStatus = error?.code === 'EEXIST' ? 'foreign' : 'ambiguous';
+      throw error;
+    }
+  }
+
+  function reconcileCleanupContainerCreate() {
+    if (cleanupContainerCreateStatus === 'foreign') {
+      fail('cleanup container ownership is foreign; cleanup refused');
+    }
+
+    let current = lstat(fileSystem, cleanupContainer);
+    if (!current) {
+      if (cleanupContainerIdentity || cleanupContainerCreateStatus === 'exclusive') {
+        fail('owned cleanup container disappeared; cleanup refused');
+      }
+      if (cleanupContainerCreateStatus !== 'unattempted'
+        && cleanupContainerCreateStatus !== 'ambiguous') {
+        fail('cleanup container ownership is uncertain; cleanup refused');
+      }
+      assertDirectory(base.leaseBase, fileSystem, base.baseIdentity);
+      attemptCleanupContainerCreate();
+      current = lstat(fileSystem, cleanupContainer);
+    }
+
+    if (!current || current.isSymbolicLink() || !current.isDirectory()) {
+      fail('cleanup container is foreign or unsafe; cleanup refused');
+    }
+    const currentIdentity = directoryIdentity(current);
+    if (cleanupContainerIdentity
+      && !sameDirectory(cleanupContainerIdentity, currentIdentity)) {
+      fail('cleanup container identity changed; cleanup refused');
+    }
+    if (cleanupContainerCreateStatus !== 'exclusive'
+      && cleanupContainerCreateStatus !== 'ambiguous') {
+      fail('cleanup container has no exclusive-create ownership evidence');
+    }
+    // Persist the first trustworthy identity before any later emptiness/parent check can throw.
+    // A retry must compare against this inode rather than adopt a replacement at the same name.
+    cleanupContainerIdentity = currentIdentity;
+    if (fileSystem.readdirSync(cleanupContainer).length !== 0) {
+      fail('cleanup container is not empty; cleanup refused');
+    }
+    assertDirectory(base.leaseBase, fileSystem, base.baseIdentity);
+    assertDirectory(cleanupContainer, fileSystem, cleanupContainerIdentity);
+    cleanupPhase = 'container-ready';
+  }
+
   function cleanup() {
     if (cleanupPhase === 'cleaned') return;
     base.rootChain.assertCurrent();
@@ -613,13 +667,18 @@ function prepareRenderMediaBundle({
         base.leaseBase,
         `.${directoryName}.cleanup-${cleanupToken}`,
       );
-      fileSystem.mkdirSync(cleanupContainer, { mode: 0o700 });
-      cleanupContainerIdentity = assertDirectory(cleanupContainer, fileSystem);
-      assertDirectory(base.leaseBase, fileSystem, base.baseIdentity);
-      if (fileSystem.readdirSync(cleanupContainer).length !== 0) {
-        fail('cleanup tombstone is not exclusive');
+      cleanupContainerCreateStatus = 'unattempted';
+      cleanupPhase = 'container-create-uncertain';
+      const existingContainer = lstat(fileSystem, cleanupContainer);
+      if (existingContainer) {
+        cleanupContainerCreateStatus = 'foreign';
+        fail('cleanup container candidate already exists; cleanup refused');
       }
-      cleanupPhase = 'container-ready';
+      attemptCleanupContainerCreate();
+    }
+
+    if (cleanupPhase === 'container-create-uncertain') {
+      reconcileCleanupContainerCreate();
     }
 
     if (cleanupPhase === 'container-ready') {

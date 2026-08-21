@@ -556,6 +556,248 @@ test('cleanup retry retains a foreign directory substituted after an unverified 
   assert.equal(fs.readFileSync(path.join(movedOwned, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
 });
 
+test('cleanup reconciles one uncertain tombstone create without choosing a second path', async (t) => {
+  await t.test('transient first lstat reuses and reclaims the exact empty candidate', () => {
+    const fixture = makeFixture(t);
+    let cleanupContainer = null;
+    let cleanupMkdirCalls = 0;
+    let failFirstLstat = false;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
+        cleanupMkdirCalls += 1;
+        cleanupContainer = target;
+        const result = fs.mkdirSync(target, options);
+        if (cleanupMkdirCalls === 1) failFirstLstat = true;
+        return result;
+      },
+      lstatSync(target, options) {
+        if (failFirstLstat && target === cleanupContainer) {
+          failFirstLstat = false;
+          const error = new Error('transient post-mkdir lstat failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.lstatSync(target, options);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient post-mkdir lstat/);
+    assert.equal(fs.existsSync(cleanupContainer), true);
+    assert.doesNotThrow(() => lease.cleanup());
+    assert.equal(cleanupMkdirCalls, 1);
+    assert.equal(fs.existsSync(cleanupContainer), false);
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(cleanupContainer)).filter((name) => name.includes('.cleanup-')),
+      [],
+    );
+  });
+
+  await t.test('mkdir completes before throwing and retry reuses the exact candidate', () => {
+    const fixture = makeFixture(t);
+    let cleanupContainer = null;
+    let cleanupMkdirCalls = 0;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
+        cleanupMkdirCalls += 1;
+        cleanupContainer = target;
+        const result = fs.mkdirSync(target, options);
+        if (cleanupMkdirCalls === 1) {
+          const error = new Error('transient post-mkdir syscall failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return result;
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient post-mkdir syscall/);
+    assert.equal(fs.existsSync(cleanupContainer), true);
+    assert.doesNotThrow(() => lease.cleanup());
+    assert.equal(cleanupMkdirCalls, 1);
+    assert.equal(fs.existsSync(cleanupContainer), false);
+  });
+
+  await t.test('mkdir fails before creation and retry creates the same candidate', () => {
+    const fixture = makeFixture(t);
+    const attemptedContainers = [];
+    let failFirstMkdir = true;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
+        attemptedContainers.push(target);
+        if (failFirstMkdir) {
+          failFirstMkdir = false;
+          const error = new Error('transient pre-mkdir failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.mkdirSync(target, options);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient pre-mkdir/);
+    assert.doesNotThrow(() => lease.cleanup());
+    assert.equal(attemptedContainers.length, 2);
+    assert.equal(new Set(attemptedContainers).size, 1);
+    assert.equal(fs.existsSync(attemptedContainers[0]), false);
+  });
+
+  await t.test('captured candidate identity replacement is retained', () => {
+    const fixture = makeFixture(t);
+    const leaseBase = path.join(fixture.root, 'public', '.automontage');
+    let cleanupContainer = null;
+    let failBaseCheck = false;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
+        cleanupContainer = target;
+        const result = fs.mkdirSync(target, options);
+        failBaseCheck = true;
+        return result;
+      },
+      lstatSync(target, options) {
+        if (failBaseCheck && target === leaseBase) {
+          failBaseCheck = false;
+          const error = new Error('transient post-capture base failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.lstatSync(target, options);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient post-capture base/);
+    const movedOwned = `${cleanupContainer}.owned`;
+    fs.renameSync(cleanupContainer, movedOwned);
+    fs.mkdirSync(cleanupContainer);
+
+    assert.throws(() => lease.cleanup(), /identity|container|foreign|refused/i);
+    assert.equal(fs.existsSync(cleanupContainer), true);
+    assert.equal(fs.existsSync(movedOwned), true);
+  });
+
+  await t.test('identity captured before an empty-check failure rejects replacement', () => {
+    const fixture = makeFixture(t);
+    let cleanupContainer = null;
+    let failEmptyCheck = false;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
+        cleanupContainer = target;
+        const result = fs.mkdirSync(target, options);
+        failEmptyCheck = true;
+        return result;
+      },
+      readdirSync(target, options) {
+        if (failEmptyCheck && target === cleanupContainer) {
+          failEmptyCheck = false;
+          const error = new Error('transient container empty-check failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.readdirSync(target, options);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient container empty-check/);
+    const movedOwned = `${cleanupContainer}.owned`;
+    fs.renameSync(cleanupContainer, movedOwned);
+    fs.mkdirSync(cleanupContainer);
+
+    assert.throws(() => lease.cleanup(), /identity|container|foreign|refused/i);
+    assert.equal(fs.existsSync(cleanupContainer), true);
+    assert.equal(fs.existsSync(movedOwned), true);
+  });
+
+  await t.test('nonempty unverified candidate is retained', () => {
+    const fixture = makeFixture(t);
+    let cleanupContainer = null;
+    let failFirstLstat = false;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
+        cleanupContainer = target;
+        const result = fs.mkdirSync(target, options);
+        failFirstLstat = true;
+        return result;
+      },
+      lstatSync(target, options) {
+        if (failFirstLstat && target === cleanupContainer) {
+          failFirstLstat = false;
+          const error = new Error('transient post-mkdir lstat failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.lstatSync(target, options);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient post-mkdir lstat/);
+    fs.writeFileSync(path.join(cleanupContainer, 'foreign.txt'), 'foreign');
+
+    assert.throws(() => lease.cleanup(), /container|tombstone|foreign|empty|refused/i);
+    assert.equal(fs.readFileSync(path.join(cleanupContainer, 'foreign.txt'), 'utf8'), 'foreign');
+  });
+
+  await t.test('an arbitrary EEXIST candidate is never adopted', () => {
+    const fixture = makeFixture(t);
+    let cleanupContainer = null;
+    let injected = false;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-') || injected) {
+          return fs.mkdirSync(target, options);
+        }
+        injected = true;
+        cleanupContainer = target;
+        fs.mkdirSync(target, options);
+        return fs.mkdirSync(target, options);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /exist/i);
+    assert.throws(() => lease.cleanup(), /container|foreign|ownership|refused/i);
+    assert.equal(fs.existsSync(cleanupContainer), true);
+  });
+});
+
 test('cleanup retries partial unlink and tombstone rmdir failures without leaking owned paths', async (t) => {
   await t.test('partial unlink', () => {
     const fixture = makeFixture(t);
