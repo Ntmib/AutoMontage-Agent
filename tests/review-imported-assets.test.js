@@ -419,6 +419,64 @@ test('orphan cleanup removes an exactly claimed crash remnant without asset.json
   }
 });
 
+test('orphan cleanup recovers the real directory-null crash stage with its owned preview', (t) => {
+  const projectDir = makeProject(t);
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+  const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+  fs.writeFileSync(previewPath, 'owned preview before directory claim update');
+  const claimPath = writePublicationClaim(projectDir, {
+    previewPath,
+    claimOverrides: { directory: null, canonical: null },
+  });
+
+  assert.deepEqual(new Set(cleanupOrphanImportedStages({ projectDir })), new Set([
+    previewPath, mediaDirectory, claimPath,
+  ]));
+  for (const target of [previewPath, mediaDirectory, claimPath]) {
+    assert.equal(fs.existsSync(target), false, target);
+  }
+});
+
+test('orphan cleanup uses the last complete claim when the next append was torn', (t) => {
+  const projectDir = makeProject(t);
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+  const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+  fs.writeFileSync(previewPath, 'owned preview with torn next claim');
+  const claimPath = writePublicationClaim(projectDir, {
+    previewPath,
+    claimOverrides: { directory: null, canonical: null },
+  });
+  fs.appendFileSync(claimPath, '{"version":1,"id":"torn');
+
+  assert.deepEqual(new Set(cleanupOrphanImportedStages({ projectDir })), new Set([
+    previewPath, mediaDirectory, claimPath,
+  ]));
+});
+
+test('orphan cleanup preserves a non-empty directory absent from the last durable claim', (t) => {
+  const projectDir = makeProject(t);
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+  const foreignPath = path.join(mediaDirectory, 'foreign.txt');
+  const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+  fs.writeFileSync(foreignPath, 'foreign directory contents');
+  fs.writeFileSync(previewPath, 'owned preview must also be preserved on mismatch');
+  const claimPath = writePublicationClaim(projectDir, {
+    previewPath,
+    claimOverrides: { directory: null, canonical: null },
+  });
+
+  assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), []);
+  for (const target of [mediaDirectory, foreignPath, previewPath, claimPath]) {
+    assert.equal(fs.existsSync(target), true, target);
+  }
+});
+
 test('orphan cleanup preserves a valid published bundle and removes only its matching stale claim', (t) => {
   const projectDir = makeProject(t);
   const bundle = writeBundle(projectDir);

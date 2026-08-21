@@ -368,6 +368,21 @@ test('video process argv is exact and metadata is the asset-last publication mar
   ]);
   const claimPath = path.join(projectDir, 'assets', 'broll', 'video', `.${UUID}.claim`);
   assert.equal(fs.statSync(claimPath).mode & 0o777, 0o600);
+  const claimRecords = fs.readFileSync(claimPath, 'utf8').trimEnd().split('\n').map(JSON.parse);
+  assert.equal(claimRecords.length, 4);
+  assert.deepEqual(
+    claimRecords.map(({ directory, canonical, preview }) => ({
+      directory: directory !== null,
+      canonical: canonical !== null,
+      preview: preview !== null,
+    })),
+    [
+      { directory: false, canonical: false, preview: false },
+      { directory: false, canonical: false, preview: true },
+      { directory: true, canonical: false, preview: true },
+      { directory: true, canonical: true, preview: true },
+    ],
+  );
   assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), [claimPath]);
   assert.equal(fs.existsSync(result.filePath), true);
   assert.equal(fs.existsSync(result.previewPath), true);
@@ -682,6 +697,47 @@ test('failure after preview and final-directory claim leaves no selectable parti
       assert.equal(fs.existsSync(finalDirectory), false);
     });
   }
+});
+
+test('rollback retains the durable claim when an owned canonical cannot be deleted', async (t) => {
+  const projectDir = tempProject(t);
+  const controller = createImportController();
+  const canonicalPath = path.join(
+    projectDir,
+    'assets',
+    'broll',
+    'video',
+    UUID,
+    'media.mp4',
+  );
+  const claimPath = path.join(
+    projectDir,
+    'assets',
+    'broll',
+    'video',
+    `.${UUID}.claim`,
+  );
+  const fileSystem = Object.create(fs);
+  fileSystem.openSync = (target, flags, mode) => {
+    if (target === path.join(path.dirname(canonicalPath), 'asset.json')) {
+      throw new Error('metadata commit failed');
+    }
+    return fs.openSync(target, flags, mode);
+  };
+  fileSystem.unlinkSync = (target) => {
+    if (target === canonicalPath) throw new Error('canonical deletion failed');
+    return fs.unlinkSync(target);
+  };
+
+  await assert.rejects(importReviewMedia({
+    request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+    headers: rawHeaders('x.mp4', 'video/mp4', 1), controller, fileSystem,
+    statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+    runMediaProcessImpl: fakeProcessor(),
+  }));
+  assert.equal(controller.busy, false);
+  assert.equal(fs.existsSync(canonicalPath), true);
+  assert.equal(fs.existsSync(claimPath), true);
 });
 
 test('restrictive umask still yields exact private directory and file modes', { concurrency: false }, async (t) => {

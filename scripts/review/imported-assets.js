@@ -105,10 +105,10 @@ function validPersistedIdentity(value, keys) {
       && /^(0|[1-9][0-9]*)$/.test(value[key]));
 }
 
-function parseImportedPublicationClaim({ bytes, expectedId, expectedMediaKind } = {}) {
+function parseImportedPublicationClaimRecord({ text, expectedId, expectedMediaKind }) {
   let claim;
   try {
-    claim = JSON.parse(Buffer.from(bytes).toString('utf8'));
+    claim = JSON.parse(text);
   } catch (_) {
     return null;
   }
@@ -126,6 +126,29 @@ function parseImportedPublicationClaim({ bytes, expectedId, expectedMediaKind } 
     || (claim.canonical !== null && claim.directory === null)
     || (claim.mediaKind === 'image' && claim.preview !== null)) return null;
   return claim;
+}
+
+function claimStateProgresses(previous, next) {
+  return ['directory', 'canonical', 'preview'].every((key) => previous[key] === null
+    || isDeepStrictEqual(previous[key], next[key]));
+}
+
+function parseImportedPublicationClaim({ bytes, expectedId, expectedMediaKind } = {}) {
+  const text = Buffer.from(bytes).toString('utf8');
+  const lastCompleteRecord = text.lastIndexOf('\n');
+  if (lastCompleteRecord < 0) return null;
+  const records = text.slice(0, lastCompleteRecord).split('\n');
+  let latest = null;
+  for (const record of records) {
+    const claim = parseImportedPublicationClaimRecord({
+      text: record,
+      expectedId,
+      expectedMediaKind,
+    });
+    if (!claim || (latest && !claimStateProgresses(latest, claim))) break;
+    latest = claim;
+  }
+  return latest;
 }
 
 function readOpenedMetadata(fileSystem, filePath) {
@@ -390,6 +413,28 @@ function targetIdentityState(fileSystem, target, expected, kind) {
   return { matches, exists: true };
 }
 
+function unrecordedEmptyDirectoryState(fileSystem, target) {
+  let stat;
+  try {
+    stat = fileSystem.lstatSync(target, { bigint: true });
+  } catch (error) {
+    return error.code === 'ENOENT'
+      ? { matches: true, exists: false, identity: null }
+      : { matches: false };
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return { matches: false, exists: true };
+  try {
+    if (fileSystem.readdirSync(target).length !== 0) return { matches: false, exists: true };
+  } catch (_) {
+    return { matches: false, exists: true };
+  }
+  return {
+    matches: true,
+    exists: true,
+    identity: { dev: String(stat.dev), ino: String(stat.ino) },
+  };
+}
+
 function removeClaimSnapshot(fileSystem, target, expected) {
   try {
     const stat = fileSystem.lstatSync(target);
@@ -443,12 +488,10 @@ function cleanupPublicationClaim({
   if (mediaKind === 'video' && !previewParent) return [];
   const previewPath = previewParent ? path.join(previewParent, `${id}.webm`) : null;
 
-  const directoryState = targetIdentityState(
-    fileSystem,
-    mediaDirectory,
-    claim.directory,
-    'directory',
-  );
+  const directoryState = claim.directory === null
+    ? unrecordedEmptyDirectoryState(fileSystem, mediaDirectory)
+    : targetIdentityState(fileSystem, mediaDirectory, claim.directory, 'directory');
+  const directoryRemovalIdentity = claim.directory || directoryState.identity;
   const previewState = previewPath
     ? targetIdentityState(fileSystem, previewPath, claim.preview, 'file')
     : { matches: claim.preview === null, exists: false };
@@ -527,7 +570,12 @@ function cleanupPublicationClaim({
     }
   }
   if (directoryState.exists) {
-    if (removeClaimedTarget(fileSystem, mediaDirectory, claim.directory, 'directory')) {
+    if (removeClaimedTarget(
+      fileSystem,
+      mediaDirectory,
+      directoryRemovalIdentity,
+      'directory',
+    )) {
       removed.push(mediaDirectory);
     } else {
       complete = false;

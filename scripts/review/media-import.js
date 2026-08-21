@@ -661,7 +661,7 @@ function writePublicationClaimState(owned, fileSystem) {
   });
   if (!claim || owned.claimFd === null) throw unsafeFilesystem();
   const bytes = Buffer.from(`${JSON.stringify(claim)}\n`);
-  fileSystem.ftruncateSync(owned.claimFd, 0);
+  const before = fileSystem.fstatSync(owned.claimFd);
   let offset = 0;
   while (offset < bytes.length) {
     const written = fileSystem.writeSync(
@@ -669,7 +669,7 @@ function writePublicationClaimState(owned, fileSystem) {
       bytes,
       offset,
       bytes.length - offset,
-      offset,
+      null,
     );
     if (!Number.isSafeInteger(written) || written <= 0) throw unsafeFilesystem();
     offset += written;
@@ -677,23 +677,41 @@ function writePublicationClaimState(owned, fileSystem) {
   fileSystem.fsyncSync(owned.claimFd);
   const stat = fileSystem.fstatSync(owned.claimFd);
   const nanosecondStat = fileSystem.fstatSync(owned.claimFd, { bigint: true });
-  if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size !== bytes.length) {
+  if (!stat.isFile() || (stat.mode & 0o777) !== 0o600
+    || stat.size !== before.size + bytes.length) {
     throw unsafeFilesystem();
   }
   owned.claimIdentity = openedFileIdentity(stat, nanosecondStat);
   assertOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
 }
 
+function fsyncDirectoryIfSupported(fileSystem, directory) {
+  const constants = fileSystem.constants || fs.constants;
+  let descriptor = null;
+  try {
+    descriptor = fileSystem.openSync(directory, constants.O_RDONLY);
+    const stat = fileSystem.fstatSync(descriptor);
+    if (!stat.isDirectory()) throw unsafeFilesystem();
+    fileSystem.fsyncSync(descriptor);
+  } catch (error) {
+    if (!['EINVAL', 'ENOTSUP', 'EBADF'].includes(error.code)) throw error;
+  } finally {
+    if (descriptor !== null) fileSystem.closeSync(descriptor);
+  }
+}
+
 function openPublicationClaim(owned, fileSystem) {
   const constants = fileSystem.constants || fs.constants;
   owned.claimFd = fileSystem.openSync(
     owned.claimPath,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0),
+    constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL
+      | (constants.O_NOFOLLOW || 0),
     0o600,
   );
   fileSystem.fchmodSync(owned.claimFd, 0o600);
   owned.claimIdentity = identity(fileSystem.fstatSync(owned.claimFd));
   writePublicationClaimState(owned, fileSystem);
+  fsyncDirectoryIfSupported(fileSystem, owned.assetParent);
 }
 
 function copyExclusiveFile({
@@ -795,6 +813,33 @@ function removeIfOwnedFile(fileSystem, target, expected) {
     }
   } catch (_) { /* never broaden cleanup after a race */ }
   return false;
+}
+
+function ownedFileAbsentOrRemoved(fileSystem, target, expected) {
+  if (!target) return true;
+  try {
+    const stat = fileSystem.lstatSync(target);
+    if (!expected || !stat.isFile() || stat.isSymbolicLink() || !sameIdentity(stat, expected)) {
+      return false;
+    }
+    fileSystem.unlinkSync(target);
+    return true;
+  } catch (error) {
+    return error.code === 'ENOENT';
+  }
+}
+
+function ownedDirectoryAbsentOrRemoved(fileSystem, target, expected) {
+  if (!target) return true;
+  try {
+    const stat = fileSystem.lstatSync(target);
+    if (!expected || !stat.isDirectory() || stat.isSymbolicLink()
+      || !sameIdentity(stat, expected)) return false;
+    fileSystem.rmdirSync(target);
+    return true;
+  } catch (error) {
+    return error.code === 'ENOENT';
+  }
 }
 
 function claimFinalDirectory(owned, fileSystem) {
@@ -904,15 +949,35 @@ function cleanupOwnedImport(owned, fileSystem) {
     owned.claimFd = null;
   }
   if (!owned.published) {
-    removeIfOwnedFile(fileSystem, owned.previewFinalPath, owned.publishedPreviewIdentity);
-    removeIfOwnedFile(fileSystem, owned.metadataFinalPath, owned.metadataFinalIdentity);
-    removeIfOwnedFile(fileSystem, owned.canonicalFinalPath, owned.canonicalFinalIdentity);
-    try {
-      const stat = fileSystem.lstatSync(owned.assetFinalPath);
-      if (stat.isDirectory() && !stat.isSymbolicLink()
-        && sameIdentity(stat, owned.assetFinalIdentity)) fileSystem.rmdirSync(owned.assetFinalPath);
-    } catch (_) { /* a foreign collision remains unselectable and untouched */ }
-    removeIfOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
+    const targetsRemoved = [
+      ownedFileAbsentOrRemoved(
+        fileSystem,
+        owned.previewFinalPath,
+        owned.publishedPreviewIdentity,
+      ),
+      ownedFileAbsentOrRemoved(
+        fileSystem,
+        owned.metadataFinalPath,
+        owned.metadataFinalIdentity,
+      ),
+      ownedFileAbsentOrRemoved(
+        fileSystem,
+        owned.canonicalFinalPath,
+        owned.canonicalFinalIdentity,
+      ),
+      ownedFileAbsentOrRemoved(
+        fileSystem,
+        owned.previewStagePath,
+        owned.previewStageIdentity,
+      ),
+    ].every(Boolean);
+    if (targetsRemoved && ownedDirectoryAbsentOrRemoved(
+      fileSystem,
+      owned.assetFinalPath,
+      owned.assetFinalIdentity,
+    )) {
+      removeIfOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
+    }
   }
   try {
     const stat = fileSystem.lstatSync(owned.quarantinePath);
@@ -921,7 +986,9 @@ function cleanupOwnedImport(owned, fileSystem) {
       fileSystem.rmSync(owned.quarantinePath, { recursive: true, force: false });
     }
   } catch (_) { /* an identity race leaves the UUID-owned remnant for startup cleanup */ }
-  removeIfOwnedFile(fileSystem, owned.previewStagePath, owned.previewStageIdentity);
+  if (owned.published) {
+    removeIfOwnedFile(fileSystem, owned.previewStagePath, owned.previewStageIdentity);
+  }
 }
 
 async function importReviewMedia({
