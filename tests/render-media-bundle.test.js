@@ -598,7 +598,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     );
   });
 
-  await t.test('mkdir completes before throwing and retry reuses the exact candidate', () => {
+  await t.test('mkdir wrapper throwing after creation retains the unproven candidate', () => {
     const fixture = makeFixture(t);
     let cleanupContainer = null;
     let cleanupMkdirCalls = 0;
@@ -624,9 +624,9 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
 
     assert.throws(() => lease.cleanup(), /transient post-mkdir syscall/);
     assert.equal(fs.existsSync(cleanupContainer), true);
-    assert.doesNotThrow(() => lease.cleanup());
+    assert.throws(() => lease.cleanup(), /container|foreign|ownership|uncertain|refused/i);
     assert.equal(cleanupMkdirCalls, 1);
-    assert.equal(fs.existsSync(cleanupContainer), false);
+    assert.equal(fs.existsSync(cleanupContainer), true);
   });
 
   await t.test('mkdir fails before creation and retry creates the same candidate', () => {
@@ -657,6 +657,77 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     assert.equal(attemptedContainers.length, 2);
     assert.equal(new Set(attemptedContainers).size, 1);
     assert.equal(fs.existsSync(attemptedContainers[0]), false);
+  });
+
+  await t.test('mkdir fails before creation and retry refuses a foreign empty candidate', () => {
+    const fixture = makeFixture(t);
+    let cleanupContainer = null;
+    let failFirstMkdir = true;
+    let cleanupMkdirCalls = 0;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
+        cleanupMkdirCalls += 1;
+        cleanupContainer = target;
+        if (failFirstMkdir) {
+          failFirstMkdir = false;
+          const error = new Error('transient pre-mkdir failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.mkdirSync(target, options);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient pre-mkdir/);
+    fs.mkdirSync(cleanupContainer);
+
+    assert.throws(() => lease.cleanup(), /container|foreign|ownership|uncertain|refused/i);
+    assert.equal(cleanupMkdirCalls, 1);
+    assert.equal(fs.existsSync(cleanupContainer), true);
+  });
+
+  await t.test('identity captured before first pathname lstat rejects an empty replacement', () => {
+    const fixture = makeFixture(t);
+    let cleanupContainer = null;
+    let failFirstLstat = false;
+    const transientFs = {
+      ...fs,
+      mkdirSync(target, options) {
+        if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
+        cleanupContainer = target;
+        const result = fs.mkdirSync(target, options);
+        failFirstLstat = true;
+        return result;
+      },
+      lstatSync(target, options) {
+        if (failFirstLstat && target === cleanupContainer) {
+          failFirstLstat = false;
+          const error = new Error('transient first pathname lstat failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.lstatSync(target, options);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient first pathname lstat/);
+    const movedOwned = `${cleanupContainer}.owned`;
+    fs.renameSync(cleanupContainer, movedOwned);
+    fs.mkdirSync(cleanupContainer);
+
+    assert.throws(() => lease.cleanup(), /identity|container|foreign|refused/i);
+    assert.equal(fs.existsSync(cleanupContainer), true);
+    assert.equal(fs.existsSync(movedOwned), true);
   });
 
   await t.test('captured candidate identity replacement is retained', () => {

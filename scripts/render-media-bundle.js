@@ -595,11 +595,37 @@ function prepareRenderMediaBundle({
     cleanupContainerCreateStatus = 'attempting';
     try {
       fileSystem.mkdirSync(cleanupContainer, { mode: 0o700 });
-      cleanupContainerCreateStatus = 'exclusive';
     } catch (error) {
       cleanupContainerCreateStatus = error?.code === 'EEXIST' ? 'foreign' : 'ambiguous';
       throw error;
     }
+
+    cleanupContainerCreateStatus = 'created-unverified';
+    const constants = fileSystem.constants || fs.constants;
+    let descriptor;
+    let captureError = null;
+    try {
+      descriptor = fileSystem.openSync(
+        cleanupContainer,
+        constants.O_RDONLY
+          | (constants.O_DIRECTORY || 0)
+          | (constants.O_NOFOLLOW || 0),
+      );
+      const opened = fileSystem.fstatSync(descriptor, { bigint: true });
+      if (!opened.isDirectory()) fail('cleanup container is not a directory');
+      cleanupContainerIdentity = directoryIdentity(opened);
+      cleanupContainerCreateStatus = 'exclusive';
+    } catch (error) {
+      captureError = error;
+    }
+    if (descriptor !== undefined) {
+      try {
+        fileSystem.closeSync(descriptor);
+      } catch (error) {
+        if (!captureError) captureError = error;
+      }
+    }
+    if (captureError) throw captureError;
   }
 
   function reconcileCleanupContainerCreate() {
@@ -609,7 +635,9 @@ function prepareRenderMediaBundle({
 
     let current = lstat(fileSystem, cleanupContainer);
     if (!current) {
-      if (cleanupContainerIdentity || cleanupContainerCreateStatus === 'exclusive') {
+      if (cleanupContainerIdentity
+        || cleanupContainerCreateStatus === 'exclusive'
+        || cleanupContainerCreateStatus === 'created-unverified') {
         fail('owned cleanup container disappeared; cleanup refused');
       }
       if (cleanupContainerCreateStatus !== 'unattempted'
@@ -624,18 +652,16 @@ function prepareRenderMediaBundle({
     if (!current || current.isSymbolicLink() || !current.isDirectory()) {
       fail('cleanup container is foreign or unsafe; cleanup refused');
     }
+    if (!cleanupContainerIdentity) {
+      fail('cleanup container ownership is uncertain; cleanup refused');
+    }
     const currentIdentity = directoryIdentity(current);
-    if (cleanupContainerIdentity
-      && !sameDirectory(cleanupContainerIdentity, currentIdentity)) {
+    if (!sameDirectory(cleanupContainerIdentity, currentIdentity)) {
       fail('cleanup container identity changed; cleanup refused');
     }
-    if (cleanupContainerCreateStatus !== 'exclusive'
-      && cleanupContainerCreateStatus !== 'ambiguous') {
+    if (cleanupContainerCreateStatus !== 'exclusive') {
       fail('cleanup container has no exclusive-create ownership evidence');
     }
-    // Persist the first trustworthy identity before any later emptiness/parent check can throw.
-    // A retry must compare against this inode rather than adopt a replacement at the same name.
-    cleanupContainerIdentity = currentIdentity;
     if (fileSystem.readdirSync(cleanupContainer).length !== 0) {
       fail('cleanup container is not empty; cleanup refused');
     }
