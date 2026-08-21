@@ -3,8 +3,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const { formatBriefMarkdown } = require('../scripts/lesson/brief');
+const { resolvePersistedBrollMedia } = require('../scripts/lesson/broll-media-files');
 
 const {
   approveBrief,
@@ -493,6 +495,390 @@ function makeApprovalFailureFixture(t, name) {
     approvedMarkdown: draft.markdownPath.replace('-draft.lesson.md', '-approved.lesson.md'),
   };
 }
+
+function writeApprovalImportedAsset(state, {
+  kind,
+  id = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1',
+  durationSec = 10,
+  hasAudio = true,
+} = {}) {
+  const mediaType = kind === 'image' ? 'images' : 'video';
+  const filename = kind === 'image' ? 'media.webp' : 'media.mp4';
+  const directory = path.join(
+    state.workspace.dir, 'assets', 'broll', mediaType, id,
+  );
+  fs.mkdirSync(directory, { recursive: true });
+  const canonical = Buffer.from(`normalized-${kind}-bytes`);
+  const canonicalPath = path.join(directory, filename);
+  fs.writeFileSync(canonicalPath, canonical);
+  let previewPath = null;
+  let previewSha256 = null;
+  if (kind === 'video') {
+    previewPath = path.join(state.workspace.dir, 'previews', 'broll', `${id}.webm`);
+    fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+    const preview = Buffer.from('normalized-video-proxy');
+    fs.writeFileSync(previewPath, preview);
+    previewSha256 = crypto.createHash('sha256').update(preview).digest('hex');
+  }
+  const metadata = {
+    version: 1,
+    id,
+    label: kind === 'image' ? 'diagram.png' : 'demo.mov',
+    mediaKind: kind,
+    canonicalSha256: crypto.createHash('sha256').update(canonical).digest('hex'),
+    previewSha256,
+    width: 640,
+    height: 360,
+    fps: kind === 'image' ? 0 : 30,
+    durationSec: kind === 'image' ? 0 : durationSec,
+    hasAudio: kind === 'image' ? false : hasAudio,
+  };
+  const metadataPath = path.join(directory, 'asset.json');
+  fs.writeFileSync(metadataPath, `${JSON.stringify(metadata)}\n`);
+  return {
+    canonicalPath,
+    metadata,
+    metadataPath,
+    previewPath,
+    reference: `assets/broll/${mediaType}/${id}/${filename}`,
+  };
+}
+
+function setApprovalBrollMedia(state, asset, overrides = {}) {
+  const brief = JSON.parse(fs.readFileSync(state.draft.jsonPath, 'utf8'));
+  brief.scenes = [{
+    scene: 'broll',
+    start: 0,
+    end: 8,
+    brollMedia: asset.metadata.mediaKind === 'video'
+      ? {
+        kind: 'video',
+        src: asset.reference,
+        sha256: asset.metadata.canonicalSha256,
+        trimStartSec: 0,
+        fit: 'contain',
+        audioMode: 'replace',
+        ...overrides,
+      }
+      : {
+        kind: 'image',
+        src: asset.reference,
+        sha256: asset.metadata.canonicalSha256,
+        fit: 'cover',
+        ...overrides,
+      },
+    headCream: 'ПРОВЕРЕННОЕ',
+    headOrange: 'МЕДИА',
+  }];
+  fs.writeFileSync(state.draft.jsonPath, `${JSON.stringify(brief, null, 2)}\n`);
+  return brief;
+}
+
+function approvalProbe(metadata) {
+  return (command, args, options) => {
+    assert.equal(command, 'ffprobe');
+    assert.equal(args.at(-1), '/dev/fd/3');
+    assert.equal(options.shell, false);
+    assert.equal(options.stdio[3] >= 0, true);
+    const video = {
+      codec_type: 'video',
+      codec_name: metadata.mediaKind === 'image' ? 'webp' : 'h264',
+      width: metadata.width,
+      height: metadata.height,
+      avg_frame_rate: metadata.mediaKind === 'image' ? '25/1' : `${metadata.fps}/1`,
+      r_frame_rate: metadata.mediaKind === 'image' ? '25/1' : `${metadata.fps}/1`,
+      pix_fmt: 'yuv420p',
+      disposition: { attached_pic: 0 },
+    };
+    const streams = metadata.hasAudio
+      ? [video, {
+        codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2,
+      }]
+      : [video];
+    return {
+      status: 0,
+      signal: null,
+      stdout: JSON.stringify({
+        streams,
+        format: {
+          format_name: metadata.mediaKind === 'image' ? 'webp_pipe' : 'mov,mp4,m4a,3gp,3g2,mj2',
+          duration: metadata.mediaKind === 'image' ? undefined : String(metadata.durationSec),
+        },
+      }),
+      stderr: '',
+    };
+  };
+}
+
+test('approval accepts verified normalized image and video b-roll', async (t) => {
+  for (const kind of ['image', 'video']) {
+    await t.test(kind, () => {
+      const state = makeApprovalFailureFixture(t, `approved-${kind}-media`);
+      const asset = writeApprovalImportedAsset(state, { kind });
+      const draft = setApprovalBrollMedia(state, asset);
+      const draftBytes = fs.readFileSync(state.draft.jsonPath);
+
+      const approved = approveBrief(state.workspace, state.draft.jsonPath, {
+        root: path.resolve(__dirname, '..'),
+        runToolImpl: approvalProbe(asset.metadata),
+      });
+
+      assert.deepEqual(
+        JSON.parse(fs.readFileSync(approved.jsonPath, 'utf8')).scenes[0].brollMedia,
+        draft.scenes[0].brollMedia,
+      );
+      assert.deepEqual(fs.readFileSync(state.draft.jsonPath), draftBytes);
+      assert.equal(JSON.parse(draftBytes).status, 'draft');
+    });
+  }
+});
+
+const APPROVAL_MEDIA_ERRORS = {
+  path: [
+    'BROLL_MEDIA_PATH_INVALID',
+    'BROLL_MEDIA_PATH_INVALID: b-roll media reference is not allowed',
+  ],
+  missing: ['BROLL_MEDIA_MISSING', 'BROLL_MEDIA_MISSING: b-roll media file is missing'],
+  hash: [
+    'BROLL_MEDIA_HASH_MISMATCH',
+    'BROLL_MEDIA_HASH_MISMATCH: b-roll media hash does not match the draft',
+  ],
+  symlink: [
+    'BROLL_MEDIA_SYMLINK',
+    'BROLL_MEDIA_SYMLINK: b-roll media path contains a symbolic link',
+  ],
+  metadata: [
+    'BROLL_MEDIA_METADATA_MISMATCH',
+    'BROLL_MEDIA_METADATA_MISMATCH: b-roll asset metadata does not match the media',
+  ],
+  metadataInvalid: [
+    'BROLL_MEDIA_METADATA_INVALID',
+    'BROLL_MEDIA_METADATA_INVALID: b-roll asset metadata is invalid',
+  ],
+  proxyMissing: [
+    'BROLL_MEDIA_PROXY_MISSING',
+    'BROLL_MEDIA_PROXY_MISSING: b-roll preview proxy is missing',
+  ],
+  proxyHash: [
+    'BROLL_MEDIA_PROXY_HASH_MISMATCH',
+    'BROLL_MEDIA_PROXY_HASH_MISMATCH: b-roll preview proxy hash is invalid',
+  ],
+  kind: [
+    'BROLL_MEDIA_KIND_MISMATCH',
+    'BROLL_MEDIA_KIND_MISMATCH: b-roll media kind does not match the draft',
+  ],
+  probe: [
+    'BROLL_MEDIA_PROBE_FAILED',
+    'BROLL_MEDIA_PROBE_FAILED: b-roll media could not be verified',
+  ],
+  clip: [
+    'BROLL_MEDIA_CLIP_OVERRUN',
+    'BROLL_MEDIA_CLIP_OVERRUN: b-roll video clip exceeds media duration',
+  ],
+  audio: [
+    'BROLL_MEDIA_AUDIO_REQUIRED',
+    'BROLL_MEDIA_AUDIO_REQUIRED: b-roll audio mode requires an audio stream',
+  ],
+};
+
+test('persisted b-roll resolver contains paths and rejects ancestor symlinks', (t) => {
+  const state = makeApprovalFailureFixture(t, 'persisted-media-paths');
+  const repositoryRoot = path.join(state.fixture.dir, 'repository');
+  const publicDirectory = path.join(repositoryRoot, 'public', 'broll');
+  const projectMedia = path.join(state.workspace.dir, 'assets', 'broll', 'safe.webp');
+  fs.mkdirSync(publicDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(projectMedia), { recursive: true });
+  fs.writeFileSync(path.join(publicDirectory, 'safe.webp'), 'public');
+  fs.writeFileSync(projectMedia, 'project');
+  const media = (src) => ({ kind: 'image', src, sha256: 'a'.repeat(64), fit: 'cover' });
+
+  assert.equal(resolvePersistedBrollMedia({
+    root: repositoryRoot, workspace: state.workspace, media: media('assets/broll/safe.webp'),
+  }).filePath, projectMedia);
+  assert.equal(resolvePersistedBrollMedia({
+    root: repositoryRoot, workspace: state.workspace, media: media('broll/safe.webp'),
+  }).filePath, path.join(publicDirectory, 'safe.webp'));
+
+  for (const src of ['/tmp/outside.webp', 'assets/../input/source.mp4', 'C:\\outside.webp']) {
+    let caught;
+    assert.throws(() => resolvePersistedBrollMedia({
+      root: repositoryRoot, workspace: state.workspace, media: media(src),
+    }), (error) => {
+      caught = error;
+      return true;
+    });
+    assert.equal(caught.code, APPROVAL_MEDIA_ERRORS.path[0]);
+    assert.equal(caught.message, APPROVAL_MEDIA_ERRORS.path[1]);
+  }
+
+  const outside = path.join(state.fixture.dir, 'outside-assets');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'escaped.webp'), 'outside');
+  fs.symlinkSync(outside, path.join(state.workspace.dir, 'assets', 'linked'), 'dir');
+  let caught;
+  assert.throws(() => resolvePersistedBrollMedia({
+    root: repositoryRoot,
+    workspace: state.workspace,
+    media: media('assets/linked/escaped.webp'),
+  }), (error) => {
+    caught = error;
+    return true;
+  });
+  assert.equal(caught.code, APPROVAL_MEDIA_ERRORS.symlink[0]);
+  assert.equal(caught.message, APPROVAL_MEDIA_ERRORS.symlink[1]);
+  assert.equal(fs.readFileSync(path.join(outside, 'escaped.webp'), 'utf8'), 'outside');
+});
+
+function assertApprovalMediaFailure(state, options, expected) {
+  const manifestPath = path.join(state.workspace.dir, 'project.json');
+  const before = {
+    draft: fs.readFileSync(state.draft.jsonPath),
+    markdown: fs.readFileSync(state.draft.markdownPath),
+    manifest: fs.readFileSync(manifestPath),
+    briefEntries: fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(),
+  };
+  let caught = null;
+  assert.throws(() => approveBrief(state.workspace, state.draft.jsonPath, options), (error) => {
+    caught = error;
+    return true;
+  });
+  assert.equal(caught.code, expected[0]);
+  assert.equal(caught.message, expected[1]);
+  assert.deepEqual(fs.readFileSync(state.draft.jsonPath), before.draft);
+  assert.equal(JSON.parse(before.draft).status, 'draft');
+  assert.deepEqual(fs.readFileSync(state.draft.markdownPath), before.markdown);
+  assert.deepEqual(fs.readFileSync(manifestPath), before.manifest);
+  assert.deepEqual(fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(), before.briefEntries);
+  assert.equal(fs.existsSync(state.approvedJson), false);
+  assert.equal(fs.existsSync(state.approvedMarkdown), false);
+  assert.deepEqual(
+    fs.readdirSync(state.workspace.dir).filter((entry) => entry.includes('.tmp-')),
+    [],
+  );
+  assert.deepEqual(
+    fs.readdirSync(path.join(state.workspace.dir, 'brief'))
+      .filter((entry) => entry.includes('.tmp-')),
+    [],
+  );
+}
+
+test('approval rejects each stale normalized b-roll condition with an exact reason', async (t) => {
+  const cases = [
+    {
+      name: 'missing canonical',
+      expected: APPROVAL_MEDIA_ERRORS.missing,
+      mutate({ asset }) { fs.unlinkSync(asset.canonicalPath); },
+    },
+    {
+      name: 'changed canonical hash',
+      expected: APPROVAL_MEDIA_ERRORS.hash,
+      mutate({ asset }) { fs.writeFileSync(asset.canonicalPath, 'replaced canonical bytes'); },
+    },
+    {
+      name: 'final symlink',
+      expected: APPROVAL_MEDIA_ERRORS.symlink,
+      mutate({ asset, state }) {
+        const outside = path.join(state.fixture.dir, 'outside-media.webp');
+        fs.writeFileSync(outside, 'outside');
+        fs.unlinkSync(asset.canonicalPath);
+        fs.symlinkSync(outside, asset.canonicalPath);
+      },
+    },
+    {
+      name: 'wrong metadata fields',
+      expected: APPROVAL_MEDIA_ERRORS.metadata,
+      mutate({ asset }) {
+        fs.writeFileSync(asset.metadataPath, `${JSON.stringify({
+          ...asset.metadata, width: asset.metadata.width + 1,
+        })}\n`);
+      },
+    },
+    {
+      name: 'invalid metadata shape',
+      expected: APPROVAL_MEDIA_ERRORS.metadataInvalid,
+      mutate({ asset }) {
+        fs.writeFileSync(asset.metadataPath, `${JSON.stringify({
+          ...asset.metadata, unexpected: true,
+        })}\n`);
+      },
+    },
+    {
+      name: 'missing proxy',
+      expected: APPROVAL_MEDIA_ERRORS.proxyMissing,
+      mutate({ asset }) { fs.unlinkSync(asset.previewPath); },
+    },
+    {
+      name: 'changed proxy hash',
+      expected: APPROVAL_MEDIA_ERRORS.proxyHash,
+      mutate({ asset }) { fs.writeFileSync(asset.previewPath, 'replaced proxy bytes'); },
+    },
+    {
+      name: 'wrong probed kind',
+      expected: APPROVAL_MEDIA_ERRORS.kind,
+      probeMetadata(asset) {
+        return { ...asset.metadata, mediaKind: 'image', hasAudio: false };
+      },
+    },
+    {
+      name: 'probe failure is bounded',
+      expected: APPROVAL_MEDIA_ERRORS.probe,
+      runTool() {
+        return {
+          status: 1,
+          signal: null,
+          stdout: '',
+          stderr: '/private/project/assets/broll/video/media.mp4: secret decoder error',
+        };
+      },
+    },
+    {
+      name: 'clip overrun',
+      expected: APPROVAL_MEDIA_ERRORS.clip,
+      assetOptions: { durationSec: 5 },
+    },
+    {
+      name: 'replace without audio',
+      expected: APPROVAL_MEDIA_ERRORS.audio,
+      assetOptions: { hasAudio: false },
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, () => {
+      const state = makeApprovalFailureFixture(t, `media-${item.name.replaceAll(' ', '-')}`);
+      const asset = writeApprovalImportedAsset(state, {
+        kind: 'video',
+        ...(item.assetOptions || {}),
+      });
+      setApprovalBrollMedia(state, asset);
+      if (item.mutate) item.mutate({ state, asset });
+      assertApprovalMediaFailure(state, {
+        root: path.resolve(__dirname, '..'),
+        runToolImpl: item.runTool || approvalProbe(
+          item.probeMetadata ? item.probeMetadata(asset) : asset.metadata,
+        ),
+      }, item.expected);
+    });
+  }
+});
+
+test('approval preserves the legacy image brollSrc path byte-for-byte', (t) => {
+  const state = makeApprovalFailureFixture(t, 'legacy-image-broll');
+  const brief = JSON.parse(fs.readFileSync(state.draft.jsonPath, 'utf8'));
+  brief.scenes = [{
+    scene: 'broll', start: 0, end: 8, brollSrc: 'assets/broll/legacy.png',
+    headCream: 'СТАРОЕ', headOrange: 'ИЗОБРАЖЕНИЕ',
+  }];
+  fs.mkdirSync(path.join(state.workspace.dir, 'assets', 'broll'), { recursive: true });
+  fs.writeFileSync(path.join(state.workspace.dir, 'assets', 'broll', 'legacy.png'), 'legacy');
+  fs.writeFileSync(state.draft.jsonPath, `${JSON.stringify(brief, null, 2)}\n`);
+
+  const approved = approveBrief(state.workspace, state.draft.jsonPath);
+
+  const persisted = JSON.parse(fs.readFileSync(approved.jsonPath, 'utf8'));
+  assert.equal(persisted.scenes[0].brollSrc, 'assets/broll/legacy.png');
+  assert.equal(persisted.scenes[0].brollMedia, undefined);
+});
 
 test('approval rejects a draft whose b-roll renderer cannot display', (t) => {
   const state = makeApprovalFailureFixture(t, 'unsupported-broll');

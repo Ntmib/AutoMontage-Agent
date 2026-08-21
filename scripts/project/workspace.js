@@ -7,6 +7,7 @@ const Ajv = require('ajv');
 
 const projectSchema = require('../../schema/project.schema.json');
 const { formatBriefMarkdown, isRenderableBrollSource, validateLessonBrief } = require('../lesson/brief');
+const { verifyBriefBrollMedia } = require('../lesson/broll-media-files');
 const projectManifestValidator = new Ajv({ allErrors: true }).compile(projectSchema);
 const TEMPORARY_ID = /^[A-Za-z0-9_-]+$/;
 
@@ -830,6 +831,8 @@ function saveDraftRevision(workspace, options = {}) {
 function approveBrief(workspace, draftJsonPath, {
   fileSystem = fs,
   temporaryId = randomUUID,
+  root = path.resolve(__dirname, '../..'),
+  runToolImpl,
 } = {}) {
   const draftRelativePath = relativeProjectPath(workspace, path.resolve(draftJsonPath));
   const draftEntry = workspace.manifest.briefs.find(
@@ -847,8 +850,14 @@ function approveBrief(workspace, draftJsonPath, {
   }
   const draft = JSON.parse(fileSystem.readFileSync(draftPath, 'utf8'));
   if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
+  if ((draft.scenes || []).some((scene) => scene?.brollMedia)) {
+    const draftValidation = validateLessonBrief(draft);
+    if (!draftValidation.ok) {
+      throw new Error(`draft brief is invalid: ${draftValidation.errors.join('\n')}`);
+    }
+  }
   for (const [index, scene] of (Array.isArray(draft.scenes) ? draft.scenes : []).entries()) {
-    if (scene?.scene === 'broll' && !isRenderableBrollSource(scene.brollSrc)) {
+    if (scene?.scene === 'broll' && !scene.brollMedia && !isRenderableBrollSource(scene.brollSrc)) {
       throw new Error(`scenes[${index}].brollSrc: b-roll поддерживает только изображения`);
     }
   }
@@ -913,6 +922,9 @@ function approveBrief(workspace, draftJsonPath, {
     type: 'file',
   });
   const oldManifest = fileSystem.readFileSync(manifestPath, 'utf8');
+  const mediaVerification = verifyBriefBrollMedia({
+    root, workspace, brief: draft, runToolImpl, fileSystem,
+  });
   const stages = [];
   let manifestStage;
   let rollbackStage;
@@ -947,6 +959,7 @@ function approveBrief(workspace, draftJsonPath, {
     );
     stages.push(jsonStage);
 
+    mediaVerification.assertCurrent();
     manifestStage.commit();
     manifestCommitted = true;
     if (markdownStage) markdownStage.commit();
@@ -969,7 +982,11 @@ function approveBrief(workspace, draftJsonPath, {
     if (rollbackErrors.length) error.rollbackErrors = rollbackErrors;
     throw error;
   } finally {
-    for (const stage of stages) stage.cleanupTemp();
+    try {
+      for (const stage of stages) stage.cleanupTemp();
+    } finally {
+      mediaVerification.close();
+    }
   }
   workspace.manifest = validatedManifest;
   return {

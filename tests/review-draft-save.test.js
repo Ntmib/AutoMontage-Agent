@@ -55,9 +55,11 @@ function writeImportedVideo(projectDir, {
   fs.mkdirSync(previewDirectory, { recursive: true });
   const canonical = Buffer.from('normalized canonical video');
   const preview = Buffer.from('normalized proxy video');
-  fs.writeFileSync(path.join(mediaDirectory, 'media.mp4'), canonical);
-  fs.writeFileSync(path.join(previewDirectory, `${id}.webm`), preview);
-  fs.writeFileSync(path.join(mediaDirectory, 'asset.json'), `${JSON.stringify({
+  const canonicalPath = path.join(mediaDirectory, 'media.mp4');
+  const previewPath = path.join(previewDirectory, `${id}.webm`);
+  fs.writeFileSync(canonicalPath, canonical);
+  fs.writeFileSync(previewPath, preview);
+  const metadata = {
     version: 1,
     id,
     label: 'Recorded demo.mov',
@@ -69,7 +71,47 @@ function writeImportedVideo(projectDir, {
     fps: 25,
     durationSec,
     hasAudio,
-  })}\n`);
+  };
+  const metadataPath = path.join(mediaDirectory, 'asset.json');
+  fs.writeFileSync(metadataPath, `${JSON.stringify(metadata)}\n`);
+  return {
+    canonical,
+    canonicalPath,
+    metadata,
+    metadataPath,
+    previewPath,
+    reference: `assets/broll/video/${id}/media.mp4`,
+  };
+}
+
+function approvalVideoProbe(metadata) {
+  return (command, args, options) => {
+    assert.equal(command, 'ffprobe');
+    assert.equal(args.at(-1), '/dev/fd/3');
+    assert.equal(options.shell, false);
+    return {
+      status: 0,
+      signal: null,
+      stdout: JSON.stringify({
+        streams: [
+          {
+            codec_type: 'video', codec_name: 'h264', width: metadata.width,
+            height: metadata.height, avg_frame_rate: `${metadata.fps}/1`,
+            r_frame_rate: `${metadata.fps}/1`, pix_fmt: 'yuv420p',
+            disposition: { attached_pic: 0 },
+          },
+          ...(metadata.hasAudio ? [{
+            codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2,
+          }] : []),
+        ],
+        format: {
+          format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
+          duration: String(metadata.durationSec),
+        },
+      }),
+      stderr: '',
+    };
+  };
 }
 
 function makeReviewWorkspace(t, { approved = true, name = 'review-save' } = {}) {
@@ -1166,6 +1208,79 @@ test('video materialization rechecks probe fields and persists snapped seconds w
   assert.deepEqual(fs.readFileSync(state.baseJsonPath), approvedBytes);
   assert.equal(JSON.parse(fs.readFileSync(saved.jsonPath, 'utf8'))
     .scenes[1].brollMedia.trimStartSec, 12.4);
+});
+
+test('approval rechecks the opened media identity after staging and before any publication', (t) => {
+  const state = makeReviewWorkspace(t, { approved: false, name: 'approval-media-race' });
+  const asset = writeImportedVideo(state.workspace.dir);
+  const draft = JSON.parse(fs.readFileSync(state.baseJsonPath, 'utf8'));
+  delete draft.scenes[1].brollSrc;
+  draft.scenes[1].brollMedia = {
+    kind: 'video',
+    src: asset.reference,
+    sha256: asset.metadata.canonicalSha256,
+    trimStartSec: 0,
+    fit: 'contain',
+    audioMode: 'replace',
+  };
+  fs.writeFileSync(state.baseJsonPath, `${JSON.stringify(draft, null, 2)}\n`);
+  const manifestPath = path.join(state.workspace.dir, 'project.json');
+  const before = {
+    draft: fs.readFileSync(state.baseJsonPath),
+    markdown: fs.readFileSync(state.baseMarkdownPath),
+    manifest: fs.readFileSync(manifestPath),
+    briefs: fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(),
+  };
+  const handles = new Map();
+  let replaced = false;
+  const racingFs = {
+    ...fs,
+    openSync(target, flags, mode) {
+      const descriptor = fs.openSync(target, flags, mode);
+      handles.set(descriptor, String(target));
+      return descriptor;
+    },
+    writeFileSync(target, data, options) {
+      const result = fs.writeFileSync(target, data, options);
+      const openedPath = typeof target === 'number' ? handles.get(target) : null;
+      if (!replaced && openedPath && openedPath.includes('.tmp-approval-json-')) {
+        const replacement = path.join(state.root, 'same-bytes-new-identity.mp4');
+        fs.writeFileSync(replacement, asset.canonical);
+        fs.renameSync(replacement, asset.canonicalPath);
+        replaced = true;
+      }
+      return result;
+    },
+    closeSync(descriptor) {
+      handles.delete(descriptor);
+      return fs.closeSync(descriptor);
+    },
+  };
+
+  let caught;
+  assert.throws(() => approveBrief(state.workspace, state.baseJsonPath, {
+    root: REPOSITORY_ROOT,
+    fileSystem: racingFs,
+    runToolImpl: approvalVideoProbe(asset.metadata),
+    temporaryId: () => TEMPORARY_ID,
+  }), (error) => {
+    caught = error;
+    return true;
+  });
+  assert.equal(replaced, true);
+  assert.equal(caught.code, 'BROLL_MEDIA_IDENTITY_CHANGED');
+  assert.equal(
+    caught.message,
+    'BROLL_MEDIA_IDENTITY_CHANGED: b-roll media identity changed during approval',
+  );
+  assert.deepEqual(fs.readFileSync(state.baseJsonPath), before.draft);
+  assert.equal(JSON.parse(before.draft).status, 'draft');
+  assert.deepEqual(fs.readFileSync(state.baseMarkdownPath), before.markdown);
+  assert.deepEqual(fs.readFileSync(manifestPath), before.manifest);
+  assert.deepEqual(fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(), before.briefs);
+  assert.equal(fs.existsSync(state.baseJsonPath.replace('-draft.', '-approved.')), false);
+  assert.equal(fs.existsSync(state.baseMarkdownPath.replace('-draft.', '-approved.')), false);
+  assert.deepEqual(tempEntries(state.workspace), []);
 });
 
 test('legacy image re-selection persists brollMedia and resolves after a real server restart', async (t) => {
