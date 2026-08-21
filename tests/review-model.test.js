@@ -106,16 +106,18 @@ test('review asset descriptors expose opaque URLs for allowed project and public
   assert.deepEqual(project, {
     id: 'asset-7',
     kind: 'project',
+    mediaKind: 'image',
     label: 'diagram.png',
     url: '/media/assets/asset-7',
-    capabilities: { preview: true, broll: true },
+    capabilities: { preview: true, brollImage: true, brollVideo: false },
   });
   assert.deepEqual(publicAsset, {
     id: 'asset-8',
     kind: 'public',
+    mediaKind: 'image',
     label: 'growth.png',
     url: '/media/assets/asset-8',
-    capabilities: { preview: true, broll: true },
+    capabilities: { preview: true, brollImage: true, brollVideo: false },
   });
   const state = loadReviewState({ root: ROOT, projectDir });
   assert.ok(state.assets.some((asset) => (
@@ -137,9 +139,9 @@ test('review assets expose preview and renderable b-roll capabilities without ho
   const state = loadReviewState({ root: ROOT, projectDir });
   const byLabel = new Map(state.assets.map((asset) => [asset.label, asset]));
 
-  assert.deepEqual(byLabel.get('diagram.png').capabilities, { preview: true, broll: true });
-  assert.deepEqual(byLabel.get('voice.mp3').capabilities, { preview: true, broll: false });
-  assert.deepEqual(byLabel.get('clip.mp4').capabilities, { preview: true, broll: false });
+  assert.deepEqual(byLabel.get('diagram.png').capabilities, { preview: true, brollImage: true, brollVideo: false });
+  assert.deepEqual(byLabel.get('voice.mp3').capabilities, { preview: true, brollImage: false, brollVideo: false });
+  assert.deepEqual(byLabel.get('clip.mp4').capabilities, { preview: true, brollImage: false, brollVideo: false });
   assert.doesNotMatch(JSON.stringify(state.assets), /assets\/broll|\/Users\/|C:\\Users\\/);
 });
 

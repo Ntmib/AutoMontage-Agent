@@ -5,7 +5,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 
-const { isRenderableBrollSource, validateLessonBrief } = require('../lesson/brief');
+const { validateLessonBrief } = require('../lesson/brief');
 const {
   nextBriefPaths,
   readProjectManifest,
@@ -13,7 +13,7 @@ const {
   saveDraftRevision,
 } = require('../project/workspace');
 const {
-  isAllowedReviewMediaPath,
+  listReviewAssetRecords,
   resolveReviewAsset,
 } = require('./assets');
 const { applyReviewCommands, isOpaqueAssetId } = require('./commands');
@@ -215,39 +215,21 @@ function consumeLimitedBody(request, response) {
   });
 }
 
-function collectRegularFiles(directory) {
-  let stat;
-  try {
-    stat = fs.lstatSync(directory);
-  } catch (_) {
-    return [];
-  }
-  if (!stat.isDirectory() || stat.isSymbolicLink()) return [];
-
-  let entries;
-  try {
-    entries = fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => (
-      left.name.localeCompare(right.name)
-    ));
-  } catch (_) {
-    return [];
-  }
-  return entries.flatMap((entry) => {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.isSymbolicLink()) return [];
-    if (entry.isDirectory()) return collectRegularFiles(entryPath);
-    return entry.isFile() ? [entryPath] : [];
-  });
-}
-
 function snapshotFile(filePath) {
   let descriptor = null;
   try {
     const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
     descriptor = fs.openSync(filePath, flags);
     const stat = fs.fstatSync(descriptor);
+    const nanosecondStat = fs.fstatSync(descriptor, { bigint: true });
     if (!stat.isFile()) return null;
-    return { filePath, dev: stat.dev, ino: stat.ino };
+    return {
+      filePath,
+      dev: stat.dev,
+      ino: stat.ino,
+      size: stat.size,
+      mtimeNs: nanosecondStat.mtimeNs,
+    };
   } catch (_) {
     return null;
   } finally {
@@ -256,65 +238,12 @@ function snapshotFile(filePath) {
 }
 
 function scanAssetFiles({ root, projectDir }) {
-  let projectAssets = [];
-  try {
-    const directory = resolveProjectPath(projectDir, 'assets', {
-      label: 'review assets directory',
-      mustExist: true,
-      type: 'directory',
-    });
-    projectAssets = collectRegularFiles(directory)
-      .filter((filePath) => isAllowedReviewMediaPath(path.relative(directory, filePath)))
-      .map((filePath) => ({
-        kind: 'project',
-        filePath,
-        reference: `assets/${path.relative(directory, filePath).split(path.sep).join('/')}`,
-        capabilities: {
-          preview: true,
-          broll: isRenderableBrollSource(filePath),
-        },
-      }));
-  } catch (_) {
-    projectAssets = [];
-  }
-  const publicDirectory = path.resolve(root, 'public');
-  const publicAssets = collectRegularFiles(publicDirectory)
-    .filter((filePath) => isAllowedReviewMediaPath(path.relative(publicDirectory, filePath)))
-    .map((filePath) => ({
-      kind: 'public',
-      filePath,
-      reference: path.relative(publicDirectory, filePath).split(path.sep).join('/'),
-      capabilities: {
-        preview: true,
-        broll: isRenderableBrollSource(filePath),
-      },
-    }));
-  return [...projectAssets, ...publicAssets]
-    .map((candidate) => {
-      const snapshot = snapshotFile(candidate.filePath);
-      return snapshot ? { ...candidate, ...snapshot } : null;
-    })
-    .filter(Boolean);
+  return listReviewAssetRecords({ root, projectDir });
 }
 
-function buildAssetFiles({ root, projectDir, state }) {
+function buildAssetFiles({ root, projectDir }) {
   const candidates = scanAssetFiles({ root, projectDir });
-  const mappings = new Map();
-  state.assets.forEach((descriptor, index) => {
-    const candidate = candidates[index];
-    if (candidate && candidate.kind === descriptor.kind
-      && path.basename(candidate.filePath) === descriptor.label) {
-      mappings.set(descriptor.id, {
-        filePath: candidate.filePath,
-        dev: candidate.dev,
-        ino: candidate.ino,
-        kind: candidate.kind,
-        reference: candidate.reference,
-        capabilities: candidate.capabilities,
-      });
-    }
-  });
-  return mappings;
+  return new Map(candidates.map((candidate, index) => [`asset-${index + 1}`, candidate]));
 }
 
 function assetIdentityKey(asset) {
@@ -322,15 +251,26 @@ function assetIdentityKey(asset) {
 }
 
 function sameSnapshotIdentity(left, right) {
-  return left && right && left.dev === right.dev && left.ino === right.ino;
+  return left && right && left.dev === right.dev && left.ino === right.ino
+    && left.size === right.size
+    && (left.mtimeNs === undefined || right.mtimeNs === undefined || left.mtimeNs === right.mtimeNs);
 }
 
 function descriptorForAsset(id, asset) {
   return {
     id,
     kind: asset.kind,
-    label: path.basename(asset.filePath),
+    mediaKind: asset.mediaKind,
+    label: asset.label,
     url: `/media/assets/${id}`,
+    ...(asset.previewPath ? { previewUrl: `/media/assets/${id}/preview` } : {}),
+    ...(asset.width ? {
+      width: asset.width,
+      height: asset.height,
+      fps: asset.fps,
+      durationSec: asset.durationSec,
+      hasAudio: asset.hasAudio,
+    } : {}),
     capabilities: { ...asset.capabilities },
   };
 }
@@ -450,7 +390,13 @@ function serveFile(request, response, file) {
     sendError(response, 404, request.method === 'HEAD');
     return;
   }
-  if (!stat.isFile() || stat.dev !== expected.dev || stat.ino !== expected.ino) {
+  const current = {
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeNs: fs.fstatSync(descriptor, { bigint: true }).mtimeNs,
+  };
+  if (!stat.isFile() || !sameSnapshotIdentity(expected, current)) {
     fs.closeSync(descriptor);
     sendError(response, 404, request.method === 'HEAD');
     return;
@@ -495,7 +441,7 @@ function safeHashEqual(actual, expected) {
 
 function currentAssetReference({ root, workspace, assetFiles, assetId }) {
   const registered = assetFiles.get(assetId);
-  if (!registered || registered.capabilities?.broll !== true) return null;
+  if (!registered || registered.capabilities?.brollImage !== true) return null;
   const currentSnapshot = snapshotFile(registered.filePath);
   if (!sameSnapshotIdentity(registered, currentSnapshot)) return null;
   const current = resolveReviewAsset({
@@ -837,6 +783,22 @@ async function routeRequest({
     serveFile(request, response, waveformFile);
     return;
   }
+  const previewMatch = /^\/media\/assets\/(asset-[1-9]\d*)\/preview$/.exec(pathname);
+  if (previewMatch) {
+    const asset = runtime.assetFiles.get(previewMatch[1]);
+    if (!asset || !asset.previewPath) {
+      sendError(response, 404, request.method === 'HEAD');
+      return;
+    }
+    serveFile(request, response, {
+      filePath: asset.previewPath,
+      dev: asset.previewDev,
+      ino: asset.previewIno,
+      size: asset.previewSize,
+      mtimeNs: asset.previewMtimeNs,
+    });
+    return;
+  }
   const assetMatch = /^\/media\/assets\/(asset-[1-9]\d*)$/.exec(pathname);
   if (assetMatch) {
     const file = runtime.assetFiles.get(assetMatch[1]);
@@ -919,6 +881,7 @@ function createSessionHandoff({
     if (typeof fileSystem.fchmodSync === 'function') fileSystem.fchmodSync(handle, 0o600);
     fileSystem.writeFileSync(handle, `${url}\n`, { encoding: 'utf8' });
     fileSystem.fsyncSync(handle);
+    identity = fileSystem.fstatSync(handle);
     fileSystem.closeSync(handle);
     handle = null;
   } catch (error) {
@@ -989,11 +952,8 @@ async function startReviewServer({
     editable,
     waveformAvailable: Boolean(waveformFile),
   });
-  const assetFiles = buildAssetFiles({
-    root: resolvedRoot,
-    projectDir: resolvedProjectDir,
-    state,
-  });
+  const assetFiles = buildAssetFiles({ root: resolvedRoot, projectDir: resolvedProjectDir });
+  state.assets = [...assetFiles].map(([id, asset]) => descriptorForAsset(id, asset));
   const nextAssetId = [...assetFiles.keys()].reduce((highest, id) => (
     Math.max(highest, Number(id.slice('asset-'.length)) || 0)
   ), 0) + 1;

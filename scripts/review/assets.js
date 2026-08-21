@@ -3,6 +3,8 @@ const path = require('node:path');
 
 const { resolveProjectPath } = require('../project/workspace');
 const { isRenderableBrollSource } = require('../lesson/brief');
+const { listImportedAssetBundles } = require('./imported-assets');
+const crypto = require('node:crypto');
 
 const REVIEW_MEDIA_EXTENSIONS = new Set([
   '.aac', '.avif', '.flac', '.gif', '.jpeg', '.jpg', '.m4a', '.m4v', '.mov',
@@ -93,16 +95,64 @@ function resolvePublicAsset(root, reference) {
   }
 }
 
-function descriptor({ id, kind, assetPath }) {
+function mediaKindForPath(assetPath) {
+  const extension = path.extname(assetPath).toLowerCase();
+  if (['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp'].includes(extension)) return 'image';
+  if (['.aac', '.flac', '.m4a', '.mp3', '.oga', '.ogg', '.wav'].includes(extension)) return 'audio';
+  return 'video';
+}
+
+function legacyRecord({ kind, filePath, reference }) {
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const stat = fs.fstatSync(descriptor);
+    const nanosecondStat = fs.fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile()) return null;
+    const bytes = fs.readFileSync(descriptor);
+    const mediaKind = mediaKindForPath(filePath);
+    const brollImage = mediaKind === 'image' && isRenderableBrollSource(filePath);
+    return {
+      kind,
+      mediaKind,
+      label: path.basename(filePath),
+      filePath,
+      previewPath: null,
+      reference,
+      ...(brollImage ? {
+        canonicalSha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      } : {}),
+      capabilities: { preview: true, brollImage, brollVideo: false },
+      dev: stat.dev,
+      ino: stat.ino,
+      size: stat.size,
+      mtimeNs: nanosecondStat.mtimeNs,
+    };
+  } catch (_) {
+    return null;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+}
+
+function descriptor({ id, asset }) {
   if (!/^asset-[1-9]\d*$/.test(id)) return null;
   return {
     id,
-    kind,
-    label: path.basename(assetPath),
+    kind: asset.kind,
+    mediaKind: asset.mediaKind,
+    label: asset.label,
     url: `/media/assets/${id}`,
+    ...(asset.previewPath ? { previewUrl: `/media/assets/${id}/preview` } : {}),
+    ...(asset.width ? {
+      width: asset.width,
+      height: asset.height,
+      fps: asset.fps,
+      durationSec: asset.durationSec,
+      hasAudio: asset.hasAudio,
+    } : {}),
     capabilities: {
-      preview: true,
-      broll: isRenderableBrollSource(assetPath),
+      ...asset.capabilities,
     },
   };
 }
@@ -112,10 +162,18 @@ function resolveReviewAsset({ root, workspace, reference, id = 'asset-1' } = {})
   if (!canonical || !isAllowedReviewMediaPath(canonical)) return null;
 
   const projectPath = resolveProjectAsset(workspace, canonical);
-  if (projectPath) return descriptor({ id, kind: 'project', assetPath: projectPath });
+  if (projectPath) {
+    const asset = listReviewAssetRecords({ root, projectDir: workspace.dir })
+      .find((candidate) => candidate.kind === 'project' && candidate.reference === canonical);
+    return asset ? descriptor({ id, asset }) : null;
+  }
 
   const publicPath = resolvePublicAsset(root, canonical);
-  if (publicPath) return descriptor({ id, kind: 'public', assetPath: publicPath });
+  if (publicPath) {
+    const asset = listReviewAssetRecords({ root, projectDir: workspace && workspace.dir })
+      .find((candidate) => candidate.kind === 'public' && candidate.reference === canonical);
+    return asset ? descriptor({ id, asset }) : null;
+  }
 
   return null;
 }
@@ -171,26 +229,34 @@ function publicAssetReferences(root) {
   )).filter(isAllowedReviewMediaPath);
 }
 
+function listReviewAssetRecords({ root, projectDir } = {}) {
+  const imported = listImportedAssetBundles({ projectDir });
+  const importedPaths = new Set(imported.map((asset) => path.resolve(asset.filePath)));
+  const projectAssets = projectAssetReferences({ dir: projectDir })
+    .map((reference) => {
+      const filePath = resolveProjectAsset({ dir: projectDir }, reference);
+      if (!filePath || importedPaths.has(path.resolve(filePath))
+        || /^assets\/broll\/(?:images|video)\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/media\.(?:webp|mp4)$/.test(reference)) return null;
+      return legacyRecord({ kind: 'project', filePath, reference });
+    })
+    .filter(Boolean);
+  const publicAssets = publicAssetReferences(root)
+    .map((reference) => {
+      const filePath = resolvePublicAsset(root, reference);
+      return filePath ? legacyRecord({ kind: 'public', filePath, reference }) : null;
+    })
+    .filter(Boolean);
+  return [...imported, ...projectAssets, ...publicAssets];
+}
+
 function listReviewAssets({ root, workspace } = {}) {
-  const references = [
-    ...projectAssetReferences(workspace),
-    ...publicAssetReferences(root),
-  ];
-  const assets = [];
-  for (const reference of references) {
-    const asset = resolveReviewAsset({
-      root,
-      workspace,
-      reference,
-      id: `asset-${assets.length + 1}`,
-    });
-    if (asset) assets.push(asset);
-  }
-  return assets;
+  return listReviewAssetRecords({ root, projectDir: workspace && workspace.dir })
+    .map((asset, index) => descriptor({ id: `asset-${index + 1}`, asset }));
 }
 
 module.exports = {
   isAllowedReviewMediaPath,
+  listReviewAssetRecords,
   listReviewAssets,
   resolveReviewAsset,
 };
