@@ -1,6 +1,5 @@
 const { isDeepStrictEqual } = require('node:util');
 
-const { validateLessonBrief } = require('../lesson/brief');
 const { isOpaqueAssetId } = require('./commands');
 
 function unsupportedDiff() {
@@ -8,11 +7,8 @@ function unsupportedDiff() {
 }
 
 function validBrief(brief) {
-  try {
-    return validateLessonBrief(brief, { allowOpaqueBrollAssetIds: true }).ok;
-  } catch (_) {
-    return false;
-  }
+  return brief !== null && typeof brief === 'object' && !Array.isArray(brief)
+    && Array.isArray(brief.scenes) && typeof brief.status === 'string';
 }
 
 function deepClone(brief) {
@@ -57,22 +53,63 @@ function addBoundaryChanges(before, after, expected, changes) {
   }
 }
 
+function reviewMedia(scene) {
+  if (scene?.brollMedia) return scene.brollMedia;
+  if (isOpaqueAssetId(scene?.brollSrc)) {
+    return { kind: 'image', assetId: scene.brollSrc, fit: 'cover' };
+  }
+  return null;
+}
+
+function safeReviewMedia(media) {
+  if (!media || !['image', 'video'].includes(media.kind)
+    || !isOpaqueAssetId(media.assetId) || !['contain', 'cover'].includes(media.fit)) return false;
+  if (media.kind === 'image') {
+    return isDeepStrictEqual(Object.keys(media).sort(), ['assetId', 'fit', 'kind']);
+  }
+  return isDeepStrictEqual(
+    Object.keys(media).sort(),
+    ['assetId', 'audioMode', 'fit', 'kind', 'trimStartSec'],
+  ) && Number.isFinite(media.trimStartSec) && media.trimStartSec >= 0
+    && ['mute', 'mix', 'replace'].includes(media.audioMode);
+}
+
 function addAssetChanges(before, after, expected, changes) {
   for (let index = 0; index < before.scenes.length; index += 1) {
     const beforeScene = before.scenes[index];
     const afterScene = after.scenes[index];
-    if (beforeScene.brollSrc === afterScene.brollSrc) continue;
+    const beforeMedia = reviewMedia(beforeScene);
+    const afterMedia = reviewMedia(afterScene);
+    if (isDeepStrictEqual(beforeMedia, afterMedia)) continue;
     if (beforeScene.scene !== 'broll' || afterScene.scene !== 'broll'
-      || !isOpaqueAssetId(afterScene.brollSrc)) {
-      unsupportedDiff();
+      || !safeReviewMedia(afterMedia)) unsupportedDiff();
+
+    delete expected.scenes[index].brollSrc;
+    expected.scenes[index].brollMedia = deepClone(afterMedia);
+    const beforeId = safeReviewMedia(beforeMedia)
+      ? beforeMedia.assetId
+      : (typeof beforeScene.brollSrc === 'string' ? beforeScene.brollSrc : null);
+    if (beforeId !== afterMedia.assetId) {
+      changes.push({ kind: 'asset', scene: index, from: beforeId, to: afterMedia.assetId });
     }
-    expected.scenes[index].brollSrc = afterScene.brollSrc;
-    changes.push({
-      kind: 'asset',
-      scene: index,
-      from: beforeScene.brollSrc,
-      to: afterScene.brollSrc,
-    });
+    const beforeFit = safeReviewMedia(beforeMedia)
+      ? beforeMedia.fit
+      : (typeof beforeScene.brollSrc === 'string' ? 'cover' : null);
+    if (beforeFit !== afterMedia.fit) {
+      changes.push({ kind: 'fit', scene: index, from: beforeFit, to: afterMedia.fit });
+    }
+    const beforeStart = safeReviewMedia(beforeMedia) && beforeMedia.kind === 'video'
+      ? beforeMedia.trimStartSec : null;
+    const afterStart = afterMedia.kind === 'video' ? afterMedia.trimStartSec : null;
+    if (beforeStart !== afterStart) {
+      changes.push({ kind: 'clip-start', scene: index, from: beforeStart, to: afterStart });
+    }
+    const beforeAudio = safeReviewMedia(beforeMedia) && beforeMedia.kind === 'video'
+      ? beforeMedia.audioMode : null;
+    const afterAudio = afterMedia.kind === 'video' ? afterMedia.audioMode : null;
+    if (beforeAudio !== afterAudio) {
+      changes.push({ kind: 'audio-mode', scene: index, from: beforeAudio, to: afterAudio });
+    }
   }
 }
 

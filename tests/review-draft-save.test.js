@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -14,8 +15,62 @@ const {
   recordBrief,
   saveDraftRevision,
 } = require('../scripts/project/workspace');
+const { listReviewAssetRecords } = require('../scripts/review/assets');
+const { buildReviewCandidateBase, loadReviewBase } = require('../scripts/review/model');
+const { materializeReviewAssets, startReviewServer } = require('../scripts/review/server');
 
 const TEMPORARY_ID = 'review-safe-id';
+const REPOSITORY_ROOT = path.resolve(__dirname, '..');
+
+async function closeServer(server) {
+  if (!server.listening) return;
+  await new Promise((resolve, reject) => server.close((error) => (
+    error ? reject(error) : resolve()
+  )));
+}
+
+async function reviewJson(session, pathname, { method = 'GET', body } = {}) {
+  const response = await fetch(`${session.origin}${pathname}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      ...(method === 'POST' ? {
+        Origin: session.origin,
+        'Content-Type': 'application/json',
+      } : {}),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+function writeImportedVideo(projectDir, {
+  id = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1',
+  durationSec = 20,
+  hasAudio = true,
+} = {}) {
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', id);
+  const previewDirectory = path.join(projectDir, 'previews', 'broll');
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(previewDirectory, { recursive: true });
+  const canonical = Buffer.from('normalized canonical video');
+  const preview = Buffer.from('normalized proxy video');
+  fs.writeFileSync(path.join(mediaDirectory, 'media.mp4'), canonical);
+  fs.writeFileSync(path.join(previewDirectory, `${id}.webm`), preview);
+  fs.writeFileSync(path.join(mediaDirectory, 'asset.json'), `${JSON.stringify({
+    version: 1,
+    id,
+    label: 'Recorded demo.mov',
+    mediaKind: 'video',
+    canonicalSha256: crypto.createHash('sha256').update(canonical).digest('hex'),
+    previewSha256: crypto.createHash('sha256').update(preview).digest('hex'),
+    width: 1920,
+    height: 1080,
+    fps: 25,
+    durationSec,
+    hasAudio,
+  })}\n`);
+}
 
 function makeReviewWorkspace(t, { approved = true, name = 'review-save' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-save-'));
@@ -862,5 +917,221 @@ test('review save validates the candidate and preserves protected identity', asy
       assert.deepEqual(fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(), beforeBriefNames);
       assert.deepEqual(tempEntries(state.workspace), []);
     });
+  }
+});
+
+test('review materialization uses the opened registered bytes and preserves untouched legacy b-roll', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'materialize-trusted-media' });
+  const current = loadReviewBase({ projectDir: state.workspace.dir });
+  const records = listReviewAssetRecords({ root: REPOSITORY_ROOT, projectDir: state.workspace.dir });
+  const assetFiles = new Map(records.map((record, index) => [`asset-${index + 1}`, record]));
+  const selected = [...assetFiles].find(([, record]) => record.reference === 'assets/broll/diagram.png');
+  assert.ok(selected);
+  const base = buildReviewCandidateBase({ canonicalBrief: current.brief, assetFiles });
+
+  const boundaryOnly = structuredClone(base);
+  boundaryOnly.scenes[0].end = 4.2;
+  boundaryOnly.scenes[1].start = 4.2;
+  const legacy = materializeReviewAssets({
+    root: REPOSITORY_ROOT,
+    current,
+    assetFiles,
+    candidate: boundaryOnly,
+    words: [],
+  });
+  assert.equal(legacy.scenes[1].brollSrc, 'assets/broll/diagram.png');
+  assert.equal(legacy.scenes[1].brollMedia, undefined);
+
+  const selectedCandidate = structuredClone(base);
+  delete selectedCandidate.scenes[1].brollSrc;
+  selectedCandidate.scenes[1].brollMedia = {
+    kind: 'image', assetId: selected[0], fit: 'contain',
+  };
+  const materialized = materializeReviewAssets({
+    root: REPOSITORY_ROOT,
+    current,
+    assetFiles,
+    candidate: selectedCandidate,
+    words: [],
+    probeMediaImpl: () => ({
+      mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,
+    }),
+  });
+  const expectedHash = crypto.createHash('sha256').update(
+    fs.readFileSync(path.join(state.workspace.dir, 'assets', 'broll', 'diagram.png')),
+  ).digest('hex');
+  assert.deepEqual(materialized.scenes[1].brollMedia, {
+    kind: 'image',
+    src: 'assets/broll/diagram.png',
+    sha256: expectedHash,
+    fit: 'contain',
+  });
+  assert.equal(materialized.scenes[1].brollSrc, undefined);
+  assert.doesNotMatch(JSON.stringify(selectedCandidate), /assets\/broll|[a-f0-9]{64}/);
+});
+
+test('review materialization rechecks immutable registry identity before any revision allocation', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'materialize-race' });
+  const current = loadReviewBase({ projectDir: state.workspace.dir });
+  const records = listReviewAssetRecords({ root: REPOSITORY_ROOT, projectDir: state.workspace.dir });
+  const assetFiles = new Map(records.map((record, index) => [`asset-${index + 1}`, record]));
+  const selected = [...assetFiles].find(([, record]) => record.reference === 'assets/broll/diagram.png');
+  const candidate = buildReviewCandidateBase({ canonicalBrief: current.brief, assetFiles });
+  delete candidate.scenes[1].brollSrc;
+  candidate.scenes[1].brollMedia = {
+    kind: 'image', assetId: selected[0], fit: 'cover',
+  };
+  const mediaPath = path.join(state.workspace.dir, 'assets', 'broll', 'diagram.png');
+  const replacement = path.join(state.root, 'replacement.png');
+  fs.writeFileSync(replacement, 'different image bytes');
+  fs.renameSync(replacement, mediaPath);
+  const beforeBriefs = fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort();
+
+  assert.throws(() => materializeReviewAssets({
+    root: REPOSITORY_ROOT,
+    current,
+    assetFiles,
+    candidate,
+    words: [],
+  }), /asset|media|identity|unresolved/i);
+  assert.deepEqual(fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(), beforeBriefs);
+  assert.equal(readProjectManifest(state.workspace.dir).currentBrief,
+    state.workspace.manifest.currentBrief);
+});
+
+test('video materialization rechecks probe fields and persists snapped seconds without changing approved bytes', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'video-materialize' });
+  writeImportedVideo(state.workspace.dir);
+  const approvedBytes = fs.readFileSync(state.baseJsonPath);
+  const current = loadReviewBase({ projectDir: state.workspace.dir });
+  const records = listReviewAssetRecords({ root: REPOSITORY_ROOT, projectDir: state.workspace.dir });
+  const assetFiles = new Map(records.map((record, index) => [`asset-${index + 1}`, record]));
+  const selected = [...assetFiles].find(([, record]) => record.mediaKind === 'video');
+  assert.ok(selected);
+  const candidate = buildReviewCandidateBase({ canonicalBrief: current.brief, assetFiles });
+  delete candidate.scenes[1].brollSrc;
+  candidate.scenes[1].brollMedia = {
+    kind: 'video', assetId: selected[0], fit: 'contain', trimStartSec: 12.4, audioMode: 'replace',
+  };
+
+  for (const mutate of [
+    (asset) => { asset.canonicalSha256 = '0'.repeat(64); },
+    (asset) => { asset.durationSec = 12; },
+    (asset) => { asset.hasAudio = false; },
+  ]) {
+    const staleFiles = new Map([...assetFiles].map(([id, asset]) => [id, { ...asset }]));
+    mutate(staleFiles.get(selected[0]));
+    assert.throws(() => materializeReviewAssets({
+      root: REPOSITORY_ROOT,
+      current,
+      assetFiles: staleFiles,
+      candidate,
+      words: [],
+    }), /asset|media|identity|duration|audio|unresolved/i);
+    assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
+  }
+
+  assert.throws(() => materializeReviewAssets({
+    root: REPOSITORY_ROOT,
+    current,
+    assetFiles,
+    candidate,
+    words: [],
+    probeMediaImpl: () => ({
+      mediaKind: 'video', width: 1920, height: 1080, fps: 25,
+      durationSec: 20, hasAudio: false,
+    }),
+  }), /probe|media|audio|unresolved/i);
+  assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
+
+  const materialized = materializeReviewAssets({
+    root: REPOSITORY_ROOT,
+    current,
+    assetFiles,
+    candidate,
+    words: [],
+    probeMediaImpl: () => ({
+      mediaKind: 'video', width: 1920, height: 1080, fps: 25,
+      durationSec: 20, hasAudio: true,
+    }),
+  });
+  assert.deepEqual(materialized.scenes[1].brollMedia, {
+    kind: 'video',
+    src: selected[1].reference,
+    sha256: selected[1].canonicalSha256,
+    trimStartSec: 12.4,
+    fit: 'contain',
+    audioMode: 'replace',
+  });
+  const saved = saveDraftRevision(current.workspace, {
+    baseJsonPath: current.briefFilePath,
+    brief: materialized,
+    temporaryId: () => TEMPORARY_ID,
+  });
+  assert.deepEqual(fs.readFileSync(state.baseJsonPath), approvedBytes);
+  assert.equal(JSON.parse(fs.readFileSync(saved.jsonPath, 'utf8'))
+    .scenes[1].brollMedia.trimStartSec, 12.4);
+});
+
+test('legacy image re-selection persists brollMedia and resolves after a real server restart', async (t) => {
+  const state = makeReviewWorkspace(t, { name: 'restart-media-selection' });
+  fs.writeFileSync(path.join(state.workspace.dir, 'transcript', 'words.json'), `${JSON.stringify([{
+    start: 0,
+    end: 10,
+    text: 'Тестовая дорожка',
+    words: [{ w: 'Тестовая', s: 0, e: 1 }, { w: 'дорожка', s: 1, e: 2 }],
+  }])}\n`);
+  const approvedBytes = fs.readFileSync(state.baseJsonPath);
+  const start = () => startReviewServer({
+    root: REPOSITORY_ROOT,
+    projectDir: state.workspace.dir,
+    editable: true,
+    open: false,
+    runToolImpl: () => { throw new Error('waveform unavailable'); },
+    probeReviewMediaImpl: () => ({
+      mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,
+    }),
+  });
+  const first = await start();
+  let savedPath;
+  let selectedId;
+  try {
+    const initial = await reviewJson(first, '/api/state');
+    assert.equal(initial.status, 200);
+    const selected = initial.body.assets.find((asset) => asset.label === 'diagram.png');
+    assert.ok(selected);
+    selectedId = selected.id;
+    const payload = {
+      baseRevision: initial.body.session.baseRevision,
+      baseHash: initial.body.session.baseHash,
+      manifestHash: initial.body.session.manifestHash,
+      commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: selected.id }],
+    };
+    const response = await reviewJson(first, '/api/save', { method: 'POST', body: payload });
+    assert.equal(response.status, 201);
+    savedPath = response.body.path;
+  } finally {
+    await closeServer(first.server);
+  }
+
+  assert.deepEqual(fs.readFileSync(state.baseJsonPath), approvedBytes);
+  const persisted = JSON.parse(fs.readFileSync(path.join(state.workspace.dir, savedPath), 'utf8'));
+  assert.equal(persisted.scenes[1].brollSrc, undefined);
+  assert.equal(persisted.scenes[1].brollMedia.src, 'assets/broll/diagram.png');
+  assert.match(persisted.scenes[1].brollMedia.sha256, /^[a-f0-9]{64}$/);
+
+  const second = await start();
+  try {
+    const reloaded = await reviewJson(second, '/api/state');
+    assert.equal(reloaded.status, 200);
+    assert.deepEqual(reloaded.body.brief.scenes[1].brollMedia, {
+      kind: 'image', assetId: selectedId, fit: 'cover',
+    });
+    assert.doesNotMatch(
+      JSON.stringify({ brief: reloaded.body.brief, assets: reloaded.body.assets }),
+      /assets\/broll|[a-f0-9]{64}|\/Users\//,
+    );
+  } finally {
+    await closeServer(second.server);
   }
 });

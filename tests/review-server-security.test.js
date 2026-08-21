@@ -882,6 +882,9 @@ test('review save materializes project and public broll ids into canonical refer
     projectDir,
     editable: true,
     open: false,
+    probeReviewMediaImpl: () => ({
+      mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,
+    }),
   });
   t.after(() => closeServer(session.server));
   const stateResponse = await request(session, '/api/state', { token: session.token });
@@ -917,19 +920,31 @@ test('review save materializes project and public broll ids into canonical refer
   assert.equal(response.status, 201);
   const result = JSON.parse(response.body.toString('utf8'));
   const saved = JSON.parse(fs.readFileSync(path.join(projectDir, result.path), 'utf8'));
-  assert.equal(saved.scenes[0].brollSrc, 'assets/broll/replacement.png');
-  assert.equal(saved.scenes[1].brollSrc, 'broll/public.png');
+  assert.deepEqual(saved.scenes[0].brollMedia, {
+    kind: 'image',
+    src: 'assets/broll/replacement.png',
+    sha256: sha256('replacement asset'),
+    fit: 'cover',
+  });
+  assert.deepEqual(saved.scenes[1].brollMedia, {
+    kind: 'image',
+    src: 'broll/public.png',
+    sha256: sha256('public asset'),
+    fit: 'cover',
+  });
+  assert.equal(saved.scenes[0].brollSrc, undefined);
+  assert.equal(saved.scenes[1].brollSrc, undefined);
   assert.doesNotMatch(JSON.stringify(saved), /asset-[1-9]|\/media\//);
   assert.doesNotMatch(response.body.toString('utf8'), /Users|asset-[1-9]|\/media\//);
 });
 
-test('review b-roll commands accept renderer images and reject registered audio or video', async (t) => {
+test('review b-roll commands accept images and normalized video but reject audio-only media', async (t) => {
   const { projectDir, briefPath, workspace } = makeReviewProject(t);
   const assets = path.join(workspace.dir, 'assets', 'broll');
   fs.writeFileSync(path.join(assets, 'base.png'), 'base image');
   fs.writeFileSync(path.join(assets, 'replacement.png'), 'replacement image');
   fs.writeFileSync(path.join(assets, 'voice.mp3'), 'audio bytes');
-  fs.writeFileSync(path.join(assets, 'clip.mp4'), 'video bytes');
+  writeImportedVideoBundle(projectDir, { label: 'Recorded demo.mov' });
   const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
   brief.scenes[1] = {
     scene: 'broll',
@@ -945,6 +960,12 @@ test('review b-roll commands accept renderer images and reject registered audio 
     projectDir,
     editable: true,
     open: false,
+    probeReviewMediaImpl: (filePath) => path.extname(filePath) === '.mp4'
+      ? {
+        mediaKind: 'video', width: 1920, height: 1080, fps: 25,
+        durationSec: 18.4, hasAudio: true,
+      }
+      : { mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false },
   });
   t.after(() => closeServer(session.server));
   const state = JSON.parse((await request(session, '/api/state', {
@@ -958,18 +979,32 @@ test('review b-roll commands accept renderer images and reject registered audio 
     commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: byLabel.get(label).id }],
   });
 
-  assert.equal((await postJson(session, '/api/validate', payloadFor('voice.mp3'))).status, 422);
-  assert.equal((await postJson(session, '/api/save', payloadFor('voice.mp3'))).status, 422);
-  assert.equal((await postJson(session, '/api/validate', payloadFor('clip.mp4'))).status, 422);
-  assert.equal((await postJson(session, '/api/save', payloadFor('clip.mp4'))).status, 422);
+  assert.equal((await postJson(session, '/api/validate', payloadFor('voice.mp3'))).status, 400);
+  assert.equal((await postJson(session, '/api/save', payloadFor('voice.mp3'))).status, 400);
   assert.equal((await postJson(session, '/api/validate', payloadFor('replacement.png'))).status, 200);
-  const savedResponse = await postJson(session, '/api/save', payloadFor('replacement.png'));
+  const videoValidation = await postJson(session, '/api/validate', payloadFor('Recorded demo.mov'));
+  assert.equal(videoValidation.status, 200);
+  assert.deepEqual(JSON.parse(videoValidation.body.toString('utf8')).diff.slice(-4), [
+    { kind: 'asset', scene: 1, from: byLabel.get('base.png').id, to: byLabel.get('Recorded demo.mov').id },
+    { kind: 'fit', scene: 1, from: 'cover', to: 'contain' },
+    { kind: 'clip-start', scene: 1, from: null, to: 0 },
+    { kind: 'audio-mode', scene: 1, from: null, to: 'mute' },
+  ]);
+  const savedResponse = await postJson(session, '/api/save', payloadFor('Recorded demo.mov'));
   assert.equal(savedResponse.status, 201);
   const saved = JSON.parse(fs.readFileSync(
     path.join(projectDir, JSON.parse(savedResponse.body.toString('utf8')).path),
     'utf8',
   ));
-  assert.equal(saved.scenes[1].brollSrc, 'assets/broll/replacement.png');
+  assert.deepEqual(saved.scenes[1].brollMedia, {
+    kind: 'video',
+    src: `assets/broll/video/${IMPORT_UUID}/media.mp4`,
+    sha256: sha256('canonical video'),
+    trimStartSec: 0,
+    fit: 'contain',
+    audioMode: 'mute',
+  });
+  assert.equal(saved.scenes[1].brollSrc, undefined);
 });
 
 test('review save creates a draft and advances the browser-safe session state', async (t) => {

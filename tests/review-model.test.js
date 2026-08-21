@@ -5,8 +5,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
-const { loadReviewState } = require('../scripts/review/model');
-const { resolveReviewAsset } = require('../scripts/review/assets');
+const {
+  buildReviewCandidateBase,
+  buildReviewStateFromEdit,
+  loadReviewState,
+} = require('../scripts/review/model');
+const { listReviewAssetRecords, resolveReviewAsset } = require('../scripts/review/assets');
 const { makeReviewProject } = require('./helpers/review-project');
 
 test('review state exposes scenes and words without host paths', (t) => {
@@ -251,4 +255,73 @@ test('invalid review briefs expose a fixed public error', (t) => {
       return true;
     },
   );
+});
+
+test('persisted media projects to an opaque selection only on exact reference and hash match', (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const mediaPath = path.join(workspace.dir, 'assets', 'broll', 'selected.png');
+  const bytes = Buffer.from('registered image bytes');
+  fs.writeFileSync(mediaPath, bytes);
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const canonicalBrief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  canonicalBrief.scenes[1] = {
+    scene: 'broll', start: 2, end: 4,
+    brollMedia: {
+      kind: 'image', src: 'assets/broll/selected.png', sha256, fit: 'contain',
+    },
+    headCream: 'БЕЗОПАСНЫЙ', headOrange: 'ВЫБОР',
+  };
+  const records = listReviewAssetRecords({ root: ROOT, projectDir });
+  const assetFiles = new Map(records.map((record, index) => [`asset-${index + 1}`, record]));
+
+  const projected = buildReviewCandidateBase({ canonicalBrief, assetFiles });
+  const selected = [...assetFiles].find(([, record]) => record.reference === 'assets/broll/selected.png');
+  assert.deepEqual(projected.scenes[1].brollMedia, {
+    kind: 'image', assetId: selected[0], fit: 'contain',
+  });
+  assert.doesNotMatch(JSON.stringify(projected.scenes[1].brollMedia), /assets\/broll|[a-f0-9]{64}/);
+
+  const hashMismatch = structuredClone(canonicalBrief);
+  hashMismatch.scenes[1].brollMedia.sha256 = 'f'.repeat(64);
+  const unresolved = buildReviewCandidateBase({ canonicalBrief: hashMismatch, assetFiles });
+  assert.equal(unresolved.scenes[1].brollMedia, undefined);
+  assert.equal(unresolved.scenes[1].brollMediaBlocked, true);
+  assert.doesNotMatch(JSON.stringify(unresolved.scenes[1]), /assets\/broll|[a-f0-9]{64}/);
+});
+
+test('browser state exposes a fixed unresolved-media diagnostic without legacy or persisted values', (t) => {
+  const { projectDir, briefPath } = makeReviewProject(t);
+  const canonicalBrief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  canonicalBrief.scenes[1] = {
+    scene: 'broll', start: 2, end: 4,
+    brollMedia: {
+      kind: 'video',
+      src: 'assets/broll/video/4af36be4-0b26-4e6f-bd48-8bdd2215a4f1/media.mp4',
+      sha256: 'a'.repeat(64), trimStartSec: 1, fit: 'contain', audioMode: 'mute',
+    },
+    headCream: 'НЕ НАЙДЕН', headOrange: 'ФАЙЛ',
+  };
+  const candidate = buildReviewCandidateBase({ canonicalBrief, assetFiles: new Map() });
+  const state = buildReviewStateFromEdit({
+    state: { project: { id: 'p', name: 'P' }, session: {}, transcript: {}, assets: [] },
+    brief: candidate,
+    timing: { errors: [], warnings: [], suggestions: [] },
+  });
+  assert.deepEqual(state.brief.scenes[1].brollMediaDiagnostic, {
+    code: 'unresolved-media', locked: true,
+  });
+  assert.equal(state.brief.scenes[1].brollMedia, undefined);
+  assert.equal(state.brief.scenes[1].brollMediaBlocked, undefined);
+  assert.doesNotMatch(JSON.stringify(state), /\/Users\/|assets\/broll|[a-f0-9]{64}/);
+
+  const legacy = structuredClone(canonicalBrief);
+  delete legacy.scenes[1].brollMedia;
+  legacy.scenes[1].brollSrc = 'assets/broll/legacy.png';
+  const legacyState = buildReviewStateFromEdit({
+    state: { project: {}, session: {}, transcript: {}, assets: [] },
+    brief: buildReviewCandidateBase({ canonicalBrief: legacy, assetFiles: new Map() }),
+    timing: { errors: [], warnings: [], suggestions: [] },
+  });
+  assert.equal(legacyState.brief.scenes[1].brollSrc, undefined);
+  assert.equal(legacyState.brief.scenes[1].brollMedia, undefined);
 });

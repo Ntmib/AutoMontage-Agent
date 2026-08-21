@@ -8,7 +8,7 @@ const {
 } = require('../project/workspace');
 const { validateLessonBrief } = require('../lesson/brief');
 const { auditBriefTiming } = require('./timing-audit');
-const { listReviewAssets } = require('./assets');
+const { listReviewAssetRecords, listReviewAssets } = require('./assets');
 
 function hash(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -77,7 +77,55 @@ function browserScene(scene) {
   const result = { ...scene };
   delete result.faceSrc;
   delete result.brollSrc;
+  if (result.brollMediaBlocked === true) {
+    delete result.brollMediaBlocked;
+    delete result.brollMedia;
+    result.brollMediaDiagnostic = { code: 'unresolved-media', locked: true };
+  }
   return result;
+}
+
+function buildReviewCandidateBase({ canonicalBrief, assetFiles } = {}) {
+  if (!(assetFiles instanceof Map)) throw new Error('review asset registry is invalid');
+  let candidate;
+  try {
+    candidate = structuredClone(canonicalBrief);
+  } catch (_) {
+    throw new Error('review brief is invalid');
+  }
+  if (!Array.isArray(candidate?.scenes)) throw new Error('review brief is invalid');
+  for (const scene of candidate.scenes) {
+    if (scene?.scene !== 'broll' || !scene.brollMedia) continue;
+    const persisted = scene.brollMedia;
+    let resolved = null;
+    for (const [assetId, asset] of assetFiles) {
+      const capability = persisted.kind === 'image'
+        ? asset.capabilities?.brollImage
+        : asset.capabilities?.brollVideo;
+      if (asset.mediaKind === persisted.kind && capability === true
+        && asset.reference === persisted.src
+        && asset.canonicalSha256 === persisted.sha256) {
+        resolved = { assetId, asset };
+        break;
+      }
+    }
+    delete scene.brollSrc;
+    if (!resolved) {
+      delete scene.brollMedia;
+      scene.brollMediaBlocked = true;
+      continue;
+    }
+    scene.brollMedia = persisted.kind === 'video'
+      ? {
+        kind: 'video',
+        assetId: resolved.assetId,
+        trimStartSec: persisted.trimStartSec,
+        fit: persisted.fit,
+        audioMode: persisted.audioMode,
+      }
+      : { kind: 'image', assetId: resolved.assetId, fit: persisted.fit };
+  }
+  return candidate;
 }
 
 function buildReviewStateFromEdit({ state, brief, timing } = {}) {
@@ -129,6 +177,7 @@ function loadReviewBase({ projectDir, briefPath } = {}) {
 function buildReviewState({
   root,
   base,
+  assetFiles,
   editable = false,
   waveformAvailable = false,
 } = {}) {
@@ -141,6 +190,11 @@ function buildReviewState({
   } = base;
   const resolvedProjectDir = workspace.dir;
   const { manifest } = workspace;
+  const registry = assetFiles instanceof Map
+    ? assetFiles
+    : new Map(listReviewAssetRecords({ root, projectDir: resolvedProjectDir })
+      .map((asset, index) => [`asset-${index + 1}`, asset]));
+  const reviewBrief = buildReviewCandidateBase({ canonicalBrief: brief, assetFiles: registry });
 
   let transcriptPath;
   try {
@@ -170,9 +224,9 @@ function buildReviewState({
     },
     source: { url: '/media/source' },
     brief: {
-      status: brief.status,
-      title: brief.title,
-      scenes: brief.scenes.map(browserScene),
+      status: reviewBrief.status,
+      title: reviewBrief.title,
+      scenes: reviewBrief.scenes.map(browserScene),
     },
     transcript,
     assets: listReviewAssets({ root, workspace }),
@@ -195,6 +249,7 @@ function loadReviewState({
 module.exports = {
   buildReviewState,
   buildReviewStateFromEdit,
+  buildReviewCandidateBase,
   loadReviewBase,
   loadReviewState,
 };

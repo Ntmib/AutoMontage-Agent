@@ -28,7 +28,7 @@ function fixtureBrief({ status = 'draft' } = {}) {
         scene: 'broll',
         start: 4,
         end: 7,
-        brollSrc: 'asset-1',
+        brollMedia: { kind: 'image', assetId: 'asset-1', fit: 'cover' },
         headCream: 'ПОКАЗЫВАЕМ',
         headOrange: 'СХЕМУ',
       },
@@ -44,8 +44,31 @@ function fixtureBrief({ status = 'draft' } = {}) {
   };
 }
 
-function apply(brief, command, assetIds = new Set(['asset-1', 'asset-2'])) {
-  return applyReviewCommand({ brief, command, assetIds });
+function assetMap() {
+  return new Map([
+    ['asset-1', {
+      mediaKind: 'image', reference: 'assets/broll/base.webp', canonicalSha256: '1'.repeat(64),
+      capabilities: { brollImage: true, brollVideo: false },
+    }],
+    ['asset-2', {
+      mediaKind: 'image', reference: 'assets/broll/second.webp', canonicalSha256: '2'.repeat(64),
+      capabilities: { brollImage: true, brollVideo: false },
+    }],
+    ['asset-7', {
+      mediaKind: 'video', reference: 'assets/broll/video/id/media.mp4',
+      canonicalSha256: '7'.repeat(64), durationSec: 20, hasAudio: true,
+      capabilities: { brollImage: false, brollVideo: true },
+    }],
+    ['asset-8', {
+      mediaKind: 'video', reference: 'assets/broll/video/silent/media.mp4',
+      canonicalSha256: '8'.repeat(64), durationSec: 8, hasAudio: false,
+      capabilities: { brollImage: false, brollVideo: true },
+    }],
+  ]);
+}
+
+function apply(brief, command, assets = assetMap()) {
+  return applyReviewCommand({ brief, command, assets, fps: 25 });
 }
 
 test('move-boundary changes only one shared boundary on a deep-cloned brief', () => {
@@ -167,38 +190,42 @@ test('commands fail closed for unknown types and attempts to alter protected fie
 
 test('replace-broll accepts only an allowlisted opaque asset on a broll scene', () => {
   const before = fixtureBrief();
-  const assetIds = new Set(['asset-1', 'asset-2']);
+  const assets = assetMap();
   const after = apply(before, {
     type: 'replace-broll',
     sceneIndex: 1,
     assetId: 'asset-2',
-  }, assetIds);
+  }, assets);
 
-  assert.equal(after.scenes[1].brollSrc, 'asset-2');
+  assert.deepEqual(after.scenes[1].brollMedia, {
+    kind: 'image', assetId: 'asset-2', fit: 'cover',
+  });
+  assert.equal(after.scenes[1].brollSrc, undefined);
   assert.equal(after.scenes[1].start, 4);
   assert.equal(after.scenes[1].end, 7);
-  assert.deepEqual([...assetIds], ['asset-1', 'asset-2']);
+  assert.deepEqual([...assets.keys()], ['asset-1', 'asset-2', 'asset-7', 'asset-8']);
   assert.deepEqual(before, fixtureBrief());
 });
 
 test('replace-broll rejects unknown, unsafe, malformed, and ineligible requests', () => {
   const before = fixtureBrief();
-  const unsafeIds = new Set(['asset-1', 'asset-2', 'asset-2/../../source.mp4']);
+  const unsafeAssets = assetMap();
+  unsafeAssets.set('asset-2/../../source.mp4', assetMap().get('asset-2'));
   const rejected = [
-    [{ type: 'replace-broll', sceneIndex: 1, assetId: 'unknown' }, new Set(['asset-1', 'asset-2'])],
-    [{ type: 'replace-broll', sceneIndex: 1, assetId: 'asset-2/../../source.mp4' }, unsafeIds],
-    [{ type: 'replace-broll', sceneIndex: 1, assetId: 'assets/broll/source.mp4' }, new Set(['assets/broll/source.mp4'])],
-    [{ type: 'replace-broll', sceneIndex: 0, assetId: 'asset-2' }, new Set(['asset-2'])],
-    [{ type: 'replace-broll', sceneIndex: 3, assetId: 'asset-2' }, new Set(['asset-2'])],
-    [{ type: 'replace-broll', sceneIndex: 1.5, assetId: 'asset-2' }, new Set(['asset-2'])],
-    [{ type: 'replace-broll', sceneIndex: 1, assetId: 'asset-2', brollSrc: 'outside.mp4' }, new Set(['asset-2'])],
+    [{ type: 'replace-broll', sceneIndex: 1, assetId: 'unknown' }, assetMap()],
+    [{ type: 'replace-broll', sceneIndex: 1, assetId: 'asset-2/../../source.mp4' }, unsafeAssets],
+    [{ type: 'replace-broll', sceneIndex: 1, assetId: 'assets/broll/source.mp4' }, assetMap()],
+    [{ type: 'replace-broll', sceneIndex: 0, assetId: 'asset-2' }, assetMap()],
+    [{ type: 'replace-broll', sceneIndex: 3, assetId: 'asset-2' }, assetMap()],
+    [{ type: 'replace-broll', sceneIndex: 1.5, assetId: 'asset-2' }, assetMap()],
+    [{ type: 'replace-broll', sceneIndex: 1, assetId: 'asset-2', brollSrc: 'outside.mp4' }, assetMap()],
   ];
 
-  for (const [command, assetIds] of rejected) {
-    assert.throws(() => apply(before, command, assetIds), /asset|broll|command/i);
+  for (const [command, assets] of rejected) {
+    assert.throws(() => apply(before, command, assets), /asset|broll|command/i);
   }
   assert.throws(
-    () => apply(before, { type: 'replace-broll', sceneIndex: 1, assetId: 'asset-2' }, ['asset-2']),
+    () => apply(before, { type: 'replace-broll', sceneIndex: 1, assetId: 'asset-2' }, new Set(['asset-2'])),
     /asset/i,
   );
   assert.deepEqual(before, fixtureBrief());
@@ -213,10 +240,11 @@ test('command replay is immutable across multiple edits and fails before returni
       { type: 'move-boundary', leftSceneIndex: 1, seconds: 7.4 },
       { type: 'move-boundary', leftSceneIndex: 0, seconds: 4.2 },
     ],
-    assetIds: new Set(['asset-1', 'asset-2']),
+    assets: assetMap(),
+    fps: 25,
   });
 
-  assert.deepEqual(after.scenes.map((scene) => [scene.start, scene.end, scene.brollSrc || null]), [
+  assert.deepEqual(after.scenes.map((scene) => [scene.start, scene.end, scene.brollMedia?.assetId || null]), [
     [0, 4.2, null],
     [4.2, 7.4, 'asset-2'],
     [7.4, 10, null],
@@ -229,12 +257,14 @@ test('command replay is immutable across multiple edits and fails before returni
       { type: 'move-boundary', leftSceneIndex: 0, seconds: 4.2 },
       { type: 'replace-broll', sceneIndex: 1, assetId: 'unknown' },
     ],
-    assetIds: new Set(['asset-1', 'asset-2']),
+    assets: assetMap(),
+    fps: 25,
   }), /asset/i);
   assert.throws(() => applyReviewCommands({
     brief: before,
     commands: { type: 'move-boundary', leftSceneIndex: 0, seconds: 4.2 },
-    assetIds: new Set(),
+    assets: new Map(),
+    fps: 25,
   }), /commands/i);
 });
 
@@ -247,7 +277,8 @@ test('diff reports supported changes in a stable boundary-then-asset order', () 
       { type: 'move-boundary', leftSceneIndex: 1, seconds: 7.4 },
       { type: 'move-boundary', leftSceneIndex: 0, seconds: 4.2 },
     ],
-    assetIds: new Set(['asset-1', 'asset-2']),
+    assets: assetMap(),
+    fps: 25,
   });
 
   assert.deepEqual(diffLessonBrief({ before, after }), [
@@ -270,6 +301,100 @@ test('diff keeps an exact no-op empty and permits the approved-to-draft transiti
   assert.deepEqual(diffLessonBrief({ before: approved, after: approvedAfter }), [
     { kind: 'boundary', leftScene: 0, rightScene: 1, from: 4, to: 4.2 },
   ]);
+});
+
+test('video b-roll commands use exact shapes, defaults, and composition-frame snapping', () => {
+  const before = fixtureBrief({ status: 'approved' });
+  const after = applyReviewCommands({
+    brief: before,
+    assets: assetMap(),
+    fps: 25,
+    commands: [
+      { type: 'replace-broll', sceneIndex: 1, assetId: 'asset-7' },
+      { type: 'set-broll-fit', sceneIndex: 1, fit: 'cover' },
+      { type: 'set-broll-video-start', sceneIndex: 1, trimStartSec: 12.419 },
+      { type: 'set-broll-audio-mode', sceneIndex: 1, audioMode: 'replace' },
+    ],
+  });
+
+  assert.deepEqual(after.scenes[1].brollMedia, {
+    kind: 'video',
+    assetId: 'asset-7',
+    fit: 'cover',
+    trimStartSec: 12.4,
+    audioMode: 'replace',
+  });
+  assert.deepEqual(before, fixtureBrief({ status: 'approved' }));
+
+  const defaultVideo = apply(before, {
+    type: 'replace-broll', sceneIndex: 1, assetId: 'asset-7',
+  });
+  assert.deepEqual(defaultVideo.scenes[1].brollMedia, {
+    kind: 'video', assetId: 'asset-7', fit: 'contain', trimStartSec: 0, audioMode: 'mute',
+  });
+  const defaultImage = apply(defaultVideo, {
+    type: 'replace-broll', sceneIndex: 1, assetId: 'asset-2',
+  });
+  assert.deepEqual(defaultImage.scenes[1].brollMedia, {
+    kind: 'image', assetId: 'asset-2', fit: 'cover',
+  });
+});
+
+test('video b-roll commands reject extra keys, wrong media, missing audio, and short clips', () => {
+  const image = fixtureBrief();
+  const video = apply(image, {
+    type: 'replace-broll', sceneIndex: 1, assetId: 'asset-7',
+  });
+  const silent = apply(image, {
+    type: 'replace-broll', sceneIndex: 1, assetId: 'asset-8',
+  });
+  const rejected = [
+    [image, { type: 'set-broll-fit', sceneIndex: 1, fit: 'cover', src: '/private' }],
+    [image, { type: 'set-broll-fit', sceneIndex: 0, fit: 'cover' }],
+    [image, { type: 'set-broll-fit', sceneIndex: 1, fit: 'stretch' }],
+    [image, { type: 'set-broll-video-start', sceneIndex: 1, trimStartSec: 1 }],
+    [image, { type: 'set-broll-audio-mode', sceneIndex: 1, audioMode: 'mute' }],
+    [silent, { type: 'set-broll-audio-mode', sceneIndex: 1, audioMode: 'mix' }],
+    [silent, { type: 'set-broll-audio-mode', sceneIndex: 1, audioMode: 'replace' }],
+    [video, { type: 'set-broll-video-start', sceneIndex: 1, trimStartSec: -1 }],
+    [video, { type: 'set-broll-video-start', sceneIndex: 1, trimStartSec: Number.NaN }],
+  ];
+  for (const [brief, command] of rejected) {
+    assert.throws(() => apply(brief, command), /review command/i);
+  }
+
+  const shortAssets = assetMap();
+  shortAssets.set('asset-7', { ...shortAssets.get('asset-7'), durationSec: 14 });
+  assert.throws(() => applyReviewCommand({
+    brief: video,
+    command: { type: 'set-broll-video-start', sceneIndex: 1, trimStartSec: 12.419 },
+    assets: shortAssets,
+    fps: 25,
+  }), /duration|clip|command/i);
+});
+
+test('video b-roll replay is undo-compatible and diff exposes only safe media values', () => {
+  const before = fixtureBrief();
+  const commands = [
+    { type: 'replace-broll', sceneIndex: 1, assetId: 'asset-7' },
+    { type: 'set-broll-fit', sceneIndex: 1, fit: 'contain' },
+    { type: 'set-broll-video-start', sceneIndex: 1, trimStartSec: 1.019 },
+    { type: 'set-broll-audio-mode', sceneIndex: 1, audioMode: 'mix' },
+  ];
+  const after = applyReviewCommands({ brief: before, commands, assets: assetMap(), fps: 25 });
+  const replayed = applyReviewCommands({ brief: before, commands, assets: assetMap(), fps: 25 });
+  assert.deepEqual(replayed, after);
+  assert.deepEqual(applyReviewCommands({
+    brief: before, commands: commands.slice(0, -1), assets: assetMap(), fps: 25,
+  }).scenes[1].brollMedia.audioMode, 'mute');
+  assert.deepEqual(diffLessonBrief({ before, after }), [
+    { kind: 'asset', scene: 1, from: 'asset-1', to: 'asset-7' },
+    { kind: 'fit', scene: 1, from: 'cover', to: 'contain' },
+    { kind: 'clip-start', scene: 1, from: null, to: 1 },
+    { kind: 'audio-mode', scene: 1, from: null, to: 'mix' },
+  ]);
+  const serialized = JSON.stringify(diffLessonBrief({ before, after }));
+  assert.doesNotMatch(serialized, /assets\/broll|[a-f0-9]{64}|\/Users\//);
 });
 
 test('diff fails closed when complete briefs contain unsupported changes', () => {

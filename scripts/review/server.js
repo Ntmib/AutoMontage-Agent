@@ -2,10 +2,12 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
-const { randomBytes, timingSafeEqual } = require('node:crypto');
+const { execFile, spawnSync } = require('node:child_process');
+const { createHash, randomBytes, timingSafeEqual } = require('node:crypto');
 
 const { validateLessonBrief } = require('../lesson/brief');
+const { parseMediaProbeJson } = require('../media-probe');
+const { captureTool } = require('../process');
 const {
   nextBriefPaths,
   readProjectManifest,
@@ -16,7 +18,11 @@ const {
   listReviewAssetRecords,
   resolveReviewAsset,
 } = require('./assets');
-const { applyReviewCommands, isOpaqueAssetId } = require('./commands');
+const {
+  applyReviewCommands,
+  isOpaqueAssetId,
+  validateReviewCandidate,
+} = require('./commands');
 const { diffLessonBrief } = require('./diff');
 const { cleanupOrphanImportedStages } = require('./imported-assets');
 const { createImportController, importReviewMedia } = require('./media-import');
@@ -24,8 +30,8 @@ const { runMediaProcess } = require('./media-process');
 const {
   buildReviewState,
   buildReviewStateFromEdit,
+  buildReviewCandidateBase,
   loadReviewBase,
-  loadReviewState,
 } = require('./model');
 const { auditBriefTiming } = require('./timing-audit');
 const { ensureWaveformPreview } = require('./waveform');
@@ -375,6 +381,7 @@ function refreshRuntimeState({
   const state = buildReviewState({
     root,
     base,
+    assetFiles: refreshedAssets.assetFiles,
     editable,
     waveformAvailable: Boolean(waveformFile),
   });
@@ -488,7 +495,8 @@ function safeHashEqual(actual, expected) {
 
 function currentAssetReference({ root, workspace, assetFiles, assetId }) {
   const registered = assetFiles.get(assetId);
-  if (!registered || registered.capabilities?.brollImage !== true) return null;
+  if (!registered || (registered.capabilities?.brollImage !== true
+    && registered.capabilities?.brollVideo !== true)) return null;
   const currentSnapshot = snapshotFile(registered.filePath);
   if (!sameSnapshotIdentity(registered, currentSnapshot)) return null;
   const current = resolveReviewAsset({
@@ -503,12 +511,13 @@ function currentAssetReference({ root, workspace, assetFiles, assetId }) {
 
 function assertCurrentReviewAssets({ root, workspace, assetFiles, candidate }) {
   for (const scene of candidate.scenes) {
-    if (!isOpaqueAssetId(scene.brollSrc)) continue;
+    const assetId = scene?.brollMedia?.assetId;
+    if (!isOpaqueAssetId(assetId)) continue;
     if (!currentAssetReference({
       root,
       workspace,
       assetFiles,
-      assetId: scene.brollSrc,
+      assetId,
     })) {
       rejectRequest(422, 'UNRESOLVED_REVIEW_ASSET');
     }
@@ -530,7 +539,7 @@ function assertCurrentSourceIdentity({ projectDir, current, sourceFile }) {
 
 function assertOtherRegisteredAssetIdentities({ root, projectDir, assetFiles, candidate }) {
   const selectedIds = new Set(candidate.scenes
-    .map((scene) => scene.brollSrc)
+    .map((scene) => scene?.brollMedia?.assetId)
     .filter(isOpaqueAssetId));
   const currentByKey = new Map(scanAssetFiles({ root, projectDir }).map((asset) => (
     [assetIdentityKey(asset), asset]
@@ -546,7 +555,7 @@ function assertOtherRegisteredAssetIdentities({ root, projectDir, assetFiles, ca
 
 function requestStatusForCommandError(error) {
   const message = error && typeof error.message === 'string' ? error.message : '';
-  return /boundary seconds|boundary is invalid|produced an invalid lesson brief/.test(message)
+  return /boundary seconds|boundary is invalid|produced an invalid lesson brief|duration|unresolved/.test(message)
     ? 422
     : 400;
 }
@@ -559,13 +568,18 @@ function replayReviewEdit({ root, projectDir, runtime, body, sourceFile }) {
     rejectRequest(409, 'STALE_REVIEW_BASE');
   }
   assertCurrentSourceIdentity({ projectDir, current, sourceFile });
+  const candidateBase = buildReviewCandidateBase({
+    canonicalBrief: current.brief,
+    assetFiles: runtime.assetFiles,
+  });
 
   let candidate;
   try {
     candidate = applyReviewCommands({
-      brief: current.brief,
+      brief: candidateBase,
       commands: body.commands,
-      assetIds: new Set(runtime.assetFiles.keys()),
+      assets: runtime.assetFiles,
+      fps: current.brief.output.fps,
     });
   } catch (error) {
     rejectRequest(requestStatusForCommandError(error), 'INVALID_REVIEW_COMMAND');
@@ -582,13 +596,20 @@ function replayReviewEdit({ root, projectDir, runtime, body, sourceFile }) {
     assetFiles: runtime.assetFiles,
     candidate,
   });
-  candidate.status = 'draft';
-  const validation = validateLessonBrief(candidate, { allowOpaqueBrollAssetIds: true });
-  if (!validation.ok) rejectRequest(422, 'INVALID_REVIEW_BRIEF');
+  try {
+    validateReviewCandidate({
+      candidate,
+      base: candidateBase,
+      assets: runtime.assetFiles,
+      fps: current.brief.output.fps,
+    });
+  } catch (_) {
+    rejectRequest(422, 'INVALID_REVIEW_BRIEF');
+  }
 
   let diff;
   try {
-    diff = diffLessonBrief({ before: current.brief, after: candidate });
+    diff = diffLessonBrief({ before: candidateBase, after: candidate });
   } catch (_) {
     throw new Error('review edit replay produced an unsupported diff');
   }
@@ -597,21 +618,153 @@ function replayReviewEdit({ root, projectDir, runtime, body, sourceFile }) {
     words: runtime.state.transcript.words,
   });
   if (timing.errors.length > 0) rejectRequest(422, 'INVALID_REVIEW_TIMING');
-  return { current, candidate, diff, timing };
+  return { current, candidateBase, candidate, diff, timing };
 }
 
-function materializeReviewAssets({ root, current, assetFiles, candidate, words }) {
+function hashCurrentRegisteredFile(registered) {
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(
+      registered.filePath,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+    );
+    const before = fs.fstatSync(descriptor);
+    const beforeNs = fs.fstatSync(descriptor, { bigint: true });
+    const beforeSnapshot = {
+      dev: before.dev, ino: before.ino, size: before.size, mtimeNs: beforeNs.mtimeNs,
+    };
+    if (!before.isFile() || !sameSnapshotIdentity(registered, beforeSnapshot)) return null;
+    const digest = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let total = 0;
+    let count;
+    do {
+      count = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (count > 0) {
+        digest.update(buffer.subarray(0, count));
+        total += count;
+      }
+    } while (count > 0);
+    const after = fs.fstatSync(descriptor);
+    const afterNs = fs.fstatSync(descriptor, { bigint: true });
+    const afterSnapshot = {
+      dev: after.dev, ino: after.ino, size: after.size, mtimeNs: afterNs.mtimeNs,
+    };
+    if (total !== before.size || !sameSnapshotIdentity(beforeSnapshot, afterSnapshot)) return null;
+    return digest.digest('hex');
+  } catch (_) {
+    return null;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+}
+
+function probeReviewMedia(filePath) {
+  const stdout = captureTool('ffprobe', [
+    '-v', 'error',
+    '-show_entries',
+    'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels:stream_tags=rotate:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration',
+    '-of', 'json',
+    filePath,
+  ], {
+    cwd: path.dirname(filePath),
+    maxBuffer: 1024 * 1024,
+    stage: 'review media probe',
+    spawnSyncImpl: (command, args, options) => spawnSync(command, args, {
+      ...options,
+      timeout: 30_000,
+      killSignal: 'SIGTERM',
+    }),
+  });
+  return parseMediaProbeJson(stdout);
+}
+
+function probeMatchesRegistered(registered, probe) {
+  if (!probe || probe.mediaKind !== registered.mediaKind) return false;
+  if (registered.mediaKind === 'image') {
+    return probe.hasAudio === false
+      && (registered.width === undefined || (probe.width === registered.width
+        && probe.height === registered.height));
+  }
+  const tolerance = (1 / registered.fps) + 0.001;
+  return probe.width === registered.width && probe.height === registered.height
+    && Number.isFinite(probe.fps) && Math.abs(probe.fps - registered.fps) <= 1e-6
+    && Number.isFinite(probe.durationSec)
+    && Math.abs(probe.durationSec - registered.durationSec) <= tolerance
+    && probe.hasAudio === registered.hasAudio;
+}
+
+function currentMaterializationAsset({
+  root,
+  current,
+  assetFiles,
+  assetId,
+  probeMediaImpl,
+}) {
+  const registered = assetFiles.get(assetId);
+  if (!registered) return null;
+  const rescanned = scanAssetFiles({ root, projectDir: current.workspace.dir })
+    .find((asset) => assetIdentityKey(asset) === assetIdentityKey(registered));
+  if (!rescanned || !sameAssetIdentity(registered, rescanned)) return null;
+  for (const field of [
+    'mediaKind', 'reference', 'canonicalSha256', 'width', 'height', 'fps', 'durationSec', 'hasAudio',
+  ]) {
+    if (registered[field] !== rescanned[field]) return null;
+  }
+  const beforeProbe = snapshotFile(registered.filePath);
+  if (!sameSnapshotIdentity(registered, beforeProbe)) return null;
+  let probe;
+  try {
+    probe = probeMediaImpl(registered.filePath);
+  } catch (_) {
+    return null;
+  }
+  const afterProbe = snapshotFile(registered.filePath);
+  if (!sameSnapshotIdentity(beforeProbe, afterProbe)
+    || !probeMatchesRegistered(registered, probe)) return null;
+  const digest = hashCurrentRegisteredFile(registered);
+  if (!digest || digest !== registered.canonicalSha256 || digest !== rescanned.canonicalSha256) {
+    return null;
+  }
+  return rescanned;
+}
+
+function materializeReviewAssets({
+  root,
+  current,
+  assetFiles,
+  candidate,
+  words,
+  probeMediaImpl = probeReviewMedia,
+}) {
   const materialized = structuredClone(candidate);
   for (const scene of materialized.scenes) {
-    if (!isOpaqueAssetId(scene.brollSrc)) continue;
-    const reference = currentAssetReference({
-      root,
-      workspace: current.workspace,
-      assetFiles,
-      assetId: scene.brollSrc,
+    if (scene.brollMediaBlocked === true) rejectRequest(422, 'UNRESOLVED_REVIEW_ASSET');
+    if (!scene.brollMedia) continue;
+    const selected = scene.brollMedia;
+    const registered = currentMaterializationAsset({
+      root, current, assetFiles, assetId: selected.assetId, probeMediaImpl,
     });
-    if (!reference) rejectRequest(422, 'UNRESOLVED_REVIEW_ASSET');
-    scene.brollSrc = reference;
+    if (!registered || registered.mediaKind !== selected.kind) {
+      rejectRequest(422, 'UNRESOLVED_REVIEW_ASSET');
+    }
+    delete scene.brollSrc;
+    delete scene.brollMediaBlocked;
+    scene.brollMedia = selected.kind === 'video'
+      ? {
+        kind: 'video',
+        src: registered.reference,
+        sha256: registered.canonicalSha256,
+        trimStartSec: selected.trimStartSec,
+        fit: selected.fit,
+        audioMode: selected.audioMode,
+      }
+      : {
+        kind: 'image',
+        src: registered.reference,
+        sha256: registered.canonicalSha256,
+        fit: selected.fit,
+      };
   }
   const validation = validateLessonBrief(materialized);
   if (!validation.ok) rejectRequest(422, 'INVALID_REVIEW_BRIEF');
@@ -623,7 +776,12 @@ function materializeReviewAssets({ root, current, assetFiles, candidate, words }
 function browserSafeDiff(diff, assetFiles) {
   return diff.map((change) => {
     if (change.kind === 'boundary') return { ...change };
-    if (change.kind !== 'asset') throw new Error('review diff contains an unsafe change');
+    if (!['asset', 'fit', 'clip-start', 'audio-mode'].includes(change.kind)) {
+      throw new Error('review diff contains an unsafe change');
+    }
+    if (change.kind !== 'asset' || change.from === null || isOpaqueAssetId(change.from)) {
+      return { ...change };
+    }
     let previousId = null;
     for (const [assetId, registered] of assetFiles) {
       if (registered.reference === change.from
@@ -677,6 +835,7 @@ function handleEditRoute({
   bodyBytes,
   fileSystem,
   sourceFile,
+  probeReviewMediaImpl,
 }) {
   if (!editable) rejectRequest(405, 'READ_ONLY_REVIEW');
   const body = parseEditBody(bodyBytes);
@@ -700,10 +859,15 @@ function handleEditRoute({
     assetFiles: runtime.assetFiles,
     candidate: checked.candidate,
     words: runtime.state.transcript.words,
+    probeMediaImpl: probeReviewMediaImpl,
+  });
+  const browserCandidate = buildReviewCandidateBase({
+    canonicalBrief: materialized,
+    assetFiles: runtime.assetFiles,
   });
   const nextState = buildReviewStateFromEdit({
     state: runtime.state,
-    brief: materialized,
+    brief: browserCandidate,
     timing: checked.timing,
   });
   let saved;
@@ -750,6 +914,7 @@ async function routeRequest({
   importMediaImpl,
   runMediaProcessImpl,
   statfsImpl,
+  probeReviewMediaImpl,
 }) {
   let url;
   try {
@@ -847,6 +1012,7 @@ async function routeRequest({
         bodyBytes,
         fileSystem,
         sourceFile,
+        probeReviewMediaImpl,
       });
       return;
     }
@@ -1029,6 +1195,7 @@ async function startReviewServer({
   importMediaImpl = importReviewMedia,
   runMediaProcessImpl = runMediaProcess,
   statfsImpl = fs.statfsSync,
+  probeReviewMediaImpl = probeReviewMedia,
   importController = createImportController(),
 } = {}) {
   const resolvedRoot = path.resolve(root);
@@ -1048,13 +1215,15 @@ async function startReviewServer({
   });
   const waveformFile = waveformPreview.available ? snapshotFile(waveformPreview.path) : null;
   cleanupOrphanImportedStages({ projectDir: resolvedProjectDir, fileSystem });
-  const state = loadReviewState({
+  const assetFiles = buildAssetFiles({ root: resolvedRoot, projectDir: resolvedProjectDir });
+  const base = loadReviewBase({ projectDir: resolvedProjectDir });
+  const state = buildReviewState({
     root: resolvedRoot,
-    projectDir: resolvedProjectDir,
+    base,
+    assetFiles,
     editable,
     waveformAvailable: Boolean(waveformFile),
   });
-  const assetFiles = buildAssetFiles({ root: resolvedRoot, projectDir: resolvedProjectDir });
   state.assets = [...assetFiles].map(([id, asset]) => descriptorForAsset(id, asset));
   const nextAssetId = [...assetFiles.keys()].reduce((highest, id) => (
     Math.max(highest, Number(id.slice('asset-'.length)) || 0)
@@ -1084,6 +1253,7 @@ async function startReviewServer({
       importMediaImpl,
       runMediaProcessImpl,
       statfsImpl,
+      probeReviewMediaImpl,
     }).catch((error) => {
       if (response.destroyed || response.writableEnded) return;
       const importStatus = error && /^MEDIA_IMPORT_/.test(error.code)
@@ -1146,6 +1316,7 @@ async function startReviewServer({
 }
 
 module.exports = {
+  materializeReviewAssets,
   parseRange,
   startReviewServer,
 };
