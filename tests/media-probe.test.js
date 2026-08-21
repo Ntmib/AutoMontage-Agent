@@ -50,13 +50,15 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
     streams: [
       {
         codec_type: 'video',
+        codec_name: 'h264',
         width: 1080,
         height: 1920,
         avg_frame_rate: '24000/1001',
         r_frame_rate: '30/1',
+        pix_fmt: 'yuv420p',
         side_data_list: [{ side_data_type: 'Display Matrix', rotation: -90 }],
       },
-      { codec_type: 'audio' },
+      { codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2 },
     ],
     format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '12.5' },
   });
@@ -68,10 +70,20 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
     durationSec: 12.5,
     hasAudio: true,
     rotation: 270,
+    container: 'mov,mp4,m4a,3gp,3g2,mj2',
+    videoCodec: 'h264',
+    pixelFormat: 'yuv420p',
+    hasAlpha: false,
+    audioCodec: 'aac',
+    audioSampleRate: 48000,
+    audioChannels: 2,
   });
 
   assert.deepEqual(parseMediaProbeJson(JSON.stringify({
-    streams: [{ codec_type: 'video', width: 640, height: 480, r_frame_rate: '25/1' }],
+    streams: [{
+      codec_type: 'video', codec_name: 'png', width: 640, height: 480,
+      r_frame_rate: '25/1', pix_fmt: 'rgba',
+    }],
     format: { format_name: 'png_pipe' },
   })), {
     mediaKind: 'image',
@@ -81,6 +93,13 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
     durationSec: 0,
     hasAudio: false,
     rotation: 0,
+    container: 'png_pipe',
+    videoCodec: 'png',
+    pixelFormat: 'rgba',
+    hasAlpha: true,
+    audioCodec: null,
+    audioSampleRate: null,
+    audioChannels: null,
   });
 });
 

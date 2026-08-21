@@ -42,20 +42,44 @@ function tempProject(t) {
   return projectDir;
 }
 
-function probeJson({ kind = 'video', width = 320, height = 180, fps = '25/1', duration = 1, audio = false, rotation = 0 } = {}) {
+function probeJson({
+  kind = 'video',
+  width = 320,
+  height = 180,
+  fps = '25/1',
+  duration = 1,
+  audio = false,
+  rotation = 0,
+  formatName = kind === 'image' ? 'png_pipe' : 'mov,mp4,m4a,3gp,3g2,mj2',
+  videoCodec = kind === 'image' ? 'png' : 'h264',
+  pixelFormat = kind === 'image' ? 'rgba' : 'yuv420p',
+  audioCodec = 'aac',
+  audioSampleRate = 48000,
+  audioChannels = 2,
+} = {}) {
   return JSON.stringify({
     streams: [
       {
-        codec_type: 'video', width, height, avg_frame_rate: fps, r_frame_rate: fps,
+        codec_type: 'video', codec_name: videoCodec, pix_fmt: pixelFormat,
+        width, height, avg_frame_rate: fps, r_frame_rate: fps,
         ...(rotation ? { side_data_list: [{ rotation }] } : {}),
       },
-      ...(audio ? [{ codec_type: 'audio' }] : []),
+      ...(audio ? [{
+        codec_type: 'audio', codec_name: audioCodec,
+        sample_rate: String(audioSampleRate), channels: audioChannels,
+      }] : []),
     ],
-    format: { format_name: kind === 'image' ? 'png_pipe' : 'mov,mp4,m4a,3gp,3g2,mj2', ...(kind === 'video' ? { duration: String(duration) } : {}) },
+    format: { format_name: formatName, ...(kind === 'video' ? { duration: String(duration) } : {}) },
   });
 }
 
-function fakeProcessor({ source = probeJson(), masterFpsOverride, onCall } = {}) {
+function fakeProcessor({
+  source = probeJson(),
+  imageOverrides = {},
+  masterOverrides = {},
+  proxyOverrides = {},
+  onCall,
+} = {}) {
   const parsedSource = JSON.parse(source);
   const sourceVideo = parsedSource.streams.find((stream) => stream.codec_type === 'video');
   const sourceAudio = parsedSource.streams.some((stream) => stream.codec_type === 'audio');
@@ -71,7 +95,14 @@ function fakeProcessor({ source = probeJson(), masterFpsOverride, onCall } = {})
         width: rotated ? sourceVideo.height : sourceVideo.width,
         height: rotated ? sourceVideo.width : sourceVideo.height,
       };
-      if (input.endsWith('.webp')) return { stdout: probeJson({ kind: 'image', ...normalizedShape }), stderr: '', code: 0, signal: null };
+      if (input.endsWith('.webp')) return {
+        stdout: probeJson({
+          kind: 'image', ...normalizedShape, videoCodec: 'webp', formatName: 'webp_pipe',
+          pixelFormat: /a/.test(sourceVideo.pix_fmt || '') ? 'yuva420p' : 'yuv420p',
+          ...imageOverrides,
+        }),
+        stderr: '', code: 0, signal: null,
+      };
       const isProxy = input.endsWith('.webm');
       const scale = isProxy ? Math.min(1, 1280 / Math.max(normalizedShape.width, normalizedShape.height)) : 1;
       const outputShape = {
@@ -81,8 +112,13 @@ function fakeProcessor({ source = probeJson(), masterFpsOverride, onCall } = {})
       return { stdout: probeJson({
         ...outputShape,
         audio: sourceAudio,
-        fps: `${masterFpsOverride || normalizedFps}/1`,
+        fps: `${normalizedFps}/1`,
         duration: Number(parsedSource.format.duration || 1),
+        videoCodec: isProxy ? 'vp8' : 'h264',
+        pixelFormat: 'yuv420p',
+        formatName: isProxy ? 'matroska,webm' : 'mov,mp4,m4a,3gp,3g2,mj2',
+        audioCodec: isProxy ? 'opus' : 'aac',
+        ...(isProxy ? proxyOverrides : masterOverrides),
       }), stderr: '', code: 0, signal: null };
     }
     if (invocation.command === 'ffmpeg' && !invocation.args.includes('null')) {
@@ -186,6 +222,30 @@ test('controller has one owner and releases after every transaction failure', as
   }
 });
 
+test('controller releases after normalize timeout, non-zero exit, and publication failure', async (t) => {
+  for (const [name, processCode] of [
+    ['timeout', 'MEDIA_PROCESS_TIMEOUT'],
+    ['non-zero', 'MEDIA_PROCESS_EXIT'],
+  ]) {
+    await t.test(name, async () => {
+      const controller = createImportController();
+      const base = fakeProcessor();
+      await assert.rejects(importReviewMedia({
+        request: Readable.from([Buffer.from('x')]), projectDir: tempProject(t), outputFps: 25,
+        headers: rawHeaders('x.mp4', 'video/mp4', 1), controller,
+        statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+        runMediaProcessImpl: async (invocation) => {
+          if (invocation.command === 'ffmpeg' && invocation.args.at(-1).endsWith('.mp4')) {
+            throw Object.assign(new Error(name), { code: processCode });
+          }
+          return base(invocation);
+        },
+      }));
+      assert.equal(controller.busy, false);
+    });
+  }
+});
+
 test('streaming requires exact bytes, ignores post-body close, and keeps private exact modes', async (t) => {
   for (const chunks of [[], [Buffer.from('xx')]]) {
     const projectDir = tempProject(t);
@@ -225,6 +285,12 @@ test('streaming requires exact bytes, ignores post-body close, and keeps private
 test('authoritative probe rejects content disagreement and exact media ceilings', async (t) => {
   const cases = [
     ['kind', probeJson({ kind: 'video' }), rawHeaders('x.png', 'image/png', 1)],
+    ['PNG declared JPEG', probeJson({
+      kind: 'image', videoCodec: 'mjpeg', pixelFormat: 'yuvj420p', formatName: 'jpeg_pipe',
+    }), rawHeaders('x.png', 'image/png', 1)],
+    ['MP4 declared WebM', probeJson({
+      videoCodec: 'vp8', formatName: 'matroska,webm',
+    }), rawHeaders('x.mp4', 'video/mp4', 1)],
     ['video dimension', probeJson({ width: 4097, height: 10 }), rawHeaders('x.mp4', 'video/mp4', 1)],
     ['video pixels', probeJson({ width: 4096, height: 2161 }), rawHeaders('x.mp4', 'video/mp4', 1)],
     ['duration', probeJson({ duration: 1800.01 }), rawHeaders('x.mp4', 'video/mp4', 1)],
@@ -243,14 +309,20 @@ test('authoritative probe rejects content disagreement and exact media ceilings'
   }
 });
 
-test('video argv uses exact master/proxy profiles with conditional audio and asset-last publication', async (t) => {
+test('video process argv is exact and metadata is the asset-last publication marker', async (t) => {
   const projectDir = tempProject(t);
   const calls = [];
-  const renameOrder = [];
+  const publicationOrder = [];
   const fileSystem = Object.create(fs);
-  fileSystem.renameSync = (from, to) => {
-    renameOrder.push(path.relative(projectDir, to));
-    return fs.renameSync(from, to);
+  fileSystem.linkSync = (from, to) => {
+    publicationOrder.push(path.relative(projectDir, to));
+    return fs.linkSync(from, to);
+  };
+  fileSystem.openSync = (target, flags, mode) => {
+    if (target === path.join(projectDir, 'assets', 'broll', 'video', UUID, 'asset.json')) {
+      publicationOrder.push(path.relative(projectDir, target));
+    }
+    return fs.openSync(target, flags, mode);
   };
   const result = await importReviewMedia({
     request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 24,
@@ -263,33 +335,60 @@ test('video argv uses exact master/proxy profiles with conditional audio and ass
   const encodes = calls.filter((call) => call.command === 'ffmpeg' && !call.args.includes('null'));
   const master = encodes.find((call) => call.args.at(-1).endsWith('.mp4'));
   const proxy = encodes.find((call) => call.args.at(-1).endsWith('.webm'));
-  for (const token of ['-autorotate', 'libx264', 'yuv420p', '-crf', '18', '-preset', 'medium', '+faststart', '-map_metadata', '-1', 'aac', '48000', '2', '160k']) assert.ok(master.args.includes(token), token);
-  assert.ok(master.args.join(' ').includes('fps=24'));
-  assert.equal(master.args.includes('loudnorm'), false);
-  for (const token of ['libvpx', '-map_metadata', '-1', 'libopus', '48000', '2', '96k']) assert.ok(proxy.args.includes(token), token);
-  assert.ok(proxy.args.join(' ').includes('1280'));
-  assert.ok(proxy.args.join(' ').includes('fps=24'));
-  assert.equal(proxy.args.includes('loudnorm'), false);
-  assert.equal(renameOrder.at(-1), `assets/broll/video/${UUID}`);
-  assert.ok(renameOrder.indexOf(`previews/broll/${UUID}.webm`) < renameOrder.length - 1);
+  const uploadPath = master.args[master.args.indexOf('-i') + 1];
+  assert.deepEqual(master.args, [
+    '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', uploadPath,
+    '-map', '0:v:0', '-map', '0:a:0',
+    '-map_metadata', '-1', '-metadata:s:v:0', 'rotate=0',
+    '-vf', 'fps=24', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    '-crf', '18', '-preset', 'medium',
+    '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-b:a', '160k',
+    '-movflags', '+faststart', master.args.at(-1),
+  ]);
+  assert.deepEqual(proxy.args, [
+    '-hide_banner', '-loglevel', 'error', '-i', master.args.at(-1),
+    '-map', '0:v:0', '-map', '0:a:0', '-map_metadata', '-1',
+    '-vf', "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=24",
+    '-c:v', 'libvpx', '-crf', '32', '-b:v', '0',
+    '-c:a', 'libopus', '-ar', '48000', '-ac', '2', '-b:a', '96k',
+    proxy.args.at(-1),
+  ]);
+  const probeEntry = 'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels:stream_tags=rotate:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration';
+  for (const call of calls.filter((entry) => entry.command === 'ffprobe')) {
+    assert.deepEqual(call.args, ['-v', 'error', '-show_entries', probeEntry, '-of', 'json', call.args.at(-1)]);
+  }
+  for (const call of calls.filter((entry) => entry.command === 'ffmpeg' && entry.args.includes('null'))) {
+    const input = call.args[call.args.indexOf('-i') + 1];
+    assert.deepEqual(call.args, ['-hide_banner', '-loglevel', 'error', '-i', input, '-f', 'null', '-']);
+  }
+  assert.deepEqual(publicationOrder, [
+    `previews/broll/${UUID}.webm`,
+    `assets/broll/video/${UUID}/asset.json`,
+  ]);
 });
 
-test('failed asset-last rename rolls back published preview and symlinked parents are refused', async (t) => {
-  const projectDir = tempProject(t);
-  const fileSystem = Object.create(fs);
-  fileSystem.renameSync = (from, to) => {
-    if (to === path.join(projectDir, 'assets', 'broll', 'video', UUID)) throw new Error('asset publish failed');
-    return fs.renameSync(from, to);
-  };
-  await assert.rejects(importReviewMedia({
-    request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
-    headers: rawHeaders('x.mp4', 'video/mp4', 1), controller: createImportController(), fileSystem,
+test('image normalization argv is exact, single-frame, oriented, metadata-free, and alpha-capable', async (t) => {
+  const calls = [];
+  await importReviewMedia({
+    request: Readable.from([Buffer.from('x')]), projectDir: tempProject(t), outputFps: 25,
+    headers: rawHeaders('x.png', 'image/png', 1), controller: createImportController(),
     statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
-    runMediaProcessImpl: fakeProcessor({ source: probeJson() }),
-  }), /asset publish failed/);
-  assert.equal(fs.existsSync(path.join(projectDir, 'previews', 'broll', `${UUID}.webm`)), false);
-  assert.equal(fs.existsSync(path.join(projectDir, 'assets', 'broll', 'video', UUID)), false);
+    runMediaProcessImpl: fakeProcessor({
+      source: probeJson({ kind: 'image', pixelFormat: 'rgba' }),
+      onCall: (call) => calls.push(call),
+    }),
+  });
+  const encode = calls.find((call) => call.command === 'ffmpeg' && !call.args.includes('null'));
+  const uploadPath = encode.args[encode.args.indexOf('-i') + 1];
+  assert.deepEqual(encode.args, [
+    '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', uploadPath,
+    '-map', '0:v:0', '-map_metadata', '-1', '-frames:v', '1',
+    '-vf', 'format=rgba', '-c:v', 'libwebp', '-quality', '90', '-pix_fmt', 'yuva420p',
+    encode.args.at(-1),
+  ]);
+});
 
+test('symlinked publication parents are refused', async (t) => {
   const symlinkProject = tempProject(t);
   const outside = tempProject(t);
   fs.symlinkSync(outside, path.join(symlinkProject, 'assets'));
@@ -419,10 +518,188 @@ test('publication rejects a successful encoder result with the wrong authoritati
     request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 24,
     headers: rawHeaders('wrong-fps.mp4', 'video/mp4', 1), controller,
     statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
-    runMediaProcessImpl: fakeProcessor({ source: probeJson(), masterFpsOverride: 30 }),
+    runMediaProcessImpl: fakeProcessor({ source: probeJson(), masterOverrides: { fps: '30/1' } }),
   }), (error) => error.status === 422 && error.code === 'MEDIA_IMPORT_OUTPUT_INVALID');
   assert.equal(controller.busy, false);
   assert.equal(fs.existsSync(path.join(projectDir, 'assets', 'broll', 'video', UUID)), false);
+});
+
+test('normalized probes enforce exact image, master, proxy, audio, alpha, and duration profiles', async (t) => {
+  const cases = [
+    ['image codec', 'x.png', 'image/png', probeJson({ kind: 'image' }), { imageOverrides: { videoCodec: 'mjpeg' } }],
+    ['image alpha', 'x.png', 'image/png', probeJson({ kind: 'image', pixelFormat: 'rgba' }), { imageOverrides: { pixelFormat: 'yuv420p' } }],
+    ['master codec', 'x.mp4', 'video/mp4', probeJson(), { masterOverrides: { videoCodec: 'hevc' } }],
+    ['master pixel format', 'x.mp4', 'video/mp4', probeJson(), { masterOverrides: { pixelFormat: 'yuv444p' } }],
+    ['master audio codec', 'x.mp4', 'video/mp4', probeJson({ audio: true }), { masterOverrides: { audioCodec: 'opus' } }],
+    ['master audio rate', 'x.mp4', 'video/mp4', probeJson({ audio: true }), { masterOverrides: { audioSampleRate: 44100 } }],
+    ['master audio channels', 'x.mp4', 'video/mp4', probeJson({ audio: true }), { masterOverrides: { audioChannels: 1 } }],
+    ['truncated master', 'x.mp4', 'video/mp4', probeJson({ duration: 1 }), {
+      masterOverrides: { duration: 0.5 }, proxyOverrides: { duration: 0.5 },
+    }],
+    ['proxy codec', 'x.mp4', 'video/mp4', probeJson(), { proxyOverrides: { videoCodec: 'vp9' } }],
+    ['proxy audio codec', 'x.mp4', 'video/mp4', probeJson({ audio: true }), { proxyOverrides: { audioCodec: 'aac' } }],
+  ];
+  for (const [name, filename, mime, source, overrides] of cases) {
+    await t.test(name, async () => {
+      await assert.rejects(importReviewMedia({
+        request: Readable.from([Buffer.from('x')]), projectDir: tempProject(t), outputFps: 25,
+        headers: rawHeaders(filename, mime, 1), controller: createImportController(),
+        statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+        runMediaProcessImpl: fakeProcessor({ source, ...overrides }),
+      }), (error) => error.status === 422 && error.code === 'MEDIA_IMPORT_OUTPUT_INVALID');
+    });
+  }
+});
+
+test('output replacement between probe, decode, and hash is rejected by captured identity', async (t) => {
+  await t.test('between probe and decode', async () => {
+    const projectDir = tempProject(t);
+    let replaced = false;
+    await assert.rejects(importReviewMedia({
+      request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+      headers: rawHeaders('x.mp4', 'video/mp4', 1), controller: createImportController(),
+      statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+      runMediaProcessImpl: fakeProcessor({
+        onCall(invocation) {
+          const input = invocation.args[invocation.args.indexOf('-i') + 1];
+          if (!replaced && invocation.command === 'ffmpeg' && invocation.args.includes('null')
+            && input?.endsWith('.mp4')) {
+            replaced = true;
+            fs.renameSync(input, `${input}.original`);
+            fs.writeFileSync(input, 'replacement after probe');
+          }
+        },
+      }),
+    }), (error) => error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+    assert.equal(fs.existsSync(path.join(projectDir, 'assets', 'broll', 'video', UUID)), false);
+  });
+
+  await t.test('between decode and hash', async () => {
+    const projectDir = tempProject(t);
+    const fileSystem = Object.create(fs);
+    let replaced = false;
+    fileSystem.openSync = (target, flags, mode) => {
+      const isHashRead = target.endsWith(`${path.sep}bundle${path.sep}media.mp4`)
+        && (flags & fs.constants.O_RDONLY) === fs.constants.O_RDONLY;
+      if (!replaced && isHashRead) {
+        replaced = true;
+        fs.renameSync(target, `${target}.original`);
+        fs.writeFileSync(target, 'replacement before hash');
+      }
+      return fs.openSync(target, flags, mode);
+    };
+    await assert.rejects(importReviewMedia({
+      request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+      headers: rawHeaders('x.mp4', 'video/mp4', 1), controller: createImportController(),
+      fileSystem,
+      statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+      runMediaProcessImpl: fakeProcessor(),
+    }), (error) => error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+    assert.equal(fs.existsSync(path.join(projectDir, 'assets', 'broll', 'video', UUID)), false);
+  });
+});
+
+test('publication claims final paths without clobber and preserves every foreign collision', async (t) => {
+  await t.test('directory collision at claim time', async () => {
+    const projectDir = tempProject(t);
+    const finalDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+    const sentinel = path.join(finalDirectory, 'foreign.txt');
+    const fileSystem = Object.create(fs);
+    let injected = false;
+    fileSystem.mkdirSync = (target, options) => {
+      if (!injected && target === finalDirectory) {
+        injected = true;
+        fs.mkdirSync(target, { mode: 0o700 });
+        fs.writeFileSync(sentinel, 'foreign directory');
+      }
+      return fs.mkdirSync(target, options);
+    };
+    await assert.rejects(importReviewMedia({
+      request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+      headers: rawHeaders('x.mp4', 'video/mp4', 1), controller: createImportController(),
+      fileSystem,
+      statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+      runMediaProcessImpl: fakeProcessor(),
+    }));
+    assert.equal(fs.readFileSync(sentinel, 'utf8'), 'foreign directory');
+    assert.equal(fs.existsSync(path.join(projectDir, 'previews', 'broll', `${UUID}.webm`)), false);
+  });
+
+  await t.test('foreign preview stage', async () => {
+    const projectDir = tempProject(t);
+    const stage = path.join(projectDir, 'previews', 'broll', `.${UUID}.stage.webm`);
+    fs.mkdirSync(path.dirname(stage), { recursive: true });
+    fs.writeFileSync(stage, 'foreign stage');
+    await assert.rejects(importReviewMedia({
+      request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+      headers: rawHeaders('x.mp4', 'video/mp4', 1), controller: createImportController(),
+      statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+      runMediaProcessImpl: fakeProcessor(),
+    }));
+    assert.equal(fs.readFileSync(stage, 'utf8'), 'foreign stage');
+    assert.equal(fs.existsSync(path.join(projectDir, 'previews', 'broll', `${UUID}.webm`)), false);
+    assert.equal(fs.existsSync(path.join(projectDir, 'assets', 'broll', 'video', UUID)), false);
+  });
+});
+
+test('failure after preview and final-directory claim leaves no selectable partial and releases controller', async (t) => {
+  for (const failurePoint of ['canonical', 'metadata-commit']) {
+    await t.test(failurePoint, async () => {
+      const projectDir = tempProject(t);
+      const controller = createImportController();
+      const fileSystem = Object.create(fs);
+      if (failurePoint === 'canonical') {
+        fileSystem.openSync = (target, flags, mode) => {
+          if (target === path.join(projectDir, 'assets', 'broll', 'video', UUID, 'media.mp4')) {
+            throw new Error('canonical publish failed');
+          }
+          return fs.openSync(target, flags, mode);
+        };
+      } else {
+        fileSystem.openSync = (target, flags, mode) => {
+          if (target === path.join(projectDir, 'assets', 'broll', 'video', UUID, 'asset.json')) {
+            throw new Error('metadata commit failed');
+          }
+          return fs.openSync(target, flags, mode);
+        };
+      }
+      await assert.rejects(importReviewMedia({
+        request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+        headers: rawHeaders('x.mp4', 'video/mp4', 1), controller, fileSystem,
+        statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+        runMediaProcessImpl: fakeProcessor(),
+      }));
+      assert.equal(controller.busy, false);
+      assert.equal(fs.existsSync(path.join(projectDir, 'previews', 'broll', `${UUID}.webm`)), false);
+      const finalDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+      assert.equal(fs.existsSync(path.join(finalDirectory, 'asset.json')), false);
+      assert.equal(fs.existsSync(finalDirectory), false);
+    });
+  }
+});
+
+test('restrictive umask still yields exact private directory and file modes', { concurrency: false }, async (t) => {
+  const projectDir = tempProject(t);
+  const previousUmask = process.umask(0o777);
+  let result;
+  try {
+    result = await importReviewMedia({
+      request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+      headers: rawHeaders('x.png', 'image/png', 1), controller: createImportController(),
+      statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+      runMediaProcessImpl: fakeProcessor({ source: probeJson({ kind: 'image' }) }),
+    });
+  } finally {
+    process.umask(previousUmask);
+  }
+  for (const directory of [
+    'tmp', 'tmp/review-imports', 'assets', 'assets/broll', 'assets/broll/images',
+    `assets/broll/images/${UUID}`,
+  ]) {
+    assert.equal(fs.statSync(path.join(projectDir, directory)).mode & 0o777, 0o700, directory);
+  }
+  assert.equal(fs.statSync(result.filePath).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.join(path.dirname(result.filePath), 'asset.json')).mode & 0o777, 0o600);
 });
 
 test('real tiny images and videos normalize, decode, preserve alpha/first GIF frame, and expose expected streams', { timeout: 120000 }, async (t) => {

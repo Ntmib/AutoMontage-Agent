@@ -164,6 +164,29 @@ test('imported bundle derives fixed paths from its UUID, hashes opened regular f
   assert.equal(inspectImportedAssetBundle({ projectDir, assetDirectory: fixedName.mediaDirectory }), null);
 });
 
+test('imported bundle inspection bounds metadata reads and hashes media incrementally', (t) => {
+  const projectDir = makeProject(t);
+  const video = writeBundle(projectDir);
+  const readLengths = [];
+  const fileSystem = Object.create(fs);
+  fileSystem.readFileSync = () => {
+    throw new Error('whole-file reads are forbidden during imported bundle inspection');
+  };
+  fileSystem.readSync = (...args) => {
+    readLengths.push(args[3]);
+    return fs.readSync(...args);
+  };
+
+  const inspected = inspectImportedAssetBundle({
+    projectDir,
+    assetDirectory: video.mediaDirectory,
+    fileSystem,
+  });
+  assert.equal(inspected.label, 'Product demo.mov');
+  assert.ok(readLengths.length >= 3);
+  assert.ok(Math.max(...readLengths) <= 64 * 1024);
+});
+
 test('imported discovery skips invalid bundles and registry prefers valid masters over the generic scan', (t) => {
   const projectDir = makeProject(t);
   const video = writeBundle(projectDir);

@@ -77,11 +77,12 @@ function parseMediaProbeJson(raw) {
   let fps = 0;
   let durationSec = 0;
   let hasAudio = false;
+  const audio = streams.find((stream) => stream && stream.codec_type === 'audio') || null;
   if (mediaKind === 'video') {
     fps = parseRate(video.avg_frame_rate || video.r_frame_rate, stage);
     durationSec = Number(data.format?.duration ?? video.duration);
     if (!Number.isFinite(durationSec) || durationSec <= 0) fail(stage, 'duration');
-    hasAudio = streams.some((stream) => stream && stream.codec_type === 'audio');
+    hasAudio = Boolean(audio);
   }
 
   const sideDataRotation = Array.isArray(video.side_data_list)
@@ -92,6 +93,13 @@ function parseMediaProbeJson(raw) {
   const normalizedRotation = ((Math.round(rawRotation) % 360) + 360) % 360;
   if (![0, 90, 180, 270].includes(normalizedRotation)) fail(stage, 'rotation');
 
+  const container = String(data.format?.format_name || '');
+  const videoCodec = typeof video.codec_name === 'string' ? video.codec_name : '';
+  const pixelFormat = typeof video.pix_fmt === 'string' ? video.pix_fmt : '';
+  const hasAlpha = /(?:^yuva|rgba|argb|bgra|abgr|gbrap|ya8|ya16)/.test(pixelFormat);
+  const sampleRate = Number(audio?.sample_rate);
+  const channels = Number(audio?.channels);
+
   return {
     mediaKind,
     width,
@@ -100,6 +108,13 @@ function parseMediaProbeJson(raw) {
     durationSec,
     hasAudio,
     rotation: normalizedRotation,
+    container,
+    videoCodec,
+    pixelFormat,
+    hasAlpha,
+    audioCodec: typeof audio?.codec_name === 'string' ? audio.codec_name : null,
+    audioSampleRate: Number.isSafeInteger(sampleRate) && sampleRate > 0 ? sampleRate : null,
+    audioChannels: Number.isSafeInteger(channels) && channels > 0 ? channels : null,
   };
 }
 

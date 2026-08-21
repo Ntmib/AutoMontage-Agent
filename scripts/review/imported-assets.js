@@ -10,6 +10,8 @@ const REQUIRED_KEYS = [
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const CONTROL = /[\p{Cc}]/u;
+const METADATA_MAX_BYTES = 16 * 1024;
+const HASH_BUFFER_BYTES = 64 * 1024;
 
 function isInside(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -46,7 +48,55 @@ function sameOwnedIdentity(left, right) {
     && left.size === right.size && left.mtimeMs === right.mtimeMs;
 }
 
-function readOpenedFile(fileSystem, filePath) {
+function fileSnapshot(stat, nanosecondStat) {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeNs: nanosecondStat.mtimeNs,
+  };
+}
+
+function sameFileSnapshot(left, right) {
+  return left && right && left.dev === right.dev && left.ino === right.ino
+    && left.size === right.size && left.mtimeNs === right.mtimeNs;
+}
+
+function readOpenedMetadata(fileSystem, filePath) {
+  const constants = fileSystem.constants || fs.constants;
+  let descriptor = null;
+  try {
+    descriptor = fileSystem.openSync(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    const stat = fileSystem.fstatSync(descriptor);
+    const nanosecondStat = fileSystem.fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile() || stat.size <= 0 || stat.size > METADATA_MAX_BYTES) return null;
+    const before = fileSnapshot(stat, nanosecondStat);
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fileSystem.readSync(
+        descriptor,
+        bytes,
+        offset,
+        Math.min(HASH_BUFFER_BYTES, bytes.length - offset),
+        null,
+      );
+      if (count <= 0) return null;
+      offset += count;
+    }
+    const after = fileSnapshot(
+      fileSystem.fstatSync(descriptor),
+      fileSystem.fstatSync(descriptor, { bigint: true }),
+    );
+    return sameFileSnapshot(before, after) ? { bytes, ...before } : null;
+  } catch (_) {
+    return null;
+  } finally {
+    if (descriptor !== null) fileSystem.closeSync(descriptor);
+  }
+}
+
+function hashOpenedFile(fileSystem, filePath) {
   const constants = fileSystem.constants || fs.constants;
   let descriptor = null;
   try {
@@ -54,14 +104,24 @@ function readOpenedFile(fileSystem, filePath) {
     const stat = fileSystem.fstatSync(descriptor);
     const nanosecondStat = fileSystem.fstatSync(descriptor, { bigint: true });
     if (!stat.isFile()) return null;
-    const bytes = fileSystem.readFileSync(descriptor);
-    return {
-      bytes,
-      dev: stat.dev,
-      ino: stat.ino,
-      size: stat.size,
-      mtimeNs: nanosecondStat.mtimeNs,
-    };
+    const before = fileSnapshot(stat, nanosecondStat);
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
+    let total = 0;
+    let count;
+    do {
+      count = fileSystem.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (count > 0) {
+        hash.update(buffer.subarray(0, count));
+        total += count;
+      }
+    } while (count > 0);
+    const after = fileSnapshot(
+      fileSystem.fstatSync(descriptor),
+      fileSystem.fstatSync(descriptor, { bigint: true }),
+    );
+    if (total !== before.size || !sameFileSnapshot(before, after)) return null;
+    return { sha256: hash.digest('hex'), ...before };
   } catch (_) {
     return null;
   } finally {
@@ -112,46 +172,36 @@ function parseImportedAssetMetadata({ bytes, expectedId } = {}) {
   return metadata;
 }
 
-function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = fs } = {}) {
-  if (typeof projectDir !== 'string' || typeof assetDirectory !== 'string') return null;
-  const resolvedProject = path.resolve(projectDir);
-  const resolvedDirectory = path.resolve(assetDirectory);
-  const id = path.basename(resolvedDirectory);
-  const mediaType = path.basename(path.dirname(resolvedDirectory));
-  const expectedParent = path.join(resolvedProject, 'assets', 'broll', mediaType);
-  const ownedAssetDirectory = ownedDirectory(fileSystem, resolvedProject, [
-    'assets', 'broll', mediaType, id,
-  ]);
-  if (!UUID.test(id) || !['images', 'video'].includes(mediaType)
-    || path.dirname(resolvedDirectory) !== expectedParent || ownedAssetDirectory !== resolvedDirectory) {
-    return null;
-  }
-  const metadataFile = readOpenedFile(fileSystem, path.join(resolvedDirectory, 'asset.json'));
-  if (!metadataFile) return null;
-  let metadata;
+function verifyImportedAssetFiles({
+  id,
+  mediaKind,
+  assetDirectory,
+  previewPath = null,
+  metadata,
+  fileSystem = fs,
+} = {}) {
+  if (!UUID.test(id) || !['image', 'video'].includes(mediaKind)
+    || !metadata || metadata.id !== id || metadata.mediaKind !== mediaKind) return null;
   try {
-    metadata = parseImportedAssetMetadata({ bytes: metadataFile.bytes, expectedId: id });
+    parseImportedAssetMetadata({ bytes: Buffer.from(JSON.stringify(metadata)), expectedId: id });
   } catch (_) {
     return null;
   }
-  const expectedFilename = metadata.mediaKind === 'image' ? 'media.webp' : 'media.mp4';
-  if ((metadata.mediaKind === 'image' ? 'images' : 'video') !== mediaType) return null;
-  const filePath = path.join(resolvedDirectory, expectedFilename);
-  const canonical = readOpenedFile(fileSystem, filePath);
-  if (!canonical || crypto.createHash('sha256').update(canonical.bytes).digest('hex') !== metadata.canonicalSha256) {
-    return null;
-  }
-  let previewPath = null;
+  const expectedFilename = mediaKind === 'image' ? 'media.webp' : 'media.mp4';
+  const filePath = path.join(assetDirectory, expectedFilename);
+  const canonical = hashOpenedFile(fileSystem, filePath);
+  if (!canonical || canonical.sha256 !== metadata.canonicalSha256) return null;
   let preview = null;
-  if (metadata.mediaKind === 'video') {
-    const previewDirectory = ownedDirectory(fileSystem, resolvedProject, ['previews', 'broll']);
-    if (!previewDirectory) return null;
-    previewPath = path.join(previewDirectory, `${id}.webm`);
-    preview = readOpenedFile(fileSystem, previewPath);
-    if (!preview || crypto.createHash('sha256').update(preview.bytes).digest('hex') !== metadata.previewSha256) {
-      return null;
-    }
+  if (mediaKind === 'video') {
+    preview = hashOpenedFile(fileSystem, previewPath);
+    if (!preview || preview.sha256 !== metadata.previewSha256) return null;
   }
+  return { metadata, filePath, previewPath, canonical, preview };
+}
+
+function buildImportedAssetRecord({ projectDir, mediaType, id, verified }) {
+  const { metadata, filePath, previewPath, canonical, preview } = verified;
+  const expectedFilename = metadata.mediaKind === 'image' ? 'media.webp' : 'media.mp4';
   return {
     kind: 'project',
     mediaKind: metadata.mediaKind,
@@ -182,6 +232,51 @@ function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = f
       previewMtimeNs: preview.mtimeNs,
     } : {}),
   };
+}
+
+function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = fs } = {}) {
+  if (typeof projectDir !== 'string' || typeof assetDirectory !== 'string') return null;
+  const resolvedProject = path.resolve(projectDir);
+  const resolvedDirectory = path.resolve(assetDirectory);
+  const id = path.basename(resolvedDirectory);
+  const mediaType = path.basename(path.dirname(resolvedDirectory));
+  const expectedParent = path.join(resolvedProject, 'assets', 'broll', mediaType);
+  const ownedAssetDirectory = ownedDirectory(fileSystem, resolvedProject, [
+    'assets', 'broll', mediaType, id,
+  ]);
+  if (!UUID.test(id) || !['images', 'video'].includes(mediaType)
+    || path.dirname(resolvedDirectory) !== expectedParent || ownedAssetDirectory !== resolvedDirectory) {
+    return null;
+  }
+  const metadataFile = readOpenedMetadata(fileSystem, path.join(resolvedDirectory, 'asset.json'));
+  if (!metadataFile) return null;
+  let metadata;
+  try {
+    metadata = parseImportedAssetMetadata({ bytes: metadataFile.bytes, expectedId: id });
+  } catch (_) {
+    return null;
+  }
+  if ((metadata.mediaKind === 'image' ? 'images' : 'video') !== mediaType) return null;
+  let previewPath = null;
+  if (metadata.mediaKind === 'video') {
+    const previewDirectory = ownedDirectory(fileSystem, resolvedProject, ['previews', 'broll']);
+    if (!previewDirectory) return null;
+    previewPath = path.join(previewDirectory, `${id}.webm`);
+  }
+  const verified = verifyImportedAssetFiles({
+    id,
+    mediaKind: metadata.mediaKind,
+    assetDirectory: resolvedDirectory,
+    previewPath,
+    metadata,
+    fileSystem,
+  });
+  return verified ? buildImportedAssetRecord({
+    projectDir: resolvedProject,
+    mediaType,
+    id,
+    verified,
+  }) : null;
 }
 
 function listImportedAssetBundles({ projectDir, fileSystem = fs } = {}) {
@@ -282,8 +377,10 @@ function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
 }
 
 module.exports = {
+  buildImportedAssetRecord,
   cleanupOrphanImportedStages,
   inspectImportedAssetBundle,
   listImportedAssetBundles,
   parseImportedAssetMetadata,
+  verifyImportedAssetFiles,
 };

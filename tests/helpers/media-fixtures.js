@@ -40,7 +40,7 @@ function makeMediaFixtures(directory) {
   runTool('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=15:d=0.6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', files.silentLandscape], directory);
   runTool('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=90x160:r=20:d=0.7', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:d=0.7', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', files.audioPortrait], directory);
   const vfrBase = path.join(directory, 'vfr-base.mp4');
-  runTool('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=30:d=0.8', '-vf', "select='eq(n,0)+eq(n,1)+eq(n,5)+eq(n,12)+eq(n,20)'", '-fps_mode', 'vfr', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', vfrBase], directory);
+  runTool('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=30:d=0.8', '-vf', "select='eq(n,0)+eq(n,1)+eq(n,5)+eq(n,12)+eq(n,20)'", '-fps_mode', 'vfr', '-c:v', 'libx264', '-bf', '0', '-pix_fmt', 'yuv420p', '-an', vfrBase], directory);
   runTool('ffmpeg', ['-y', '-v', 'error', '-display_rotation', '90', '-i', vfrBase, '-c', 'copy', files.rotatedVfr], directory);
   return files;
 }

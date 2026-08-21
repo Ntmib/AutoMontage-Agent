@@ -39,7 +39,11 @@ test('media process uses argv with shell disabled and returns bounded output aft
   });
   assert.equal(invocation.command, 'ffprobe');
   assert.deepEqual(invocation.args, ['--', 'hostile;$(touch nope).mov']);
-  assert.equal(invocation.options.shell, false);
+  assert.deepEqual(invocation.options, {
+    cwd: '/tmp',
+    shell: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 });
 
 test('media process sends one SIGTERM on timeout and rejects only after child close', async () => {
@@ -51,8 +55,11 @@ test('media process sends one SIGTERM on timeout and rejects only after child cl
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(child.killCalls, ['SIGTERM']);
   assert.equal(settled, false);
+  child.stdout.end('partial output');
+  child.stderr.end('bounded diagnostic');
   child.emit('close', null, 'SIGTERM');
-  await assert.rejects(promise, (error) => error.code === 'MEDIA_PROCESS_TIMEOUT');
+  await assert.rejects(promise, (error) => error.code === 'MEDIA_PROCESS_TIMEOUT'
+    && error.stdout === 'partial output' && error.stderr === 'bounded diagnostic');
 });
 
 test('media process abort, overflow, spawn error, and non-zero exit remain bounded', async (t) => {
