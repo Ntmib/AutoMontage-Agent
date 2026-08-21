@@ -501,6 +501,7 @@ function writeApprovalImportedAsset(state, {
   id = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1',
   durationSec = 10,
   hasAudio = true,
+  fps = 30,
 } = {}) {
   const mediaType = kind === 'image' ? 'images' : 'video';
   const filename = kind === 'image' ? 'media.webp' : 'media.mp4';
@@ -529,7 +530,7 @@ function writeApprovalImportedAsset(state, {
     previewSha256,
     width: 640,
     height: 360,
-    fps: kind === 'image' ? 0 : 30,
+    fps: kind === 'image' ? 0 : fps,
     durationSec: kind === 'image' ? 0 : durationSec,
     hasAudio: kind === 'image' ? false : hasAudio,
   };
@@ -572,6 +573,64 @@ function setApprovalBrollMedia(state, asset, overrides = {}) {
   }];
   fs.writeFileSync(state.draft.jsonPath, `${JSON.stringify(brief, null, 2)}\n`);
   return brief;
+}
+
+function setRepeatedApprovalBrollMedia(state, asset, trimStarts) {
+  const brief = JSON.parse(fs.readFileSync(state.draft.jsonPath, 'utf8'));
+  brief.scenes = trimStarts.map((trimStartSec, index) => ({
+    scene: 'broll',
+    start: index * 0.5,
+    end: (index + 1) * 0.5,
+    brollMedia: {
+      kind: 'video',
+      src: asset.reference,
+      sha256: asset.metadata.canonicalSha256,
+      trimStartSec,
+      fit: index % 2 === 0 ? 'contain' : 'cover',
+      audioMode: index % 2 === 0 ? 'replace' : 'mix',
+    },
+    headCream: `ПОВТОР ${index + 1}`,
+    headOrange: 'МЕДИА',
+  }));
+  fs.writeFileSync(state.draft.jsonPath, `${JSON.stringify(brief, null, 2)}\n`);
+  return brief;
+}
+
+function monitorApprovalMediaDescriptors(asset) {
+  const watched = new Set([
+    asset.canonicalPath,
+    asset.metadataPath,
+    asset.previewPath,
+  ].map((target) => path.resolve(target)));
+  const descriptors = new Map();
+  const counts = new Map([...watched].map((target) => [target, 0]));
+  let active = 0;
+  let maxActive = 0;
+  return {
+    fileSystem: {
+      ...fs,
+      openSync(target, flags, mode) {
+        const descriptor = fs.openSync(target, flags, mode);
+        const resolved = path.resolve(String(target));
+        if (watched.has(resolved)) {
+          descriptors.set(descriptor, resolved);
+          counts.set(resolved, counts.get(resolved) + 1);
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+        }
+        return descriptor;
+      },
+      closeSync(descriptor) {
+        if (descriptors.delete(descriptor)) active -= 1;
+        return fs.closeSync(descriptor);
+      },
+    },
+    assertBounded() {
+      assert.deepEqual([...counts.values()], [1, 1, 1]);
+      assert.equal(maxActive, 3);
+      assert.equal(active, 0);
+    },
+  };
 }
 
 function approvalProbe(metadata) {
@@ -633,7 +692,46 @@ test('approval accepts verified normalized image and video b-roll', async (t) =>
   }
 });
 
+test('approval deduplicates repeated immutable media while validating every scene trim', async (t) => {
+  for (const item of [
+    { name: 'valid differing trims', trims: [0, 1, 2, 3.5], rejects: false },
+    { name: 'one overrun trim', trims: [0, 1, 3.6], rejects: true },
+  ]) {
+    await t.test(item.name, () => {
+      const state = makeApprovalFailureFixture(t, `repeated-${item.name.replaceAll(' ', '-')}`);
+      const asset = writeApprovalImportedAsset(state, {
+        kind: 'video', durationSec: 4, hasAudio: true,
+      });
+      setRepeatedApprovalBrollMedia(state, asset, item.trims);
+      const monitor = monitorApprovalMediaDescriptors(asset);
+      const probe = approvalProbe(asset.metadata);
+      let probeCalls = 0;
+      const options = {
+        root: path.resolve(__dirname, '..'),
+        fileSystem: monitor.fileSystem,
+        runToolImpl(command, args, processOptions) {
+          probeCalls += 1;
+          return probe(command, args, processOptions);
+        },
+      };
+
+      if (item.rejects) {
+        assertApprovalMediaFailure(state, options, APPROVAL_MEDIA_ERRORS.clip);
+      } else {
+        const approved = approveBrief(state.workspace, state.draft.jsonPath, options);
+        assert.equal(JSON.parse(fs.readFileSync(approved.jsonPath, 'utf8')).scenes.length, 4);
+      }
+      assert.equal(probeCalls, 1);
+      monitor.assertBounded();
+    });
+  }
+});
+
 const APPROVAL_MEDIA_ERRORS = {
+  scene: [
+    'BROLL_MEDIA_SCENE_INVALID',
+    'BROLL_MEDIA_SCENE_INVALID: b-roll media is allowed only on a b-roll scene',
+  ],
   path: [
     'BROLL_MEDIA_PATH_INVALID',
     'BROLL_MEDIA_PATH_INVALID: b-roll media reference is not allowed',
@@ -762,6 +860,62 @@ function assertApprovalMediaFailure(state, options, expected) {
   );
 }
 
+test('approval rejects non-broll media fields before schema or publication', async (t) => {
+  for (const field of ['brollSrc', 'brollMedia']) {
+    await t.test(field, () => {
+      const state = makeApprovalFailureFixture(t, `wrong-scene-${field}`);
+      const draft = JSON.parse(fs.readFileSync(state.draft.jsonPath, 'utf8'));
+      const asset = writeApprovalImportedAsset(state, { kind: 'image' });
+      draft.scenes = [{
+        scene: 'fullscreen',
+        start: 0,
+        end: 8,
+        caption: 'SAFE FULLSCREEN',
+        ...(field === 'brollSrc'
+          ? { brollSrc: '../../outside.png' }
+          : {
+            brollMedia: {
+              kind: 'image',
+              src: asset.reference,
+              sha256: asset.metadata.canonicalSha256,
+              fit: 'cover',
+            },
+          }),
+      }];
+      fs.writeFileSync(state.draft.jsonPath, `${JSON.stringify(draft, null, 2)}\n`);
+
+      assertApprovalMediaFailure(state, {
+        root: path.resolve(__dirname, '..'),
+        runToolImpl: approvalProbe(asset.metadata),
+      }, APPROVAL_MEDIA_ERRORS.scene);
+    });
+  }
+});
+
+test('approval returns the exact path error for every unsafe persisted reference', async (t) => {
+  const unsafeReferences = [
+    '/tmp/outside.webp',
+    'C:\\outside.webp',
+    'https://example.invalid/outside.webp',
+    'assets/broll/../outside.webp',
+    'assets/broll/%2e%2e/outside.webp',
+    'assets\\broll\\outside.webp',
+    '/media/assets/asset-1',
+  ];
+  for (const [index, reference] of unsafeReferences.entries()) {
+    await t.test(String(index), () => {
+      const state = makeApprovalFailureFixture(t, `unsafe-approval-path-${index}`);
+      const asset = writeApprovalImportedAsset(state, { kind: 'image' });
+      setApprovalBrollMedia(state, asset, { src: reference });
+
+      assertApprovalMediaFailure(state, {
+        root: path.resolve(__dirname, '..'),
+        runToolImpl: approvalProbe(asset.metadata),
+      }, APPROVAL_MEDIA_ERRORS.path);
+    });
+  }
+});
+
 test('approval rejects each stale normalized b-roll condition with an exact reason', async (t) => {
   const cases = [
     {
@@ -835,6 +989,18 @@ test('approval rejects each stale normalized b-roll condition with an exact reas
       name: 'clip overrun',
       expected: APPROVAL_MEDIA_ERRORS.clip,
       assetOptions: { durationSec: 5 },
+    },
+    {
+      name: 'sub-frame clip overrun',
+      expected: APPROVAL_MEDIA_ERRORS.clip,
+      assetOptions: { durationSec: 1, fps: 25 },
+      mutate({ state }) {
+        const draft = JSON.parse(fs.readFileSync(state.draft.jsonPath, 'utf8'));
+        draft.output.fps = 25;
+        draft.scenes[0].end = 0.01;
+        draft.scenes[0].brollMedia.trimStartSec = 1;
+        fs.writeFileSync(state.draft.jsonPath, `${JSON.stringify(draft, null, 2)}\n`);
+      },
     },
     {
       name: 'replace without audio',

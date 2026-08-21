@@ -114,6 +114,73 @@ function approvalVideoProbe(metadata) {
   };
 }
 
+function approvalBoundaryRaceFileSystem({ state, triggerPath, replacedAsset }) {
+  const handles = new Map();
+  let armed = false;
+  let replaced = false;
+  return {
+    fileSystem: {
+      ...fs,
+      openSync(target, flags, mode) {
+        const descriptor = fs.openSync(target, flags, mode);
+        handles.set(descriptor, path.resolve(String(target)));
+        return descriptor;
+      },
+      writeFileSync(target, data, options) {
+        const result = fs.writeFileSync(target, data, options);
+        const openedPath = typeof target === 'number' ? handles.get(target) : null;
+        if (openedPath && openedPath.includes('.tmp-approval-json-')) armed = true;
+        return result;
+      },
+      readSync(descriptor, ...args) {
+        if (armed && !replaced && handles.get(descriptor) === path.resolve(triggerPath)) {
+          const replacement = path.join(state.root, `boundary-replacement-${path.basename(triggerPath)}`);
+          fs.writeFileSync(replacement, replacedAsset.canonical);
+          fs.renameSync(replacement, replacedAsset.canonicalPath);
+          replaced = true;
+        }
+        return fs.readSync(descriptor, ...args);
+      },
+      closeSync(descriptor) {
+        handles.delete(descriptor);
+        return fs.closeSync(descriptor);
+      },
+    },
+    wasReplaced() {
+      return replaced;
+    },
+  };
+}
+
+function assertApprovalRacePreserved(state, options, race) {
+  const manifestPath = path.join(state.workspace.dir, 'project.json');
+  const before = {
+    draft: fs.readFileSync(state.baseJsonPath),
+    markdown: fs.readFileSync(state.baseMarkdownPath),
+    manifest: fs.readFileSync(manifestPath),
+    briefs: fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(),
+  };
+  let caught;
+  assert.throws(() => approveBrief(state.workspace, state.baseJsonPath, options), (error) => {
+    caught = error;
+    return true;
+  });
+  assert.equal(race.wasReplaced(), true);
+  assert.equal(caught.code, 'BROLL_MEDIA_IDENTITY_CHANGED');
+  assert.equal(
+    caught.message,
+    'BROLL_MEDIA_IDENTITY_CHANGED: b-roll media identity changed during approval',
+  );
+  assert.deepEqual(fs.readFileSync(state.baseJsonPath), before.draft);
+  assert.equal(JSON.parse(before.draft).status, 'draft');
+  assert.deepEqual(fs.readFileSync(state.baseMarkdownPath), before.markdown);
+  assert.deepEqual(fs.readFileSync(manifestPath), before.manifest);
+  assert.deepEqual(fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(), before.briefs);
+  assert.equal(fs.existsSync(state.baseJsonPath.replace('-draft.', '-approved.')), false);
+  assert.equal(fs.existsSync(state.baseMarkdownPath.replace('-draft.', '-approved.')), false);
+  assert.deepEqual(tempEntries(state.workspace), []);
+}
+
 function makeReviewWorkspace(t, { approved = true, name = 'review-save' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-save-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -1281,6 +1348,73 @@ test('approval rechecks the opened media identity after staging and before any p
   assert.equal(fs.existsSync(state.baseJsonPath.replace('-draft.', '-approved.')), false);
   assert.equal(fs.existsSync(state.baseMarkdownPath.replace('-draft.', '-approved.')), false);
   assert.deepEqual(tempEntries(state.workspace), []);
+});
+
+test('approval catches canonical replacement while the same bundle proxy is rehashed', (t) => {
+  const state = makeReviewWorkspace(t, { approved: false, name: 'approval-proxy-race' });
+  const asset = writeImportedVideo(state.workspace.dir);
+  const draft = JSON.parse(fs.readFileSync(state.baseJsonPath, 'utf8'));
+  delete draft.scenes[1].brollSrc;
+  draft.scenes[1].brollMedia = {
+    kind: 'video',
+    src: asset.reference,
+    sha256: asset.metadata.canonicalSha256,
+    trimStartSec: 0,
+    fit: 'contain',
+    audioMode: 'replace',
+  };
+  fs.writeFileSync(state.baseJsonPath, `${JSON.stringify(draft, null, 2)}\n`);
+  const race = approvalBoundaryRaceFileSystem({
+    state,
+    triggerPath: asset.previewPath,
+    replacedAsset: asset,
+  });
+
+  assertApprovalRacePreserved(state, {
+    root: REPOSITORY_ROOT,
+    fileSystem: race.fileSystem,
+    runToolImpl: approvalVideoProbe(asset.metadata),
+    temporaryId: () => TEMPORARY_ID,
+  }, race);
+});
+
+test('approval catches first-scene replacement while a second asset is rehashed', (t) => {
+  const state = makeReviewWorkspace(t, { approved: false, name: 'approval-two-scene-race' });
+  const first = writeImportedVideo(state.workspace.dir, {
+    id: '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1',
+  });
+  const second = writeImportedVideo(state.workspace.dir, {
+    id: '5bf47cf5-1c37-4f70-9e59-9cee3326b5a2',
+  });
+  const draft = JSON.parse(fs.readFileSync(state.baseJsonPath, 'utf8'));
+  draft.scenes = [first, second].map((asset, index) => ({
+    scene: 'broll',
+    start: index * 2,
+    end: (index + 1) * 2,
+    brollMedia: {
+      kind: 'video',
+      src: asset.reference,
+      sha256: asset.metadata.canonicalSha256,
+      trimStartSec: index,
+      fit: 'contain',
+      audioMode: 'replace',
+    },
+    headCream: `СЦЕНА ${index + 1}`,
+    headOrange: 'ВИДЕО',
+  }));
+  fs.writeFileSync(state.baseJsonPath, `${JSON.stringify(draft, null, 2)}\n`);
+  const race = approvalBoundaryRaceFileSystem({
+    state,
+    triggerPath: second.canonicalPath,
+    replacedAsset: first,
+  });
+
+  assertApprovalRacePreserved(state, {
+    root: REPOSITORY_ROOT,
+    fileSystem: race.fileSystem,
+    runToolImpl: approvalVideoProbe(first.metadata),
+    temporaryId: () => TEMPORARY_ID,
+  }, race);
 });
 
 test('legacy image re-selection persists brollMedia and resolves after a real server restart', async (t) => {

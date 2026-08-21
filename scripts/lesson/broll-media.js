@@ -36,7 +36,7 @@ function sceneDurationFrames(scene, fps) {
     throw new TypeError('b-roll scene time is invalid');
   }
   frameSnapSeconds(0, fps);
-  return Math.round((scene.end - scene.start) * fps);
+  return Math.max(1, Math.round((scene.end - scene.start) * fps));
 }
 
 function videoEndFrame({ trimStartSec, scene, fps }) {

@@ -30,6 +30,7 @@ const ERROR_MESSAGES = Object.freeze({
   BROLL_MEDIA_CLIP_OVERRUN: 'b-roll video clip exceeds media duration',
   BROLL_MEDIA_AUDIO_REQUIRED: 'b-roll audio mode requires an audio stream',
   BROLL_MEDIA_IDENTITY_CHANGED: 'b-roll media identity changed during approval',
+  BROLL_MEDIA_SCENE_INVALID: 'b-roll media is allowed only on a b-roll scene',
 });
 
 function fail(code) {
@@ -51,13 +52,31 @@ function snapshot(fileSystem, descriptor) {
     ino: stat.ino,
     size: stat.size,
     mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs,
+    mode: stat.mode,
+    nlink: stat.nlink,
     isFile: stat.isFile(),
   };
 }
 
 function sameSnapshot(left, right) {
   return left && right && left.dev === right.dev && left.ino === right.ino
-    && left.size === right.size && left.mtimeNs === right.mtimeNs;
+    && left.size === right.size && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs && left.mode === right.mode && left.nlink === right.nlink;
+}
+
+function preflightBriefBrollMedia(brief) {
+  for (const scene of Array.isArray(brief?.scenes) ? brief.scenes : []) {
+    const hasLegacy = scene && Object.hasOwn(scene, 'brollSrc');
+    const hasPersisted = scene && Object.hasOwn(scene, 'brollMedia');
+    if (scene?.scene !== 'broll' && (hasLegacy || hasPersisted)) {
+      fail('BROLL_MEDIA_SCENE_INVALID');
+    }
+    if (scene?.scene === 'broll' && hasPersisted
+      && !isCanonicalBrollReference(scene.brollMedia?.src)) {
+      fail('BROLL_MEDIA_PATH_INVALID');
+    }
+  }
 }
 
 function resolveContainedFile({
@@ -237,27 +256,38 @@ function openTrackedFile({ resolved, fileSystem, missingCode = 'BROLL_MEDIA_MISS
   return { descriptor, identity, resolved, expectedHash: null, closed: false };
 }
 
-function assertTrackedCurrent(fileSystem, tracked) {
+function assertTrackedIdentity(fileSystem, tracked) {
   if (tracked.closed) fail('BROLL_MEDIA_IDENTITY_CHANGED');
   try {
     tracked.resolved.assertSafe();
     const pathStat = fileSystem.lstatSync(tracked.resolved.filePath, { bigint: true });
     const pathIdentity = {
-      dev: pathStat.dev, ino: pathStat.ino, size: pathStat.size, mtimeNs: pathStat.mtimeNs,
+      dev: pathStat.dev,
+      ino: pathStat.ino,
+      size: pathStat.size,
+      mtimeNs: pathStat.mtimeNs,
+      ctimeNs: pathStat.ctimeNs,
+      mode: pathStat.mode,
+      nlink: pathStat.nlink,
     };
     if (pathStat.isSymbolicLink() || !pathStat.isFile()
       || !sameSnapshot(tracked.identity, snapshot(fileSystem, tracked.descriptor))
       || !sameSnapshot(tracked.identity, pathIdentity)) {
       fail('BROLL_MEDIA_IDENTITY_CHANGED');
     }
-    if (tracked.expectedHash
-      && hashOpened(fileSystem, tracked.descriptor, tracked.identity) !== tracked.expectedHash) {
-      fail('BROLL_MEDIA_IDENTITY_CHANGED');
-    }
   } catch (error) {
     if (error?.code === 'BROLL_MEDIA_IDENTITY_CHANGED') throw error;
     fail('BROLL_MEDIA_IDENTITY_CHANGED');
   }
+}
+
+function verifyTrackedContent(fileSystem, tracked) {
+  assertTrackedIdentity(fileSystem, tracked);
+  if (tracked.expectedHash
+    && hashOpened(fileSystem, tracked.descriptor, tracked.identity) !== tracked.expectedHash) {
+    fail('BROLL_MEDIA_IDENTITY_CHANGED');
+  }
+  assertTrackedIdentity(fileSystem, tracked);
 }
 
 function closeTracked(fileSystem, tracked) {
@@ -329,15 +359,13 @@ function probeMatchesMetadata(metadata, probe) {
     && Math.abs(metadata.durationSec - probe.durationSec) <= tolerance;
 }
 
-function verifyPersistedBrollMedia({
+function verifyOpenedBrollAsset({
   root,
   workspace,
-  scene,
-  fps,
+  media,
   runToolImpl = defaultRunTool,
   fileSystem = fs,
 } = {}) {
-  const media = scene?.brollMedia;
   const resolved = resolvePersistedBrollMedia({
     root, workspace, media, fileSystem,
   });
@@ -381,31 +409,7 @@ function verifyPersistedBrollMedia({
       proxy.expectedHash = proxyHash;
     }
 
-    if (media.kind === 'video') {
-      if (probe.hasAudio !== true && media.audioMode !== 'mute') {
-        fail('BROLL_MEDIA_AUDIO_REQUIRED');
-      }
-      let endFrame;
-      try {
-        endFrame = videoEndFrame({ trimStartSec: media.trimStartSec, scene, fps });
-      } catch (_) {
-        fail('BROLL_MEDIA_CLIP_OVERRUN');
-      }
-      const clipFrames = Math.round(probe.durationSec * fps);
-      if (!Number.isSafeInteger(endFrame) || endFrame <= 0
-        || !Number.isSafeInteger(clipFrames) || clipFrames <= 0 || endFrame > clipFrames) {
-        fail('BROLL_MEDIA_CLIP_OVERRUN');
-      }
-    }
-
-    return {
-      assertCurrent() {
-        for (const tracked of trackedFiles) assertTrackedCurrent(fileSystem, tracked);
-      },
-      close() {
-        closeAll(fileSystem, trackedFiles);
-      },
-    };
+    return { probe, trackedFiles };
   } catch (error) {
     try {
       closeAll(fileSystem, trackedFiles);
@@ -416,45 +420,115 @@ function verifyPersistedBrollMedia({
   }
 }
 
-function verifyBriefBrollMedia({ root, workspace, brief, runToolImpl, fileSystem = fs } = {}) {
-  const verified = [];
-  try {
-    for (const scene of brief.scenes || []) {
-      if (scene?.scene === 'broll' && scene.brollMedia) {
-        verified.push(verifyPersistedBrollMedia({
-          root, workspace, scene, fps: brief.output?.fps, runToolImpl, fileSystem,
-        }));
-      }
-    }
-  } catch (error) {
-    for (const item of verified) {
-      try {
-        item.close();
-      } catch (closeError) {
-        if (!error.closeError) error.closeError = closeError;
-      }
-    }
-    throw error;
+function verifySceneBrollMedia({ scene, fps, probe }) {
+  const media = scene.brollMedia;
+  if (media.kind !== 'video') return;
+  if (probe.hasAudio !== true && media.audioMode !== 'mute') {
+    fail('BROLL_MEDIA_AUDIO_REQUIRED');
   }
+  let endFrame;
+  try {
+    endFrame = videoEndFrame({ trimStartSec: media.trimStartSec, scene, fps });
+  } catch (_) {
+    fail('BROLL_MEDIA_CLIP_OVERRUN');
+  }
+  const clipFrames = Math.round(probe.durationSec * fps);
+  if (!Number.isSafeInteger(endFrame) || endFrame <= 0
+    || !Number.isSafeInteger(clipFrames) || clipFrames <= 0 || endFrame > clipFrames) {
+    fail('BROLL_MEDIA_CLIP_OVERRUN');
+  }
+}
+
+function mediaVerificationKey(media) {
+  return JSON.stringify([media.kind, media.src, media.sha256]);
+}
+
+function closeVerifiedAssets(fileSystem, verifiedAssets) {
+  let firstError = null;
+  for (const asset of verifiedAssets) {
+    try {
+      closeAll(fileSystem, asset.trackedFiles);
+    } catch (error) {
+      if (!firstError) firstError = error;
+    }
+  }
+  if (firstError) throw firstError;
+}
+
+function assertTransactionCurrent(fileSystem, verifiedAssets) {
+  const trackedFiles = verifiedAssets.flatMap((asset) => asset.trackedFiles);
+  // Phase A: finish every potentially long descriptor hash before any asset is considered current.
+  for (const tracked of trackedFiles) verifyTrackedContent(fileSystem, tracked);
+  // Phase B: one fast transaction-wide barrier immediately before the first approval commit.
+  for (const tracked of trackedFiles) assertTrackedIdentity(fileSystem, tracked);
+}
+
+function verificationHandle(fileSystem, verifiedAssets) {
   return {
     assertCurrent() {
-      for (const item of verified) item.assertCurrent();
+      assertTransactionCurrent(fileSystem, verifiedAssets);
     },
     close() {
-      let firstError = null;
-      for (const item of verified) {
-        try {
-          item.close();
-        } catch (error) {
-          if (!firstError) firstError = error;
-        }
-      }
-      if (firstError) throw firstError;
+      closeVerifiedAssets(fileSystem, verifiedAssets);
     },
   };
 }
 
+function verifyPersistedBrollMedia({
+  root,
+  workspace,
+  scene,
+  fps,
+  runToolImpl,
+  fileSystem = fs,
+} = {}) {
+  preflightBriefBrollMedia({ scenes: [scene] });
+  const asset = verifyOpenedBrollAsset({
+    root, workspace, media: scene.brollMedia, runToolImpl, fileSystem,
+  });
+  try {
+    verifySceneBrollMedia({ scene, fps, probe: asset.probe });
+    return verificationHandle(fileSystem, [asset]);
+  } catch (error) {
+    try {
+      closeVerifiedAssets(fileSystem, [asset]);
+    } catch (closeError) {
+      error.closeError = closeError;
+    }
+    throw error;
+  }
+}
+
+function verifyBriefBrollMedia({ root, workspace, brief, runToolImpl, fileSystem = fs } = {}) {
+  preflightBriefBrollMedia(brief);
+  const verifiedByKey = new Map();
+  try {
+    for (const scene of brief.scenes || []) {
+      if (scene?.scene === 'broll' && scene.brollMedia) {
+        const key = mediaVerificationKey(scene.brollMedia);
+        let asset = verifiedByKey.get(key);
+        if (!asset) {
+          asset = verifyOpenedBrollAsset({
+            root, workspace, media: scene.brollMedia, runToolImpl, fileSystem,
+          });
+          verifiedByKey.set(key, asset);
+        }
+        verifySceneBrollMedia({ scene, fps: brief.output?.fps, probe: asset.probe });
+      }
+    }
+  } catch (error) {
+    try {
+      closeVerifiedAssets(fileSystem, [...verifiedByKey.values()]);
+    } catch (closeError) {
+      error.closeError = closeError;
+    }
+    throw error;
+  }
+  return verificationHandle(fileSystem, [...verifiedByKey.values()]);
+}
+
 module.exports = {
+  preflightBriefBrollMedia,
   resolvePersistedBrollMedia,
   verifyBriefBrollMedia,
   verifyPersistedBrollMedia,

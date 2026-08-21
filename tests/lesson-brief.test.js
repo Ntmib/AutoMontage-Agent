@@ -276,9 +276,19 @@ test('persisted b-roll media requires a lowercase SHA-256 digest', () => {
 });
 
 test('frameSnapSeconds rounds to a frame and rejects invalid inputs', () => {
-  const { frameSnapSeconds } = require('../scripts/lesson/broll-media');
+  const {
+    frameSnapSeconds,
+    sceneDurationFrames,
+    videoEndFrame,
+  } = require('../scripts/lesson/broll-media');
 
   assert.equal(frameSnapSeconds(12.419, 25), 12.4);
+  assert.equal(sceneDurationFrames({ start: 0, end: 0.01 }, 25), 1);
+  assert.equal(videoEndFrame({
+    trimStartSec: 1,
+    scene: { start: 0, end: 0.01 },
+    fps: 25,
+  }), 26);
   for (const [seconds, fps] of [
     [-1, 25],
     [Infinity, 25],

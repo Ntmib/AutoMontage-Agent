@@ -7,7 +7,10 @@ const Ajv = require('ajv');
 
 const projectSchema = require('../../schema/project.schema.json');
 const { formatBriefMarkdown, isRenderableBrollSource, validateLessonBrief } = require('../lesson/brief');
-const { verifyBriefBrollMedia } = require('../lesson/broll-media-files');
+const {
+  preflightBriefBrollMedia,
+  verifyBriefBrollMedia,
+} = require('../lesson/broll-media-files');
 const projectManifestValidator = new Ajv({ allErrors: true }).compile(projectSchema);
 const TEMPORARY_ID = /^[A-Za-z0-9_-]+$/;
 
@@ -850,6 +853,7 @@ function approveBrief(workspace, draftJsonPath, {
   }
   const draft = JSON.parse(fileSystem.readFileSync(draftPath, 'utf8'));
   if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
+  preflightBriefBrollMedia(draft);
   if ((draft.scenes || []).some((scene) => scene?.brollMedia)) {
     const draftValidation = validateLessonBrief(draft);
     if (!draftValidation.ok) {
