@@ -3,6 +3,7 @@ import { FontStyle } from './fonts';
 import { ThemeContext, getTheme } from './theme';
 import { SCENES } from './scenes/scenes';
 import { safeFor } from './scenes/safezone';
+import { sourceVolumeForFrame } from './scenes/BrollMedia';
 
 const src = (s) => (s && s.startsWith('http') ? s : staticFile(s));
 
@@ -53,11 +54,19 @@ const SafeGuide = () => {
 export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc = null, facePos = null, faceZoom = 1, audioSrc = null, musicSrc = null, musicGainDb = -17, musicFadeInSec = 0, musicFadeOutSec = 0, musicTrimBeforeFrames = 0, musicPlaybackRate = 1, videoTitle = 'ВИДЕО', debug = false }) => {
   const t = getTheme(theme);
   const { fps, durationInFrames } = useVideoConfig();
+  const timedScenes = scenes.map((scene) => ({
+    scene,
+    ...getSceneTiming(scene, fps),
+    audioMode: scene.brollMedia?.kind === 'video' ? scene.brollMedia.audioMode : null,
+  }));
   return (
     <ThemeContext.Provider value={t}>
       <AbsoluteFill style={{ background: t.colors.bg, fontFamily: t.fonts.body }}>
         <FontStyle />
-        {audioSrc && <Audio src={src(audioSrc)} />}
+        {audioSrc && <Audio
+          src={src(audioSrc)}
+          volume={(frame) => sourceVolumeForFrame({ frame, scenes: timedScenes, fps })}
+        />}
         {musicSrc && <Audio
           src={src(musicSrc)}
           {...getMusicPlaybackProps({
@@ -72,13 +81,12 @@ export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc =
             fadeOutSec: musicFadeOutSec,
           })}
         />}
-        {scenes.map((sc, i) => {
-          const { from, durationInFrames, sourceStartFrame } = getSceneTiming(sc, fps);
+        {timedScenes.map(({ scene: sc, from, durationInFrames: sceneDuration, sourceStartFrame }, i) => {
           const Comp = SCENES[sc.scene] || SCENES.fullscreen;
           return (
-            <Sequence key={i} from={from} durationInFrames={durationInFrames} layout="none">
-              <FadeIn dur={durationInFrames}>
-                <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} sourceStartFrame={sourceStartFrame} videoTitle={sc.videoTitle || videoTitle} />
+            <Sequence key={i} from={from} durationInFrames={sceneDuration} premountFor={Math.round(fps)} layout="none">
+              <FadeIn dur={sceneDuration}>
+                <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} sourceStartFrame={sourceStartFrame} durationInFrames={sceneDuration} videoTitle={sc.videoTitle || videoTitle} />
               </FadeIn>
             </Sequence>
           );

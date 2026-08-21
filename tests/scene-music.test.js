@@ -6,7 +6,7 @@ const { buildSync } = require('esbuild');
 
 const ROOT = path.join(__dirname, '..');
 
-function loadDirector() {
+function loadDirector(remotionStub = null) {
   const filename = path.join(ROOT, 'src/SceneDirector.jsx');
   const output = buildSync({
     entryPoints: [filename],
@@ -18,11 +18,22 @@ function loadDirector() {
     external: ['react', 'react/jsx-runtime', 'remotion', '@remotion/layout-utils'],
     logLevel: 'silent',
   }).outputFiles[0].text;
-  const compiled = new Module(filename, module);
-  compiled.filename = filename;
-  compiled.paths = Module._nodeModulePaths(path.dirname(filename));
-  compiled._compile(output, filename);
-  return compiled.exports;
+  const originalLoad = Module._load;
+  if (remotionStub) {
+    Module._load = function load(request, parent, isMain) {
+      if (request === 'remotion') return remotionStub;
+      return originalLoad.call(this, request, parent, isMain);
+    };
+  }
+  try {
+    const compiled = new Module(filename, module);
+    compiled.filename = filename;
+    compiled.paths = Module._nodeModulePaths(path.dirname(filename));
+    compiled._compile(output, filename);
+    return compiled.exports;
+  } finally {
+    Module._load = originalLoad;
+  }
 }
 
 test('music gain uses decibels with deterministic edge fades', () => {
@@ -53,4 +64,43 @@ test('music can start from its rhythmic section and play slightly faster', () =>
     trimBefore: 550,
     playbackRate: 1.06,
   });
+});
+
+test('one global source Audio stays at frame zero and ducks only for replace b-roll', () => {
+  const fps = 25;
+  const remotion = {
+    AbsoluteFill: 'AbsoluteFill',
+    Sequence: 'Sequence',
+    Audio: 'Audio',
+    OffthreadVideo: 'OffthreadVideo',
+    Img: 'Img',
+    staticFile: (src) => `static://${src}`,
+    useCurrentFrame: () => 0,
+    useVideoConfig: () => ({ fps, durationInFrames: 300 }),
+    interpolate: () => 1,
+  };
+  const { SceneDirector } = loadDirector(remotion);
+  const director = SceneDirector({
+    audioSrc: 'source.wav',
+    scenes: [{
+      scene: 'broll',
+      start: 1,
+      end: 2,
+      brollMedia: {
+        kind: 'video', src: 'render-assets/clip.mp4', trimStartSec: 0,
+        fit: 'cover', audioMode: 'replace',
+      },
+    }],
+  });
+  const children = director.props.children.props.children.flat(Infinity).filter(Boolean);
+  const audio = children.filter((child) => child.type === 'Audio');
+
+  assert.equal(audio.length, 1);
+  assert.equal(audio[0].props.src, 'static://source.wav');
+  assert.equal(typeof audio[0].props.volume, 'function');
+  assert.equal(audio[0].props.volume(24), 1);
+  assert.equal(audio[0].props.volume(25), 1);
+  assert.equal(audio[0].props.volume(28), 0);
+  assert.equal(audio[0].props.volume(49), 1);
+  assert.equal(audio[0].props.volume(50), 1);
 });
