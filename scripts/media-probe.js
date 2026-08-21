@@ -45,6 +45,64 @@ function parseVideoProbe(raw, stage = 'video probe') {
   return { width, height, fps, duration };
 }
 
+function parseMediaProbeJson(raw) {
+  const stage = 'media probe';
+  let data;
+  try {
+    if (typeof raw !== 'string' || raw.trim() === '') fail(stage, 'JSON');
+    data = JSON.parse(raw);
+  } catch (error) {
+    if (error.message.startsWith(`${stage}:`)) throw error;
+    throw new Error(`${stage}: ffprobe вернул недопустимое JSON`);
+  }
+
+  const streams = Array.isArray(data.streams) ? data.streams : [];
+  const video = streams.find((stream) => stream && stream.codec_type === 'video'
+    && Number(stream.disposition?.attached_pic || 0) !== 1);
+  if (!video) fail(stage, 'primary video stream');
+
+  const width = Number(video.width);
+  const height = Number(video.height);
+  if (!Number.isSafeInteger(width) || width <= 0
+    || !Number.isSafeInteger(height) || height <= 0) {
+    fail(stage, 'geometry');
+  }
+
+  const formatNames = String(data.format?.format_name || '').split(',');
+  const imageFormats = new Set([
+    'avif', 'gif', 'image2', 'image2pipe', 'jpeg_pipe', 'mjpeg',
+    'png_pipe', 'webp_pipe',
+  ]);
+  const mediaKind = formatNames.some((name) => imageFormats.has(name)) ? 'image' : 'video';
+  let fps = 0;
+  let durationSec = 0;
+  let hasAudio = false;
+  if (mediaKind === 'video') {
+    fps = parseRate(video.avg_frame_rate || video.r_frame_rate, stage);
+    durationSec = Number(data.format?.duration ?? video.duration);
+    if (!Number.isFinite(durationSec) || durationSec <= 0) fail(stage, 'duration');
+    hasAudio = streams.some((stream) => stream && stream.codec_type === 'audio');
+  }
+
+  const sideDataRotation = Array.isArray(video.side_data_list)
+    ? video.side_data_list.find((entry) => Number.isFinite(Number(entry?.rotation)))?.rotation
+    : undefined;
+  const rawRotation = Number(sideDataRotation ?? video.tags?.rotate ?? 0);
+  if (!Number.isFinite(rawRotation)) fail(stage, 'rotation');
+  const normalizedRotation = ((Math.round(rawRotation) % 360) + 360) % 360;
+  if (![0, 90, 180, 270].includes(normalizedRotation)) fail(stage, 'rotation');
+
+  return {
+    mediaKind,
+    width,
+    height,
+    fps,
+    durationSec,
+    hasAudio,
+    rotation: normalizedRotation,
+  };
+}
+
 function probeVideo(file, options = {}) {
   const stage = options.stage || 'video probe';
   const stdout = captureTool('ffprobe', [
@@ -64,6 +122,7 @@ function probeVideo(file, options = {}) {
 }
 
 module.exports = {
+  parseMediaProbeJson,
   parseRate,
   parseVideoProbe,
   probeVideo,
