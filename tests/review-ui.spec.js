@@ -8,6 +8,7 @@ const { test, expect } = require('playwright/test');
 
 const ROOT = path.resolve(__dirname, '..');
 const { startReviewServer } = require('../scripts/review/server');
+const { runMediaProcess } = require('../scripts/review/media-process');
 const { makeReviewProject, registerHigherBrief } = require('./helpers/review-project');
 const { ffmpegEncoderAvailable, runTool } = require('./helpers/media-fixtures');
 
@@ -53,6 +54,7 @@ async function makeBrowserReviewSession({
   fileSystem,
   logger,
   higherRevision,
+  runMediaProcessImpl,
 } = {}) {
   const fixture = makeReviewProject(
     { after: (cleanup) => cleanups.push(cleanup) },
@@ -151,6 +153,7 @@ async function makeBrowserReviewSession({
     open: false,
     fileSystem,
     logger,
+    runMediaProcessImpl,
     runToolImpl: waveform
       ? (_command, args) => fs.copyFileSync(
         path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
@@ -276,6 +279,28 @@ async function importFileFromBrowser(page, filePath) {
   const response = await responsePromise;
   expect(response.status()).toBe(201);
   await expect(page.locator('[data-media-import-status]')).toContainText(/добавлено/i);
+}
+
+async function recordImportPhases(page) {
+  await page.evaluate(() => {
+    const status = document.querySelector('[data-media-import-status]');
+    const progress = document.querySelector('[data-media-progress]');
+    window.__importPhaseLog = [];
+    const capture = () => window.__importPhaseLog.push({
+      phase: status?.dataset.phase || null,
+      status: status?.textContent || '',
+      hidden: progress?.hidden ?? true,
+      hasValue: progress?.hasAttribute('value') ?? false,
+      value: progress?.getAttribute('value'),
+    });
+    new MutationObserver(capture).observe(status, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    new MutationObserver(capture).observe(progress, { attributes: true });
+    capture();
+  });
 }
 
 test.beforeAll(async () => {
@@ -1120,9 +1145,27 @@ test('real MP4 MOV and VP8 WebM media import use only playable authenticated pro
   await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
     await openReview(page, session.url);
     await waitForEditReady(page);
+    const selectedBefore = await page.locator('[data-broll-select]').inputValue();
+    await recordImportPhases(page);
     for (const filePath of [media.mp4, media.mov, media.webm]) {
       await importFileFromBrowser(page, filePath);
+      await expect(page.locator('[data-broll-select]')).toHaveValue(selectedBefore);
+      await expect(page.locator('[data-edit-status]')).toHaveText('Изменений нет');
     }
+
+    const phases = await page.evaluate(() => window.__importPhaseLog);
+    expect(phases).toContainEqual(expect.objectContaining({
+      phase: 'uploading', hidden: false, hasValue: true,
+    }));
+    expect(phases).toContainEqual(expect.objectContaining({
+      phase: 'processing', hidden: false, hasValue: false,
+    }));
+    expect(phases).toContainEqual(expect.objectContaining({
+      phase: 'success', hidden: true, hasValue: false,
+    }));
+    await expect(page.locator('[data-media-progress]')).toBeHidden();
+    await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
+    await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'success');
 
     const importedVideos = page.locator('video[data-asset-video]');
     await expect(importedVideos).toHaveCount(3);
@@ -1198,6 +1241,14 @@ test('video b-roll defaults and fit start audio commands round-trip through vali
     await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('contain');
     await page.getByRole('button', { name: /^повторить$/i }).click();
     await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('cover');
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('contain');
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(sceneControls.locator('[data-broll-start]')).toHaveText('00:00.000');
+    await page.getByRole('button', { name: /^повторить$/i }).click();
+    await expect(sceneControls.locator('[data-broll-start]')).toHaveText('00:00.400');
+    await page.getByRole('button', { name: /^повторить$/i }).click();
+    await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('cover');
     await page.getByRole('button', { name: /^повторить$/i }).click();
     await expect(sceneControls.locator('[data-broll-audio]')).toHaveValue('mix');
   });
@@ -1258,11 +1309,157 @@ test('media import owns the mutation lock, blocks a second import and abort rest
 
     await page.getByRole('button', { name: /отменить загрузку/i }).click();
     await expect(page.locator('[data-media-import-status]')).toContainText(/отменена/i);
+    await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'aborted');
+    await expect(page.locator('[data-media-progress]')).toBeHidden();
+    await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
     await expect(page.locator('[data-boundary="0"]')).toBeEnabled();
     await expect(page.locator('[data-broll-select]')).toBeEnabled();
     await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
     await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
     await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+  });
+});
+
+test('concurrent tab busy import preserves unsaved commands diff and redo', async ({ page, context }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await dragBoundary(page, 0, 2.2);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 2/i);
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
+
+    const other = await context.newPage();
+    try {
+      await openReview(other, session.url);
+      await waitForEditReady(other);
+      await other.locator('[data-media-input]').setInputFiles(media.slow);
+      await expect(other.locator('[data-media-import-status]')).toContainText(/проверяем/i);
+
+      const busyResponse = page.waitForResponse((response) => (
+        response.url().endsWith('/api/assets/import') && response.status() === 409
+      ));
+      await page.locator('[data-media-input]').setInputFiles(media.webm);
+      await busyResponse;
+
+      await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'error');
+      await expect(page.locator('[data-media-import-status]')).toContainText(/другой файл|повторите/i);
+      await expect(page.locator('[data-media-progress]')).toBeHidden();
+      await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
+      await expect(page.locator('[data-conflict]')).toBeHidden();
+      await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+      await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+      await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+      await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
+      await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeEnabled();
+    } finally {
+      const abort = other.getByRole('button', { name: /отменить загрузку/i });
+      if (await abort.isVisible()) await abort.click();
+      await other.close();
+    }
+  });
+});
+
+test('abort then immediate busy retry preserves unsaved commands diff and redo', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  const delayedAbortProcess = async (options) => {
+    try {
+      return await runMediaProcess(options);
+    } catch (error) {
+      if (options.signal?.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+      }
+      throw error;
+    }
+  };
+  await withBrowserReviewSession({
+    editable: true,
+    threeScenes: true,
+    broll: true,
+    runMediaProcessImpl: delayedAbortProcess,
+  }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await dragBoundary(page, 0, 2.2);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 2/i);
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
+
+    await page.locator('[data-media-input]').setInputFiles(media.slow);
+    await expect(page.locator('[data-media-import-status]')).toContainText(/проверяем/i);
+    await page.getByRole('button', { name: /отменить загрузку/i }).click();
+    await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'aborted');
+    await expect(page.locator('[data-media-progress]')).toBeHidden();
+    await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
+
+    const busyResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/assets/import') && response.status() === 409
+    ));
+    await page.locator('[data-media-input]').setInputFiles(media.webm);
+    await busyResponse;
+
+    await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'error');
+    await expect(page.locator('[data-media-import-status]')).toContainText(/другой файл|повторите/i);
+    await expect(page.locator('[data-media-progress]')).toBeHidden();
+    await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
+    await expect(page.locator('[data-conflict]')).toBeHidden();
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeEnabled();
+  });
+});
+
+test('busy import state refresh failure quarantines without erasing unsaved diff', async ({ page, context }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+
+    const other = await context.newPage();
+    try {
+      await openReview(other, session.url);
+      await waitForEditReady(other);
+      await other.locator('[data-media-input]').setInputFiles(media.slow);
+      await expect(other.locator('[data-media-import-status]')).toContainText(/проверяем/i);
+      await page.route('**/api/state', (route) => route.abort('failed'));
+
+      const busyResponse = page.waitForResponse((response) => (
+        response.url().endsWith('/api/assets/import') && response.status() === 409
+      ));
+      await page.locator('[data-media-input]').setInputFiles(media.webm);
+      await busyResponse;
+
+      await expect(page.locator('[data-conflict]')).toContainText(/актуальность|карантин/i);
+      await expect(page.getByRole('button', {
+        name: /отбросить устаревшие правки и продолжить/i,
+      })).toBeDisabled();
+      await expect(page.locator('[data-edit-status]')).toContainText(/правки: 1/i);
+      await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+      await expect(page.locator('[data-boundary="0"]')).toBeDisabled();
+      await expect(page.locator('[data-media-progress]')).toBeHidden();
+      await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
+    } finally {
+      await page.unroute('**/api/state');
+      const abort = other.getByRole('button', { name: /отменить загрузку/i });
+      if (await abort.isVisible()) await abort.click();
+      await other.close();
+    }
   });
 });
 
@@ -1274,10 +1471,19 @@ test('failed media import restores controls while 409 enters explicit stale conf
   await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
     await openReview(page, session.url);
     await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
     await page.locator('[data-media-input]').setInputFiles(invalid);
     await expect(page.locator('[data-media-import-status]')).toContainText(/не удалось/i);
+    await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'error');
+    await expect(page.locator('[data-media-progress]')).toBeHidden();
+    await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
     await expect(page.locator('[data-boundary="0"]')).toBeEnabled();
     await expect(page.locator('[data-broll-select]')).toBeEnabled();
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.locator('[data-edit-status]')).toContainText(/изменени[йя]: 1/i);
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
     await expect(page.getByRole('alert')).not.toContainText(/ffmpeg|Users|private/i);
 
     const diagram = path.join(session.fixture.workspace.dir, 'assets', 'broll', 'diagram.png');
@@ -1297,10 +1503,13 @@ test('failed media import restores controls while 409 enters explicit stale conf
     ));
     await page.locator('[data-media-input]').setInputFiles(media.slow);
     await expect(page.locator('[data-media-import-status]')).toContainText(/проверяем/i);
+    await saveExternalBoundary(session, 2.3);
     fs.renameSync(diagram, original);
     fs.writeFileSync(diagram, 'changed while import is processing');
     await conflictResponse;
     await expect(page.locator('[data-conflict]')).toContainText(/конфликт/i);
+    await expect(page.locator('[data-media-progress]')).toBeHidden();
+    await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
     const discard = page.getByRole('button', {
       name: /отбросить устаревшие правки и продолжить/i,
     });

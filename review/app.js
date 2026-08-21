@@ -192,7 +192,6 @@ function createEditControls() {
   importStatus.setAttribute('aria-live', 'polite');
   const importProgress = element('progress', 'media-import__progress');
   importProgress.max = 100;
-  importProgress.value = 0;
   importProgress.dataset.mediaProgress = '';
   importProgress.hidden = true;
   importProgress.setAttribute('aria-label', 'Загрузка медиа');
@@ -315,6 +314,8 @@ function createEditor(initialState, token) {
   let importPhase = 'idle';
   let importFilename = '';
   let importProgress = { loaded: 0, total: 0 };
+  let importStatusMessage = '';
+  let conflictStatusMessage = '';
   let importer = null;
   const controls = createEditControls();
   document.querySelector('.mode-badge').textContent = 'Редактирование';
@@ -509,11 +510,11 @@ function createEditor(initialState, token) {
       || !validation || validation.diff.length === 0;
     controls.conflict.hidden = !conflict;
     controls.conflict.textContent = conflict
-      ? conflictFreshStateReady
+      ? conflictStatusMessage || (conflictFreshStateReady
         ? `Конфликт ревизий: загружена последняя версия. Устаревшие правки (${conflictedCommandCount}) не будут применены. Отбросьте их явно, чтобы продолжить с новой версии.`
         : pending
           ? `Конфликт ревизий: устаревшие правки (${conflictedCommandCount}) не будут применены. Загружается последняя версия; продолжение пока заблокировано.`
-          : `Конфликт ревизий: устаревшие правки (${conflictedCommandCount}) не будут применены. Последнюю версию загрузить не удалось; продолжение заблокировано.`
+          : `Конфликт ревизий: устаревшие правки (${conflictedCommandCount}) не будут применены. Последнюю версию загрузить не удалось; продолжение заблокировано.`)
       : '';
     controls.discardConflict.hidden = !conflict;
     controls.discardConflict.disabled = !conflict || !conflictFreshStateReady || pending || saving || importing;
@@ -521,23 +522,30 @@ function createEditor(initialState, token) {
     controls.mediaInput.disabled = allControlsLocked() || importer?.busy() === true;
     controls.abortImport.hidden = !importing;
     controls.abortImport.disabled = !importing;
-    controls.importProgress.hidden = importPhase === 'idle';
+    controls.importStatus.dataset.phase = importPhase;
+    const progressActive = importPhase === 'uploading' || importPhase === 'processing';
+    controls.importProgress.hidden = !progressActive;
     const total = Math.max(importProgress.total, 0);
     const percent = total > 0 ? Math.min(100, Math.round((importProgress.loaded / total) * 100)) : 0;
-    controls.importProgress.value = percent;
     if (importPhase === 'uploading') {
+      controls.importProgress.value = percent;
       controls.importStatus.textContent = (
         `Загрузка ${importFilename} · ${formatBytes(importProgress.loaded)} / ${formatBytes(total)} · ${percent}%`
       );
     } else if (importPhase === 'processing') {
+      controls.importProgress.removeAttribute('value');
       controls.importStatus.textContent = `Проверяем и готовим предпросмотр… ${importFilename}`;
     } else if (importPhase === 'success') {
+      controls.importProgress.removeAttribute('value');
       controls.importStatus.textContent = `Добавлено: ${importFilename}`;
     } else if (importPhase === 'aborted') {
+      controls.importProgress.removeAttribute('value');
       controls.importStatus.textContent = `Загрузка отменена: ${importFilename}`;
     } else if (importPhase === 'error') {
-      controls.importStatus.textContent = `Не удалось добавить: ${importFilename}`;
+      controls.importProgress.removeAttribute('value');
+      controls.importStatus.textContent = importStatusMessage || `Не удалось добавить: ${importFilename}`;
     } else {
+      controls.importProgress.removeAttribute('value');
       controls.importStatus.textContent = 'Можно добавить изображение или видео';
     }
     controls.diff.replaceChildren();
@@ -585,6 +593,7 @@ function createEditor(initialState, token) {
     invalid = false;
     conflict = true;
     conflictFreshStateReady = false;
+    conflictStatusMessage = '';
     lastSnap = null;
     focusBoundary = null;
     focusBroll = null;
@@ -634,12 +643,62 @@ function createEditor(initialState, token) {
       invalid = false;
       conflict = true;
       conflictFreshStateReady = true;
+      conflictStatusMessage = '';
       lastSnap = null;
       focusBoundary = null;
       focusBroll = null;
       return;
     }
     state = prepareBrowserState(latest, token);
+  }
+
+  async function resolveImport409(expectedState, generation) {
+    let latest;
+    try {
+      latest = await loadState(token);
+    } catch (_) {
+      if (generation !== validationGeneration) return;
+      conflictedCommandCount = commands.length + redoStack.length;
+      pending = false;
+      saving = false;
+      invalid = true;
+      conflict = true;
+      conflictFreshStateReady = false;
+      conflictStatusMessage = `Не удалось проверить актуальность проекта. Правки (${conflictedCommandCount}) сохранены в карантине; продолжение заблокировано до безопасного обновления.`;
+      lastSnap = null;
+      focusBoundary = null;
+      focusBroll = null;
+      showEditError('Не удалось проверить актуальность проекта. Обновите страницу перед продолжением.');
+      renderAll();
+      return;
+    }
+    if (generation !== validationGeneration) return;
+    if (sameSessionIdentity(expectedState, latest)) {
+      state = prepareBrowserState(latest, token);
+      conflict = false;
+      conflictFreshStateReady = false;
+      conflictStatusMessage = '';
+      importStatusMessage = 'Другой файл ещё обрабатывается. Повторите загрузку чуть позже.';
+      showEditError('Другой файл ещё обрабатывается. Текущие правки сохранены; повторите загрузку чуть позже.');
+      renderAll();
+      return;
+    }
+    conflictedCommandCount = commands.length + redoStack.length;
+    commands.length = 0;
+    redoStack.length = 0;
+    state = prepareBrowserState(latest, token);
+    validation = { destinationRevision: null, diff: [], timing: state.timing };
+    pending = false;
+    saving = false;
+    invalid = false;
+    conflict = true;
+    conflictFreshStateReady = true;
+    conflictStatusMessage = '';
+    lastSnap = null;
+    focusBoundary = null;
+    focusBroll = null;
+    clearEditError();
+    renderAll();
   }
 
   function importFailureMessage(status) {
@@ -652,10 +711,12 @@ function createEditor(initialState, token) {
 
   async function startImport(file) {
     if (!(file instanceof File) || pending || mutationLocked() || importer.busy()) return;
+    const expectedState = { session: { ...state.session } };
     importing = true;
     importPhase = 'uploading';
     importFilename = file.name;
     importProgress = { loaded: 0, total: file.size };
+    importStatusMessage = '';
     focusBroll = null;
     clearEditError();
     renderAll();
@@ -665,7 +726,7 @@ function createEditor(initialState, token) {
     } catch (error) {
       if (error?.status === 409) {
         importPhase = 'error';
-        await reloadAfterConflict(++validationGeneration);
+        await resolveImport409(expectedState, ++validationGeneration);
       } else if (error?.code === 'MEDIA_IMPORT_ABORTED') {
         importPhase = 'aborted';
       } else {
@@ -686,6 +747,7 @@ function createEditor(initialState, token) {
     invalid = false;
     conflict = false;
     conflictFreshStateReady = false;
+    conflictStatusMessage = '';
     lastSnap = snap;
     clearEditError();
     renderEditChrome();
@@ -750,6 +812,7 @@ function createEditor(initialState, token) {
     validationGeneration += 1;
     conflict = false;
     conflictFreshStateReady = false;
+    conflictStatusMessage = '';
     conflictedCommandCount = 0;
     invalid = false;
     lastSnap = null;
