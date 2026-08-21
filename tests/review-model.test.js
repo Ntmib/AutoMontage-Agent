@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -143,6 +144,50 @@ test('review assets expose preview and renderable b-roll capabilities without ho
   assert.deepEqual(byLabel.get('voice.mp3').capabilities, { preview: true, brollImage: false, brollVideo: false });
   assert.deepEqual(byLabel.get('clip.mp4').capabilities, { preview: true, brollImage: false, brollVideo: false });
   assert.doesNotMatch(JSON.stringify(state.assets), /assets\/broll|\/Users\/|C:\\Users\\/);
+});
+
+test('review state reconstructs the exact opaque imported-video descriptor from disk', (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const id = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1';
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', id);
+  const previewDirectory = path.join(projectDir, 'previews', 'broll');
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(previewDirectory, { recursive: true });
+  const canonical = Buffer.from('canonical video');
+  const preview = Buffer.from('preview video');
+  fs.writeFileSync(path.join(mediaDirectory, 'media.mp4'), canonical);
+  fs.writeFileSync(path.join(previewDirectory, `${id}.webm`), preview);
+  fs.writeFileSync(path.join(mediaDirectory, 'asset.json'), `${JSON.stringify({
+    version: 1,
+    id,
+    label: 'Product demo.mov',
+    mediaKind: 'video',
+    canonicalSha256: crypto.createHash('sha256').update(canonical).digest('hex'),
+    previewSha256: crypto.createHash('sha256').update(preview).digest('hex'),
+    width: 1920,
+    height: 1080,
+    fps: 25,
+    durationSec: 18.4,
+    hasAudio: true,
+  })}\n`);
+
+  const state = loadReviewState({ root: ROOT, projectDir });
+  const imported = state.assets.find((asset) => asset.label === 'Product demo.mov');
+  assert.deepEqual(imported, {
+    id: 'asset-1',
+    kind: 'project',
+    mediaKind: 'video',
+    label: 'Product demo.mov',
+    url: '/media/assets/asset-1',
+    previewUrl: '/media/assets/asset-1/preview',
+    width: 1920,
+    height: 1080,
+    fps: 25,
+    durationSec: 18.4,
+    hasAudio: true,
+    capabilities: { preview: true, brollImage: false, brollVideo: true },
+  });
+  assert.doesNotMatch(JSON.stringify(imported), /assets\/broll|previews\/broll|[a-f0-9]{64}|\/Users\//);
 });
 
 test('review asset resolution fails closed for project and public symlinks', (t) => {

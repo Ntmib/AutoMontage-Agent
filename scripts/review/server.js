@@ -18,6 +18,9 @@ const {
 } = require('./assets');
 const { applyReviewCommands, isOpaqueAssetId } = require('./commands');
 const { diffLessonBrief } = require('./diff');
+const { cleanupOrphanImportedStages } = require('./imported-assets');
+const { createImportController, importReviewMedia } = require('./media-import');
+const { runMediaProcess } = require('./media-process');
 const {
   buildReviewState,
   buildReviewStateFromEdit,
@@ -291,6 +294,22 @@ function descriptorForAsset(id, asset) {
   };
 }
 
+function descriptorForPublished(imported, assetFiles) {
+  for (const [id, asset] of assetFiles) {
+    if (assetIdentityKey(asset) === assetIdentityKey(imported)
+      && sameAssetIdentity(asset, imported)) {
+      return descriptorForAsset(id, asset);
+    }
+  }
+  throw new Error('published review media is not registered');
+}
+
+function cleanupIdleImportedStages({ projectDir, runtime, fileSystem }) {
+  if (!runtime.importController.busy) {
+    cleanupOrphanImportedStages({ projectDir, fileSystem });
+  }
+}
+
 function refreshAssetFiles({ root, projectDir, runtime }) {
   const currentCandidates = scanAssetFiles({ root, projectDir });
   const previousByIdentity = new Map([...runtime.assetFiles].map(([id, asset]) => (
@@ -340,6 +359,7 @@ function refreshRuntimeState({
     || !sameSnapshotIdentity(sourceFile, currentSource)) {
     rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
   }
+  cleanupIdleImportedStages({ projectDir, runtime, fileSystem: runtime.fileSystem });
   const refreshedAssets = refreshAssetFiles({ root, projectDir, runtime });
   const state = buildReviewState({
     root,
@@ -716,6 +736,9 @@ async function routeRequest({
   fileSystem,
   sourceFile,
   waveformFile,
+  importMediaImpl,
+  runMediaProcessImpl,
+  statfsImpl,
 }) {
   let url;
   try {
@@ -741,6 +764,53 @@ async function routeRequest({
     request.resume();
     sendError(response, 403);
     return;
+  }
+  if (pathname === '/api/assets/import') {
+    if (request.method !== 'POST' || !editable) {
+      sendError(response, 405, request.method === 'HEAD');
+      return;
+    }
+    const importAbortController = new AbortController();
+    const socket = request.socket;
+    let importPending = true;
+    const abortPendingImport = () => {
+      if (importPending && !response.writableEnded) importAbortController.abort();
+    };
+    request.once('aborted', abortPendingImport);
+    response.once('close', abortPendingImport);
+    socket?.once('close', abortPendingImport);
+    try {
+      const imported = await importMediaImpl({
+        request,
+        signal: importAbortController.signal,
+        projectDir,
+        outputFps: runtime.state.output.fps,
+        headers: request.headers,
+        controller: runtime.importController,
+        fileSystem,
+        runMediaProcessImpl,
+        statfsImpl,
+      });
+      cleanupIdleImportedStages({ projectDir, runtime, fileSystem });
+      const refreshed = refreshAssetFiles({ root, projectDir, runtime });
+      runtime.assetFiles = refreshed.assetFiles;
+      runtime.state = { ...runtime.state, assets: refreshed.descriptors };
+      sendJson(response, 201, {
+        ok: true,
+        asset: descriptorForPublished(imported, runtime.assetFiles),
+      });
+    } finally {
+      importPending = false;
+      request.off('aborted', abortPendingImport);
+      response.off('close', abortPendingImport);
+      socket?.off('close', abortPendingImport);
+    }
+    return;
+  }
+  const editMutation = request.method === 'POST'
+    && (pathname === '/api/validate' || pathname === '/api/save');
+  if (editMutation && editable && runtime.importController.busy) {
+    rejectRequest(409, 'MEDIA_IMPORT_BUSY');
   }
   const bodyBytes = await consumeLimitedBody(request, response);
   if (bodyBytes === null) return;
@@ -945,6 +1015,10 @@ async function startReviewServer({
   handoffId = () => randomBytes(16).toString('hex'),
   handoffTtlMs = HANDOFF_TTL_MS,
   handoffFileSystem = fs,
+  importMediaImpl = importReviewMedia,
+  runMediaProcessImpl = runMediaProcess,
+  statfsImpl = fs.statfsSync,
+  importController = createImportController(),
 } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedProjectDir = path.resolve(projectDir || '');
@@ -962,6 +1036,7 @@ async function startReviewServer({
     runToolImpl,
   });
   const waveformFile = waveformPreview.available ? snapshotFile(waveformPreview.path) : null;
+  cleanupOrphanImportedStages({ projectDir: resolvedProjectDir, fileSystem });
   const state = loadReviewState({
     root: resolvedRoot,
     projectDir: resolvedProjectDir,
@@ -973,7 +1048,13 @@ async function startReviewServer({
   const nextAssetId = [...assetFiles.keys()].reduce((highest, id) => (
     Math.max(highest, Number(id.slice('asset-'.length)) || 0)
   ), 0) + 1;
-  const runtime = { state, assetFiles, nextAssetId };
+  const runtime = {
+    state,
+    assetFiles,
+    nextAssetId,
+    importController,
+    fileSystem,
+  };
   const token = randomBytes(32).toString('base64url');
   let origin = 'http://127.0.0.1';
   const server = http.createServer((request, response) => {
@@ -989,8 +1070,16 @@ async function startReviewServer({
       fileSystem,
       sourceFile,
       waveformFile,
+      importMediaImpl,
+      runMediaProcessImpl,
+      statfsImpl,
     }).catch((error) => {
-      const status = error instanceof ReviewRequestError ? error.status : 500;
+      if (response.destroyed || response.writableEnded) return;
+      const importStatus = error && /^MEDIA_IMPORT_/.test(error.code)
+        && [400, 409, 413, 415, 422, 507].includes(error.status)
+        ? error.status
+        : null;
+      const status = error instanceof ReviewRequestError ? error.status : (importStatus || 500);
       if (status === 500) {
         logInternalError(logger, error, [token, resolvedRoot, resolvedProjectDir]);
       }

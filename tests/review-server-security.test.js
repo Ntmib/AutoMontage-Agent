@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
@@ -8,7 +9,12 @@ const { spawn } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const { startReviewServer } = require('../scripts/review/server');
+const { inspectImportedAssetBundle } = require('../scripts/review/imported-assets');
+const { mediaImportError } = require('../scripts/review/media-import');
 const { makeReviewProject, registerHigherBrief } = require('./helpers/review-project');
+
+const IMPORT_UUID = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1';
+const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
 function request(session, pathname, {
   token,
@@ -18,11 +24,12 @@ function request(session, pathname, {
   body,
   chunked = false,
   contentType = 'application/json',
+  headers: extraHeaders = {},
 } = {}) {
   const suffix = queryToken && token
     ? `${pathname.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
     : '';
-  const headers = {};
+  const headers = { ...extraHeaders };
   if (token && !queryToken) headers.authorization = `Bearer ${token}`;
   if (origin) headers.origin = origin;
   if (body !== undefined) {
@@ -54,6 +61,95 @@ function request(session, pathname, {
     } else if (body !== undefined) outgoing.end(body);
     else outgoing.end();
   });
+}
+
+function earlyResponse(session, pathname, {
+  token,
+  method = 'POST',
+  origin,
+  headers = {},
+} = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let outgoing;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      outgoing.destroy();
+      resolve(value);
+    };
+    outgoing = http.request({
+      host: '127.0.0.1',
+      port: session.server.address().port,
+      path: pathname,
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(origin ? { origin } : {}),
+        'content-length': '1048576',
+        'content-type': 'video/mp4',
+        'x-automontage-filename': 'clip.mp4',
+        ...headers,
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => finish({
+        status: response.statusCode,
+        body: Buffer.concat(chunks).toString('utf8'),
+      }));
+    });
+    outgoing.on('error', (error) => {
+      if (!settled) reject(error);
+    });
+    const timer = setTimeout(() => {
+      outgoing.destroy();
+      finish({ status: 0, body: 'timed out waiting for an early response' });
+    }, 500);
+    outgoing.flushHeaders();
+  });
+}
+
+function writeImportedVideoBundle(projectDir, {
+  id = IMPORT_UUID,
+  label = 'Product demo.mov',
+  canonicalBytes = Buffer.from('canonical video'),
+  previewBytes = Buffer.from('preview video'),
+} = {}) {
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', id);
+  const previewPath = path.join(projectDir, 'previews', 'broll', `${id}.webm`);
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+  const canonicalPath = path.join(mediaDirectory, 'media.mp4');
+  fs.writeFileSync(canonicalPath, canonicalBytes);
+  fs.writeFileSync(previewPath, previewBytes);
+  fs.writeFileSync(path.join(mediaDirectory, 'asset.json'), `${JSON.stringify({
+    version: 1,
+    id,
+    label,
+    mediaKind: 'video',
+    canonicalSha256: sha256(canonicalBytes),
+    previewSha256: sha256(previewBytes),
+    width: 1920,
+    height: 1080,
+    fps: 25,
+    durationSec: 18.4,
+    hasAudio: true,
+  })}\n`);
+  return {
+    canonicalPath,
+    mediaDirectory,
+    previewPath,
+    record: inspectImportedAssetBundle({ projectDir, assetDirectory: mediaDirectory }),
+  };
+}
+
+function importHeaders(filename = 'clip.mp4', contentType = 'video/mp4') {
+  return {
+    'content-type': contentType,
+    'x-automontage-filename': encodeURIComponent(filename),
+  };
 }
 
 async function closeServer(server) {
@@ -1370,4 +1466,402 @@ test('review validate and save reject the same atomically replaced asset as medi
   assert.equal((await postJson(session, '/api/validate', payload)).status, 422);
   assert.equal((await postJson(session, '/api/save', payload)).status, 422);
   assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
+});
+
+test('raw media import rejects auth, Origin, method and read-only access before upload bytes', async (t) => {
+  const editableFixture = makeReviewProject(t);
+  const editable = await startTestReviewServer({
+    root: ROOT,
+    projectDir: editableFixture.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(editable.server));
+
+  assert.equal((await earlyResponse(editable, '/api/assets/import', {
+    origin: editable.origin,
+  })).status, 401);
+  assert.equal((await earlyResponse(editable, '/api/assets/import', {
+    token: editable.token,
+    origin: 'https://evil.test',
+  })).status, 403);
+  assert.equal((await earlyResponse(editable, '/api/assets/import', {
+    token: editable.token,
+    method: 'GET',
+  })).status, 405);
+
+  const readOnlyFixture = makeReviewProject(t);
+  const readOnly = await startTestReviewServer({
+    root: ROOT,
+    projectDir: readOnlyFixture.projectDir,
+    open: false,
+  });
+  t.after(() => closeServer(readOnly.server));
+  assert.equal((await earlyResponse(readOnly, '/api/assets/import', {
+    token: readOnly.token,
+    origin: readOnly.origin,
+  })).status, 405);
+});
+
+test('raw media import exposes the fixed public status map without internal diagnostics', async (t) => {
+  const fixture = makeReviewProject(t);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+    statfsImpl: () => ({ bavail: 0, bsize: 4096 }),
+  });
+  t.after(() => closeServer(session.server));
+
+  const malformed = await request(session, '/api/assets/import', {
+    token: session.token,
+    method: 'POST',
+    origin: session.origin,
+    body: Buffer.from('x'),
+    contentType: 'video/mp4',
+  });
+  const unsupported = await request(session, '/api/assets/import', {
+    token: session.token,
+    method: 'POST',
+    origin: session.origin,
+    body: Buffer.from('x'),
+    contentType: 'text/plain',
+    headers: { 'x-automontage-filename': 'clip.txt' },
+  });
+  const diskFull = await request(session, '/api/assets/import', {
+    token: session.token,
+    method: 'POST',
+    origin: session.origin,
+    body: Buffer.from('x'),
+    contentType: 'video/mp4',
+    headers: { 'x-automontage-filename': 'clip.mp4' },
+  });
+  const tooLarge = await earlyResponse(session, '/api/assets/import', {
+    token: session.token,
+    origin: session.origin,
+    headers: { 'content-length': String((1024 * 1024 * 1024) + 1) },
+  });
+
+  assert.deepEqual(
+    [malformed.status, unsupported.status, diskFull.status, tooLarge.status],
+    [400, 415, 507, 413],
+  );
+  for (const response of [malformed, unsupported, diskFull, tooLarge]) {
+    assert.equal(response.body.toString?.('utf8') || response.body, 'Request rejected');
+    assert.doesNotMatch(response.body.toString?.('utf8') || response.body, /clip|ffmpeg|\/Users\//i);
+  }
+
+  for (const [status, error] of [
+    [422, mediaImportError(422, 'MEDIA_IMPORT_DECODE_FAILED', '/private/input.mov ffmpeg stderr')],
+    [500, new Error('/private/project unexpected stack detail')],
+  ]) {
+    const branchFixture = makeReviewProject(t);
+    const branch = await startTestReviewServer({
+      root: ROOT,
+      projectDir: branchFixture.projectDir,
+      editable: true,
+      open: false,
+      logger: { error() {} },
+      importMediaImpl: async () => { throw error; },
+    });
+    t.after(() => closeServer(branch.server));
+    const response = await request(branch, '/api/assets/import', {
+      token: branch.token,
+      method: 'POST',
+      origin: branch.origin,
+      body: Buffer.from('x'),
+      contentType: 'video/mp4',
+      headers: { 'x-automontage-filename': 'clip.mp4' },
+    });
+    assert.equal(response.status, status);
+    assert.equal(response.body.toString('utf8'), 'Request rejected');
+  }
+});
+
+test('raw media import returns only an opaque registered descriptor and survives restart', async (t) => {
+  const fixture = makeReviewProject(t);
+  const importMediaImpl = async ({ request: incoming, projectDir }) => {
+    for await (const _chunk of incoming) { /* consume the real HTTP body */ }
+    return writeImportedVideoBundle(projectDir).record;
+  };
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+    importMediaImpl,
+  });
+  const response = await request(session, '/api/assets/import', {
+    token: session.token,
+    method: 'POST',
+    origin: session.origin,
+    body: Buffer.from('raw upload'),
+    contentType: 'video/mp4',
+    headers: { 'x-automontage-filename': 'Product%20demo.mov' },
+  });
+  assert.equal(response.status, 201);
+  const payload = JSON.parse(response.body.toString('utf8'));
+  assert.match(payload.asset.id, /^asset-[1-9]\d*$/);
+  assert.deepEqual(payload, {
+    ok: true,
+    asset: {
+      id: payload.asset.id,
+      kind: 'project',
+      mediaKind: 'video',
+      label: 'Product demo.mov',
+      url: `/media/assets/${payload.asset.id}`,
+      previewUrl: `/media/assets/${payload.asset.id}/preview`,
+      width: 1920,
+      height: 1080,
+      fps: 25,
+      durationSec: 18.4,
+      hasAudio: true,
+      capabilities: { preview: true, brollImage: false, brollVideo: true },
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(payload), /assets\/broll|previews\/broll|[a-f0-9]{64}|\/Users\//);
+  await closeServer(session.server);
+
+  const restarted = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+  });
+  t.after(() => closeServer(restarted.server));
+  const state = JSON.parse((await request(restarted, '/api/state', {
+    token: restarted.token,
+  })).body.toString('utf8'));
+  const reconstructed = state.assets.find((asset) => asset.label === 'Product demo.mov');
+  assert.match(reconstructed.id, /^asset-[1-9]\d*$/);
+  assert.equal(reconstructed.url, `/media/assets/${reconstructed.id}`);
+  assert.equal(reconstructed.previewUrl, `/media/assets/${reconstructed.id}/preview`);
+  assert.deepEqual(
+    { ...reconstructed, id: null, url: null, previewUrl: null },
+    { ...payload.asset, id: null, url: null, previewUrl: null },
+  );
+});
+
+test('active normalization blocks mutations without blocking reads or cleaning its preview window', async (t) => {
+  const fixture = makeReviewProject(t);
+  let releaseImport;
+  const release = new Promise((resolve) => { releaseImport = resolve; });
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const importMediaImpl = async ({ request: incoming, controller, projectDir }) => {
+    if (!controller.acquire()) throw mediaImportError(409, 'MEDIA_IMPORT_BUSY');
+    try {
+      for await (const _chunk of incoming) { /* real body */ }
+      markStarted();
+      await release;
+      return writeImportedVideoBundle(projectDir).record;
+    } finally {
+      controller.release();
+    }
+  };
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+    importMediaImpl,
+  });
+  t.after(() => closeServer(session.server));
+  const first = request(session, '/api/assets/import', {
+    token: session.token,
+    method: 'POST',
+    origin: session.origin,
+    body: Buffer.from('first'),
+    contentType: 'video/mp4',
+    headers: { 'x-automontage-filename': 'first.mp4' },
+  });
+  await started;
+
+  const orphanPreview = path.join(fixture.projectDir, 'previews', 'broll', `${IMPORT_UUID}.webm`);
+  fs.mkdirSync(path.dirname(orphanPreview), { recursive: true });
+  fs.writeFileSync(orphanPreview, 'preview-first publication');
+  const state = await request(session, '/api/state', { token: session.token });
+  const source = await request(session, '/media/source', { token: session.token });
+  const busyImport = await earlyResponse(session, '/api/assets/import', {
+    token: session.token,
+    origin: session.origin,
+  });
+  const busyValidate = await earlyResponse(session, '/api/validate', {
+    token: session.token,
+    origin: session.origin,
+    headers: { 'content-type': 'application/json' },
+  });
+  const busySave = await earlyResponse(session, '/api/save', {
+    token: session.token,
+    origin: session.origin,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  assert.equal(state.status, 200);
+  assert.equal(source.status, 200);
+  assert.deepEqual([busyImport.status, busyValidate.status, busySave.status], [409, 409, 409]);
+  assert.equal(fs.readFileSync(orphanPreview, 'utf8'), 'preview-first publication');
+  releaseImport();
+  assert.equal((await first).status, 201);
+});
+
+test('a completed request body keeps normalizing after incoming close', async (t) => {
+  const fixture = makeReviewProject(t);
+  let observedSignal;
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+    importMediaImpl: async ({ request: incoming, signal, projectDir }) => {
+      for await (const _chunk of incoming) { /* wait for 100% upload */ }
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      observedSignal = signal.aborted;
+      return writeImportedVideoBundle(projectDir).record;
+    },
+  });
+  t.after(() => closeServer(session.server));
+
+  const response = await request(session, '/api/assets/import', {
+    token: session.token,
+    method: 'POST',
+    origin: session.origin,
+    body: Buffer.from('complete upload'),
+    contentType: 'video/mp4',
+    headers: { 'x-automontage-filename': 'complete.mp4' },
+  });
+  assert.equal(response.status, 201);
+  assert.equal(observedSignal, false);
+});
+
+test('post-100-percent disconnect aborts the real child and publishes no asset', async (t) => {
+  const fixture = makeReviewProject(t);
+  const marker = path.join(fixture.root, 'child-sigterm.txt');
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  let markDone;
+  const done = new Promise((resolve) => { markDone = resolve; });
+  let processCode = null;
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir: fixture.projectDir,
+    editable: true,
+    open: false,
+    importMediaImpl: async ({ request: incoming, signal, controller, runMediaProcessImpl }) => {
+      if (!controller.acquire()) throw mediaImportError(409, 'MEDIA_IMPORT_BUSY');
+      try {
+        for await (const _chunk of incoming) { /* 100% uploaded */ }
+        markStarted();
+        const script = `const fs=require('node:fs');process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(marker)},'SIGTERM');process.exit(0)});setInterval(()=>{},1000)`;
+        await runMediaProcessImpl({ command: process.execPath, args: ['-e', script], signal });
+      } catch (error) {
+        processCode = error.code;
+        throw error;
+      } finally {
+        controller.release();
+        markDone();
+      }
+    },
+  });
+  t.after(() => closeServer(session.server));
+
+  const outgoing = http.request({
+    host: '127.0.0.1',
+    port: session.server.address().port,
+    path: '/api/assets/import',
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${session.token}`,
+      origin: session.origin,
+      'content-length': '8',
+      'content-type': 'video/mp4',
+      'x-automontage-filename': 'abort.mp4',
+    },
+  });
+  outgoing.on('error', () => {});
+  outgoing.end('complete');
+  await started;
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  outgoing.destroy();
+  await done;
+
+  assert.equal(processCode, 'MEDIA_PROCESS_ABORTED');
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'SIGTERM');
+  const publicationDirectory = path.join(fixture.projectDir, 'assets', 'broll', 'video');
+  assert.equal(
+    !fs.existsSync(publicationDirectory) || fs.readdirSync(publicationDirectory).length === 0,
+    true,
+  );
+});
+
+test('imported proxy is authenticated, ranged, pinned and never follows replacements', async (t) => {
+  const fixture = makeReviewProject(t);
+  const bundle = writeImportedVideoBundle(fixture.projectDir);
+  const outside = path.join(fixture.root, 'outside.webm');
+  fs.writeFileSync(outside, 'outside secret');
+  const session = await startTestReviewServer({ root: ROOT, projectDir: fixture.projectDir, open: false });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const asset = state.assets[0];
+
+  assert.equal((await request(session, asset.previewUrl)).status, 401);
+  const head = await request(session, asset.previewUrl, { token: session.token, method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal(head.headers['x-content-type-options'], 'nosniff');
+  const range = await request(session, asset.previewUrl, {
+    token: session.token,
+    headers: { range: 'bytes=0-6' },
+  });
+  assert.equal(range.status, 206);
+  assert.equal(range.body.toString('utf8'), 'preview');
+
+  fs.unlinkSync(bundle.previewPath);
+  fs.symlinkSync(outside, bundle.previewPath);
+  const replacedProxy = await request(session, asset.previewUrl, { token: session.token });
+  assert.equal(replacedProxy.status, 404);
+  assert.doesNotMatch(replacedProxy.body.toString('utf8'), /outside secret/);
+
+  fs.unlinkSync(bundle.canonicalPath);
+  fs.symlinkSync(outside, bundle.canonicalPath);
+  const replacedCanonical = await request(session, asset.url, { token: session.token });
+  assert.equal(replacedCanonical.status, 404);
+  assert.doesNotMatch(replacedCanonical.body.toString('utf8'), /outside secret/);
+});
+
+test('startup and idle refresh clean only stale owned import remnants', async (t) => {
+  const fixture = makeReviewProject(t);
+  const stage = path.join(fixture.projectDir, 'assets', 'broll', 'video', `.${IMPORT_UUID}.stage`);
+  const orphanPreview = path.join(fixture.projectDir, 'previews', 'broll', `${IMPORT_UUID}.webm`);
+  const unrelated = path.join(fixture.projectDir, 'previews', 'broll', 'notes.txt');
+  const outside = path.join(fixture.root, 'outside-safe.txt');
+  const symlink = path.join(fixture.projectDir, 'assets', 'broll', 'video', '.7c0f5b6a-a921-4a51-8787-467a3a5c7c20.stage');
+  fs.mkdirSync(stage, { recursive: true });
+  fs.mkdirSync(path.dirname(orphanPreview), { recursive: true });
+  fs.writeFileSync(orphanPreview, 'orphan');
+  fs.writeFileSync(unrelated, 'unrelated');
+  fs.writeFileSync(outside, 'outside');
+  fs.symlinkSync(outside, symlink);
+  const valid = writeImportedVideoBundle(fixture.projectDir, {
+    id: '6cfbc858-7e33-4d29-b948-7ce7992761fc',
+  });
+
+  const session = await startTestReviewServer({ root: ROOT, projectDir: fixture.projectDir, open: false });
+  t.after(() => closeServer(session.server));
+  assert.equal(fs.existsSync(stage), false);
+  assert.equal(fs.existsSync(orphanPreview), false);
+  assert.equal(fs.readFileSync(unrelated, 'utf8'), 'unrelated');
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'outside');
+  assert.equal(fs.lstatSync(symlink).isSymbolicLink(), true);
+  assert.ok(inspectImportedAssetBundle({
+    projectDir: fixture.projectDir,
+    assetDirectory: valid.mediaDirectory,
+  }));
+
+  const idleOrphan = path.join(fixture.projectDir, 'previews', 'broll', `${IMPORT_UUID}.webm`);
+  fs.writeFileSync(idleOrphan, 'idle orphan');
+  assert.equal((await request(session, '/api/state', { token: session.token })).status, 200);
+  assert.equal(fs.existsSync(idleOrphan), false);
 });
