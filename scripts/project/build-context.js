@@ -4,7 +4,6 @@ const path = require('node:path');
 
 const {
   createOrOpenProject,
-  nextBriefPaths,
   nextRenderPaths,
   resolveProjectPath,
 } = require('./workspace');
@@ -268,13 +267,12 @@ function createBuildContext({
     sourcePath: resolvedVideo,
     now,
   });
-  const briefPaths = nextBriefPaths(project, kind);
   const renderPaths = action === 'render' ? nextRenderPaths(project, versionLabel) : null;
   const paths = {
-    briefJson: briefPaths.jsonPath,
-    briefMarkdown: kind === 'lesson' ? briefPaths.markdownPath : null,
-    briefRevision: briefPaths.revision,
-    scenarioJson: kind === 'scenario' ? briefPaths.jsonPath : null,
+    briefJson: null,
+    briefMarkdown: null,
+    briefRevision: null,
+    scenarioJson: null,
     props: renderPaths ? renderPaths.propsPath : null,
     raw: renderPaths ? renderPaths.rawPath : null,
     final: renderPaths ? renderPaths.finalPath : null,

@@ -88,7 +88,10 @@ file identity с созданным процессом.
 публикуется атомарно; live owner и owner с другого host сохраняются. Lease умершего PID на том
 же host можно забрать через identity-проверенный recovery claim. Под lease manifest заново
 читается с диска, stale in-memory snapshot получает `PROJECT_MANIFEST_CONFLICT`, а замена
-`project.json` выполняется только после повторной проверки persisted file snapshot.
+`project.json` выполняется только после повторной проверки persisted file snapshot. Для
+существующего manifest даже низкоуровневый writer обязан передать expected snapshot; успешный
+`rename` является однозначной commit point и после него transaction не запускает fallible probe,
+который мог бы ошибочно откатить уже опубликованную историю.
 
 Containment защищает от вредоносного manifest и symlink, существующих на момент проверки.
 Соперничающий локальный процесс с правом записи в workspace или внешний `--outdir` может заменить предка между
@@ -126,6 +129,11 @@ manifest удаляет только собственные опубликова
 orphan, и следующая draft-ревизия пропускает занятое имя. При рендере точный legacy
 `faceSrc: "source.mp4"` внутри сцены переводится на
 текущий source lease вместе с top-level `faceSrc` и `audioSrc`.
+
+Первичный lesson/scenario draft тоже использует этот contract: build context не резервирует
+номер заранее, генератор сначала создаёт временную no-replace пару, а `publishBriefRevision()`
+под lease выбирает свободную ревизию, публикует исторические файлы no-replace и обновляет
+manifest последним. Поэтому параллельный build или foreign destination не перезаписывается.
 
 Brief замораживает исходник, тему, аспект, размеры, FPS, длительность, сцены и проверенное
 кадрирование лица. Это защищает от ситуации, когда утверждали один монтаж, а рендерится другой.

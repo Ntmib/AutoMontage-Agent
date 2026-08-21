@@ -73,6 +73,8 @@ Project transaction suite запускает независимые Node-про�
 approval против render writer, убивает владельца после lease/Markdown/JSON/manifest boundaries
 и проверяет, что currentBrief всегда указывает на существующий JSON. Отдельно фиксируются
 foreign destination collision, stale snapshot conflict и сохранность live/foreign owner bytes.
+Также проверяются два initial-draft publisher процесса, обязательный expected snapshot для raw
+manifest update и ошибки `readFileSync`/`lstatSync` сразу после manifest rename.
 
 Chromium suite поднимает настоящий loopback-сервер и проверяет read-only/edit DOM, token/origin,
 waveform fallback, word-snap drag, накопительное frame-only Arrow movement, реальные

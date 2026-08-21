@@ -80,6 +80,7 @@ function makeReviewProject(t, { briefStatus = 'draft' } = {}) {
 function registerHigherBrief(fixture, { revision = 5 } = {}) {
   const manifestPath = path.join(fixture.workspace.dir, 'project.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const expectedManifest = structuredClone(manifest);
   const currentBrief = JSON.parse(fs.readFileSync(fixture.briefPath, 'utf8'));
   const prefix = `v${String(revision).padStart(2, '0')}-draft.lesson`;
   const jsonPath = `brief/${prefix}.json`;
@@ -95,7 +96,7 @@ function registerHigherBrief(fixture, { revision = 5 } = {}) {
     theme: higherBrief.theme,
     aspect: higherBrief.output.aspect,
   });
-  writeProjectManifest(fixture.workspace.dir, manifest);
+  writeProjectManifest(fixture.workspace.dir, manifest, { expectedManifest });
   fixture.workspace.manifest = manifest;
   return { jsonPath, markdownPath };
 }

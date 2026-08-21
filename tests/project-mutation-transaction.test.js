@@ -11,6 +11,7 @@ const {
   createOrOpenProject,
   nextBriefPaths,
   nextRenderPaths,
+  publishBriefRevision,
   readProjectManifest,
   recordBrief,
   recordRender,
@@ -233,7 +234,7 @@ test('Save, approval, render and brief manifest writers share the live process l
         return writeProjectManifest(state.workspace.dir, {
           ...state.workspace.manifest,
           name: 'Concurrent overwrite',
-        });
+        }, { expectedManifest: state.workspace.manifest });
       },
     },
   ];
@@ -475,4 +476,143 @@ process.exit(99);
       assert.equal(fs.existsSync(path.join(reopened.dir, '.project-mutation.lock')), false);
     });
   }
+});
+
+test('approval keeps committed history when a post-rename manifest probe fails', async (t) => {
+  for (const failedProbe of ['readFileSync', 'lstatSync']) {
+    await t.test(failedProbe, (subtest) => {
+      const state = makeReviewProject(subtest, { briefStatus: 'draft' });
+      const manifestPath = path.join(state.workspace.dir, 'project.json');
+      const approvedJsonPath = state.briefPath.replace('-draft.', '-approved.');
+      const approvedMarkdownPath = approvedJsonPath.replace('.json', '.md');
+      let manifestReplaced = false;
+      let injected = false;
+      const failingFs = {
+        ...fs,
+        renameSync(source, destination) {
+          const result = fs.renameSync(source, destination);
+          if (path.resolve(String(destination)) === path.resolve(manifestPath)
+            && String(source).includes('.tmp-approval-manifest-')) {
+            manifestReplaced = true;
+          }
+          return result;
+        },
+        [failedProbe](target, ...args) {
+          if (manifestReplaced && !injected
+            && path.resolve(String(target)) === path.resolve(manifestPath)) {
+            injected = true;
+            const error = new Error(`simulated post-rename ${failedProbe}`);
+            error.code = 'EIO';
+            throw error;
+          }
+          return fs[failedProbe](target, ...args);
+        },
+      };
+
+      const approved = approveBrief(state.workspace, state.briefPath, { fileSystem: failingFs });
+
+      assert.equal(injected, false);
+      assert.equal(approved.jsonPath, approvedJsonPath);
+      assert.equal(fs.existsSync(approvedJsonPath), true);
+      assert.equal(fs.existsSync(approvedMarkdownPath), true);
+      assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v01-approved.lesson.json');
+    });
+  }
+});
+
+test('direct manifest update rejects a stale expected snapshot instead of overwriting newer bytes', (t) => {
+  const workspace = makeProject(t, 'Expected manifest CAS');
+  const expected = structuredClone(workspace.manifest);
+  const newer = { ...expected, name: 'Newer manifest', updatedAt: '2026-08-22T09:00:00.000Z' };
+  writeProjectManifest(workspace.dir, newer, { expectedManifest: expected });
+  const newerBytes = fs.readFileSync(path.join(workspace.dir, 'project.json'));
+
+  const staleUpdate = { ...expected, name: 'Stale overwrite', updatedAt: '2026-08-22T09:01:00.000Z' };
+  assert.throws(
+    () => writeProjectManifest(workspace.dir, staleUpdate, { expectedManifest: expected }),
+    (error) => error && error.code === 'PROJECT_MANIFEST_CONFLICT',
+  );
+  assert.deepEqual(fs.readFileSync(path.join(workspace.dir, 'project.json')), newerBytes);
+});
+
+test('initial brief publication preserves a foreign destination created at commit', (t) => {
+  const workspace = makeProject(t, 'Initial brief collision');
+  const manifestPath = path.join(workspace.dir, 'project.json');
+  const beforeManifest = fs.readFileSync(manifestPath);
+  const foreignPath = path.join(workspace.dir, 'brief/v01-draft.lesson.json');
+  const foreignBytes = Buffer.from('foreign-initial-brief\n');
+  let injected = false;
+  const collisionFs = {
+    ...fs,
+    linkSync(source, destination) {
+      if (!injected && path.resolve(String(destination)) === path.resolve(foreignPath)) {
+        fs.writeFileSync(foreignPath, foreignBytes, { flag: 'wx' });
+        injected = true;
+      }
+      return fs.linkSync(source, destination);
+    },
+  };
+
+  assert.throws(() => publishBriefRevision(workspace, {
+    kind: 'lesson',
+    brief: { version: 1, status: 'draft', title: 'Collision' },
+    markdown: '# Collision\n',
+    status: 'draft',
+    theme: 'lesson-neutral',
+    aspect: 'horizontal',
+  }, { fileSystem: collisionFs }), (error) => error && error.code === 'EEXIST');
+
+  assert.equal(injected, true);
+  assert.deepEqual(fs.readFileSync(foreignPath), foreignBytes);
+  assert.equal(fs.existsSync(foreignPath.replace('.json', '.md')), false);
+  assert.deepEqual(fs.readFileSync(manifestPath), beforeManifest);
+});
+
+test('two real processes racing initial brief publication never overwrite history', async (t) => {
+  const workspace = makeProject(t, 'Initial brief race');
+  const workerPath = path.join(path.dirname(workspace.dir), 'initial-brief-race.js');
+  fs.writeFileSync(workerPath, String.raw`
+const [modulePath, projectDir, title] = process.argv.slice(2);
+const api = require(modulePath);
+const workspace = { dir: projectDir, manifest: api.readProjectManifest(projectDir) };
+if (process.send) process.send({ type: 'ready' });
+process.once('message', () => {
+  try {
+    const result = api.publishBriefRevision(workspace, {
+      kind: 'lesson', brief: { version: 1, status: 'draft', title },
+      markdown: '# ' + title + '\n', status: 'draft', theme: 'lesson-neutral', aspect: 'horizontal',
+    });
+    process.send({ type: 'result', ok: true, result }, () => process.exit(0));
+  } catch (error) {
+    process.send({ type: 'result', ok: false, code: error && error.code }, () => process.exit(0));
+  }
+});
+`);
+  const children = ['LEFT', 'RIGHT'].map((title) => fork(
+    workerPath,
+    [require.resolve('../scripts/project/workspace'), workspace.dir, title],
+    { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+  ));
+  t.after(() => {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    }
+  });
+  await Promise.all(children.map((child) => waitForMessage(child, 'ready')));
+  const results = children.map((child) => waitForMessage(child, 'result'));
+  const exits = children.map(waitForExit);
+  for (const child of children) child.send('go');
+  const resolved = await Promise.all(results);
+  await Promise.all(exits);
+
+  assert.equal(resolved.filter((result) => result.ok).length, 1);
+  assert.deepEqual(resolved.filter((result) => !result.ok).map((result) => result.code), [
+    'PROJECT_MANIFEST_CONFLICT',
+  ]);
+  const manifest = readProjectManifest(workspace.dir);
+  assert.equal(manifest.briefs.length, 1);
+  assert.equal(fs.existsSync(path.join(workspace.dir, manifest.currentBrief)), true);
+  assert.equal(['LEFT', 'RIGHT'].includes(JSON.parse(
+    fs.readFileSync(path.join(workspace.dir, manifest.currentBrief), 'utf8'),
+  ).title), true);
 });

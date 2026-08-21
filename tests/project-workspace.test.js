@@ -153,7 +153,7 @@ test('manifest write ignores a predictable temp symlink and publishes a regular 
   fs.symlinkSync(sentinel, path.join(workspace.dir, 'project.json.tmp'));
 
   const updated = { ...workspace.manifest, updatedAt: '2026-08-06T00:00:00.000Z' };
-  writeProjectManifest(workspace.dir, updated);
+  writeProjectManifest(workspace.dir, updated, { expectedManifest: workspace.manifest });
 
   assert.equal(fs.readFileSync(sentinel, 'utf8'), 'outside-must-survive');
   assert.equal(fs.lstatSync(path.join(workspace.dir, 'project.json')).isFile(), true);
@@ -180,7 +180,7 @@ test('manifest rejects non-canonical slugs and accepts canonical lowercase token
   assert.doesNotThrow(() => writeProjectManifest(workspace.dir, {
     ...workspace.manifest,
     slug: 'safe-project-01',
-  }));
+  }, { expectedManifest: workspace.manifest }));
 });
 
 test('manifest migration adds the canonical transcript paths before validation', (t) => {

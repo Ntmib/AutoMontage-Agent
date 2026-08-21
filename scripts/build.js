@@ -13,6 +13,7 @@
 //                       Осмысленно только с --scenario (блоки берутся из готового листа).
 //   --title "текст"   : заголовок видео для шаблона lesson (плашка сверху).
 const fs = require('fs');
+const { randomUUID } = require('node:crypto');
 const path = require('path');
 const {
   ROOT,
@@ -47,7 +48,7 @@ const {
   createBuildContext,
 } = require('./project/build-context');
 const {
-  recordBrief,
+  publishBriefRevision,
   runRenderLifecycle,
 } = require('./project/workspace');
 const { withPublicMediaLease } = require('./public-media');
@@ -261,8 +262,13 @@ if (lessonAction === 'plan') {
     sourceFps: FPS,
     aspect,
   });
-  const briefPath = buildContext.paths.briefJson;
-  const markdownPath = buildContext.paths.briefMarkdown;
+  const generationId = randomUUID();
+  const briefPath = buildContext.project
+    ? tmp(`automontage-${generationId}.lesson.json`)
+    : buildContext.paths.briefJson;
+  const markdownPath = buildContext.project
+    ? tmp(`automontage-${generationId}.lesson.md`)
+    : buildContext.paths.briefMarkdown;
   const publicBrollDir = path.join(ROOT, 'public/broll');
   const availableBroll = fs.existsSync(publicBrollDir)
     ? fs.readdirSync(publicBrollDir)
@@ -295,19 +301,22 @@ if (lessonAction === 'plan') {
     console.error(`❌ gen-brief не собрал ТЗ: ${error.message}`);
     process.exit(1);
   }
+  let publishedBrief = { jsonPath: briefPath, markdownPath };
   if (buildContext.project) {
-    recordBrief(buildContext.project, {
-      revision: buildContext.paths.briefRevision,
-      jsonPath: briefPath,
-      markdownPath,
+    const generatedBrief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+    const generatedMarkdown = fs.readFileSync(markdownPath, 'utf8');
+    publishedBrief = publishBriefRevision(buildContext.project, {
+      kind: 'lesson',
+      brief: generatedBrief,
+      markdown: generatedMarkdown,
       status: 'draft',
       theme,
       aspect: geometry.aspect,
     });
   }
   console.log('\n⏸ Черновик готов. Покажи Markdown-ТЗ Дмитрию и дождись явного «утверждаю».');
-  console.log(`   ТЗ: ${markdownPath}`);
-  console.log(`   JSON: ${briefPath}`);
+  console.log(`   ТЗ: ${publishedBrief.markdownPath}`);
+  console.log(`   JSON: ${publishedBrief.jsonPath}`);
   console.log('   После утверждения смени status на approved и перезапусти с --brief <JSON>.');
   process.exit(0);
 }
@@ -450,19 +459,22 @@ if (scenarioFile) {
   log(`лист из файла: ${blocks.length} блоков`);
 } else {
   blocks = draftScenario(CAPTIONS);
-  const draftPath = buildContext.paths.scenarioJson;
-  activeScenarioPath = draftPath;
-  fs.mkdirSync(path.dirname(draftPath), { recursive: true });
-  fs.writeFileSync(draftPath, JSON.stringify({ source: 'source.mp4', theme, beatZoom, beatSec, blocks }, null, 2));
+  const draftScenarioBrief = { source: 'source.mp4', theme, beatZoom, beatSec, blocks };
+  let draftPath = buildContext.paths.scenarioJson;
   if (buildContext.project) {
-    recordBrief(buildContext.project, {
-      revision: buildContext.paths.briefRevision,
-      jsonPath: draftPath,
+    const published = publishBriefRevision(buildContext.project, {
+      kind: 'scenario',
+      brief: draftScenarioBrief,
       status: 'draft',
       theme,
       aspect: 'source',
     });
+    draftPath = published.jsonPath;
+  } else {
+    fs.mkdirSync(path.dirname(draftPath), { recursive: true });
+    fs.writeFileSync(draftPath, JSON.stringify(draftScenarioBrief, null, 2));
   }
+  activeScenarioPath = draftPath;
   log(`черновой лист → ${draftPath} (${blocks.length} блоков, поправь и перезапусти с --scenario)`);
 }
 if (args.includes('--beat')) beatZoom = true;   // «ритмичный зум / режь динамику»

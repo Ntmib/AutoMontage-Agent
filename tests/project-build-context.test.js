@@ -18,7 +18,7 @@ function makeFixture(t) {
   return { dir, source };
 }
 
-test('project planning uses its copied source and versioned brief paths', (t) => {
+test('project planning defers versioned brief allocation until transactional publication', (t) => {
   const fixture = makeFixture(t);
   const context = createBuildContext({
     root: fixture.dir,
@@ -31,14 +31,9 @@ test('project planning uses its copied source and versioned brief paths', (t) =>
   });
 
   assert.equal(context.video, path.join(context.project.dir, 'input/source.mp4'));
-  assert.equal(
-    context.paths.briefJson,
-    path.join(context.project.dir, 'brief/v01-draft.lesson.json'),
-  );
-  assert.equal(
-    context.paths.briefMarkdown,
-    path.join(context.project.dir, 'brief/v01-draft.lesson.md'),
-  );
+  assert.equal(context.paths.briefJson, null);
+  assert.equal(context.paths.briefMarkdown, null);
+  assert.equal(context.paths.briefRevision, null);
   assert.equal(context.paths.transcript, path.join(context.project.dir, 'transcript/words.json'));
   assert.equal(context.paths.captions, path.join(context.project.dir, 'transcript/captions.js'));
   assert.equal(context.paths.render, null);
@@ -293,10 +288,7 @@ test('dynamic project keeps its scenario and render in the same workspace', (t) 
     now: new Date('2026-08-05T12:00:00Z'),
   });
 
-  assert.equal(
-    context.paths.scenarioJson,
-    path.join(context.project.dir, 'brief/v01-draft.scenario.json'),
-  );
+  assert.equal(context.paths.scenarioJson, null);
   assert.equal(path.basename(context.paths.render.dir), 'v01-auto-edit');
 });
 

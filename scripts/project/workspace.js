@@ -164,6 +164,7 @@ function stageOwnedSiblingFile(destination, data, {
   temporaryId = randomUUID,
   purpose = 'write',
 } = {}) {
+  const bytes = Buffer.isBuffer(data) ? Buffer.from(data) : Buffer.from(data, 'utf8');
   const temporaryPath = `${destination}.tmp-${purpose}-${safeTemporaryId(temporaryId)}`;
   const constants = fileSystem.constants || fs.constants;
   const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
@@ -192,6 +193,7 @@ function stageOwnedSiblingFile(destination, data, {
     commitReplace(target = destination) {
       fileSystem.renameSync(temporaryPath, target);
       committedPath = target;
+      return { identity, bytes };
     },
     commitNoReplace(target = destination) {
       fileSystem.linkSync(temporaryPath, target);
@@ -212,6 +214,52 @@ function stageOwnedSiblingFile(destination, data, {
       committedPath = null;
     },
   };
+}
+
+function stageNoReplaceFileSet(files, {
+  fileSystem = fs,
+  temporaryId = randomUUID,
+} = {}) {
+  const stages = [];
+  try {
+    for (const { destination, data, purpose } of files) {
+      stages.push(stageOwnedSiblingFile(
+        destination,
+        data,
+        { fileSystem, temporaryId, purpose },
+      ));
+    }
+  } catch (error) {
+    for (const stage of stages) stage.cleanupTemp();
+    throw error;
+  }
+  return {
+    commit() {
+      for (const stage of stages) stage.commitNoReplace();
+    },
+    rollback() {
+      for (const stage of [...stages].reverse()) stage.removeCommitted();
+    },
+    cleanup() {
+      for (const stage of stages) stage.cleanupTemp();
+    },
+  };
+}
+
+function writeFilesNoReplace(files, options = {}) {
+  const staged = stageNoReplaceFileSet(files, options);
+  try {
+    staged.commit();
+  } catch (error) {
+    try {
+      staged.rollback();
+    } catch (rollbackError) {
+      error.rollbackError = rollbackError;
+    }
+    throw error;
+  } finally {
+    staged.cleanup();
+  }
 }
 
 function validateProjectManifest(manifest, { projectDir, fileSystem = fs } = {}) {
@@ -308,10 +356,17 @@ function writeProjectManifest(projectDir, manifest, options = {}) {
   if (!lstatIfPresent(options.fileSystem || fs, manifestPath)) {
     return writeProjectManifestAtomic(resolvedProjectDir, manifest, options);
   }
+  const validated = validateProjectManifest(manifest, {
+    projectDir: resolvedProjectDir,
+    fileSystem: options.fileSystem || fs,
+  });
+  if (options.expectedManifest === undefined || options.expectedManifest === false) {
+    throw manifestConflict();
+  }
   return withProjectMutation(
-    { dir: resolvedProjectDir, manifest: readProjectManifest(resolvedProjectDir) },
-    (transaction) => transaction.commitManifest(manifest, { purpose: 'manifest' }),
-    { ...options, expectedManifest: false },
+    { dir: resolvedProjectDir, manifest: options.expectedManifest },
+    (transaction) => transaction.commitManifest(validated, { purpose: 'manifest' }),
+    options,
   );
 }
 
@@ -384,11 +439,12 @@ function createOrOpenProject({
   if (fs.existsSync(manifestPath)) {
     const manifest = readProjectManifest(resolvedProjectDir);
     if (!manifest.transcript) {
+      const expectedManifest = JSON.parse(JSON.stringify(manifest));
       manifest.transcript = {
         words: 'transcript/words.json',
         captions: 'transcript/captions.js',
       };
-      writeProjectManifest(resolvedProjectDir, manifest);
+      writeProjectManifest(resolvedProjectDir, manifest, { expectedManifest });
     }
     assertMatchingSource(resolvedProjectDir, manifest, sourcePath);
     ensureProjectDirectories(resolvedProjectDir);
@@ -508,6 +564,83 @@ function recordBrief(workspace, {
     workspace.manifest = transaction.commitManifest(nextManifest, { purpose: 'brief-manifest' });
     return workspace;
   }, options);
+}
+
+function publishBriefRevision(workspace, {
+  kind = 'lesson',
+  brief,
+  markdown = null,
+  status = brief?.status || 'draft',
+  theme = brief?.theme || null,
+  aspect = brief?.output?.aspect || null,
+}, options = {}) {
+  const fileSystem = options.fileSystem || fs;
+  const temporaryId = options.temporaryId || randomUUID;
+  return withProjectMutation(workspace, (transaction) => {
+    const persistedWorkspace = { ...workspace, manifest: transaction.manifest };
+    const allocated = nextBriefPaths(persistedWorkspace, kind, { fileSystem });
+    const markdownPath = markdown === null ? null : allocated.markdownPath;
+    const entry = {
+      revision: allocated.revision,
+      jsonPath: relativeProjectPath(workspace, allocated.jsonPath),
+      markdownPath: markdownPath ? relativeProjectPath(workspace, markdownPath) : null,
+      status,
+      theme,
+      aspect,
+    };
+    const nextManifest = JSON.parse(JSON.stringify(transaction.manifest));
+    nextManifest.briefs.push(entry);
+    nextManifest.currentBrief = entry.jsonPath;
+    nextManifest.updatedAt = new Date().toISOString();
+    const history = stageNoReplaceFileSet([
+      ...(markdownPath ? [{
+        destination: markdownPath,
+        data: markdown,
+        purpose: 'initial-brief-markdown',
+      }] : []),
+      {
+        destination: allocated.jsonPath,
+        data: `${JSON.stringify(brief, null, 2)}\n`,
+        purpose: 'initial-brief-json',
+      },
+    ], { fileSystem, temporaryId });
+    let manifestCommitted = false;
+    try {
+      history.commit();
+      workspace.manifest = transaction.commitManifest(nextManifest, {
+        purpose: 'initial-brief-manifest',
+      });
+      manifestCommitted = true;
+      return {
+        revision: allocated.revision,
+        jsonPath: allocated.jsonPath,
+        markdownPath,
+        relativePath: entry.jsonPath,
+      };
+    } catch (error) {
+      if (!manifestCommitted) {
+        try {
+          history.rollback();
+        } catch (rollbackError) {
+          error.rollbackErrors = [rollbackError];
+        }
+      }
+      throw error;
+    } finally {
+      const cleanup = () => {
+        history.cleanup();
+      };
+      if (manifestCommitted) {
+        try {
+          cleanup();
+        } catch (_) {
+          // The history and manifest commit point are already durable.
+        }
+      } else {
+        cleanup();
+      }
+    }
+  }, { ...options, fileSystem, temporaryId });
 }
 
 const MANIFEST_CONFLICT = 'PROJECT_MANIFEST_CONFLICT';
@@ -687,11 +820,8 @@ function withProjectMutation(workspace, operation, {
         let committed = false;
         try {
           assertFileSnapshot(fileSystem, manifestPath, manifestSnapshot);
-          staged.commitReplace();
+          manifestSnapshot = staged.commitReplace();
           committed = true;
-          const nextSnapshot = readFileSnapshot(fileSystem, manifestPath);
-          if (!nextSnapshot.bytes.equals(bytes)) throw manifestConflict();
-          manifestSnapshot = nextSnapshot;
           persistedManifest = validated;
           return validated;
         } finally {
@@ -1320,6 +1450,7 @@ module.exports = {
   nextBriefPaths,
   nextRenderPaths,
   publishFinal,
+  publishBriefRevision,
   readProjectManifest,
   recordBrief,
   recordRender,
@@ -1329,5 +1460,6 @@ module.exports = {
   slugifyProjectName,
   validateProjectManifest,
   withProjectMutation,
+  writeFilesNoReplace,
   writeProjectManifest,
 };

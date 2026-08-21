@@ -10,10 +10,9 @@ const { chromium } = require('playwright');
 const { formatBriefMarkdown } = require('./lesson/brief');
 const {
   createOrOpenProject,
-  nextBriefPaths,
   nextRenderPaths,
+  publishBriefRevision,
   readProjectManifest,
-  recordBrief,
   resolveProjectPath,
   runRenderLifecycle,
 } = require('./project/workspace');
@@ -263,14 +262,11 @@ function createAcceptanceProject(artifactRoot, fixtures) {
       { w: 'голоса', s: 4.5, e: 5 },
     ],
   }]);
-  const draft = nextBriefPaths(workspace);
   const brief = baseBrief(workspace);
-  writeJson(draft.jsonPath, brief);
-  fs.writeFileSync(draft.markdownPath, formatBriefMarkdown(brief));
-  recordBrief(workspace, {
-    revision: draft.revision,
-    jsonPath: draft.jsonPath,
-    markdownPath: draft.markdownPath,
+  const draft = publishBriefRevision(workspace, {
+    kind: 'lesson',
+    brief,
+    markdown: formatBriefMarkdown(brief),
     status: 'draft',
     theme: brief.theme,
     aspect: brief.output.aspect,

@@ -1,11 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const dictionary = require('../scripts/data/proofread-dictionary.json');
 const {
   applyDictionary,
   normalizeGeneratedBrief,
   parseBriefOptions,
+  writeGeneratedBriefOutputs,
 } = require('../scripts/gen-brief');
 
 const context = {
@@ -155,4 +159,30 @@ test('speaker zoom from intake is stored in the draft', () => {
   }, { ...context, faceZoom: 1.08 });
 
   assert.equal(brief.faceZoom, 1.08);
+});
+
+test('generated brief output never replaces a foreign JSON destination', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-gen-brief-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const outputPath = path.join(directory, 'draft.json');
+  const markdownPath = path.join(directory, 'draft.md');
+  const foreignBytes = Buffer.from('foreign-generated-json\n');
+  fs.writeFileSync(outputPath, foreignBytes);
+
+  assert.throws(() => writeGeneratedBriefOutputs({
+    brief: {
+      version: 1,
+      status: 'draft',
+      source: '/videos/source.mp4',
+      theme: 'lesson-neutral',
+      title: 'Generated',
+      output: { aspect: 'horizontal', width: 1920, height: 1080, fps: 30, durationInFrames: 120 },
+      corrections: [],
+      scenes: [{ scene: 'fullscreen', start: 0, end: 4, caption: 'GENERATED' }],
+    },
+    outputPath,
+    markdownPath,
+  }), (error) => error && error.code === 'EEXIST');
+  assert.deepEqual(fs.readFileSync(outputPath), foreignBytes);
+  assert.equal(fs.existsSync(markdownPath), false);
 });

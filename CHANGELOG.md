@@ -34,6 +34,9 @@
   project-wide lease: stale snapshot получает `409`, live/foreign owner не удаляется, а lease
   завершившегося локального PID восстанавливается. Исторические Markdown/JSON публикуются
   no-replace до manifest CAS, поэтому hard exit не оставляет `currentBrief` без JSON.
+- Manifest rename теперь имеет однозначный committed outcome без post-rename probe; initial
+  lesson/scenario draft выбирает ревизию под тем же lease, а raw manifest update требует expected
+  snapshot, поэтому stale writer и destination race не перезаписывают историю.
 - Render bundle больше не принимает безопасное асинхронное обновление `ctime` от macOS iCloud
   File Provider за подмену файла: новый `ctime` фиксируется только после повторной проверки всех
   остальных identity-полей и стабильного полного SHA-256; digest при сдвиге `ctime` во время

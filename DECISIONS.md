@@ -278,6 +278,12 @@ byte-identical, а crash-orphan не перезаписывается: нова�
 номер. Approval дополнительно всегда запускает полный `validateLessonBrief()` над заново
 прочитанным текущим draft.
 
+Уточнение после failure injection: успешный atomic rename manifest является commit point. После
+него writer не делает fallible read/lstat для определения результата; следующий commit в той же
+transaction использует identity и bytes уже синхронизированного staged inode. Initial draft
+allocation также происходит только внутри lease через `publishBriefRevision()`, а прямое
+обновление существующего manifest без expected snapshot запрещено.
+
 D-012 заменено: прежний порядок manifest до approved JSON создавал crash-окно с битым
 `currentBrief`, а rollback после publication не мог защитить от hard exit. Отклонены отдельные
 locks для Review/approval/render: они сериализовали каждый путь сам с собой, но не закрывали
