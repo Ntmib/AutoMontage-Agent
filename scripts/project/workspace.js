@@ -854,7 +854,8 @@ function approveBrief(workspace, draftJsonPath, {
   const draft = JSON.parse(fileSystem.readFileSync(draftPath, 'utf8'));
   if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
   preflightBriefBrollMedia(draft);
-  if ((draft.scenes || []).some((scene) => scene?.brollMedia)) {
+  if (!Array.isArray(draft.scenes)
+    || draft.scenes.some((scene) => scene?.brollMedia)) {
     const draftValidation = validateLessonBrief(draft);
     if (!draftValidation.ok) {
       throw new Error(`draft brief is invalid: ${draftValidation.errors.join('\n')}`);

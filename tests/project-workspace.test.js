@@ -860,6 +860,27 @@ function assertApprovalMediaFailure(state, options, expected) {
   );
 }
 
+test('approval rejects malformed non-array scenes through canonical brief validation', async (t) => {
+  for (const [name, scenes] of [
+    ['object', {}],
+    ['string', 'not-an-array'],
+    ['number', 42],
+  ]) {
+    await t.test(name, () => {
+      const state = makeApprovalFailureFixture(t, `malformed-scenes-${name}`);
+      const draft = JSON.parse(fs.readFileSync(state.draft.jsonPath, 'utf8'));
+      draft.scenes = scenes;
+      fs.writeFileSync(state.draft.jsonPath, `${JSON.stringify(draft, null, 2)}\n`);
+
+      assertApprovalMediaFailure(state, {
+        runToolImpl() {
+          assert.fail('ffprobe must not run for a structurally invalid brief');
+        },
+      }, [undefined, 'draft brief is invalid: /scenes: must be array']);
+    });
+  }
+});
+
 test('approval rejects non-broll media fields before schema or publication', async (t) => {
   for (const field of ['brollSrc', 'brollMedia']) {
     await t.test(field, () => {
