@@ -281,6 +281,21 @@ function sameAssetIdentity(left, right) {
   });
 }
 
+function sameAuthoritativeAssetRecord(left, right) {
+  if (!sameAssetIdentity(left, right)) return false;
+  for (const field of [
+    'kind', 'mediaKind', 'label', 'filePath', 'previewPath', 'reference',
+    'canonicalSha256', 'previewSha256', 'width', 'height', 'fps',
+    'durationSec', 'hasAudio',
+  ]) {
+    if (left[field] !== right[field]) return false;
+  }
+  for (const capability of ['preview', 'brollImage', 'brollVideo']) {
+    if (left.capabilities?.[capability] !== right.capabilities?.[capability]) return false;
+  }
+  return true;
+}
+
 function registeredAssetIdentityIsCurrent(asset) {
   if (!sameSnapshotIdentity(asset, snapshotFile(asset.filePath))) return false;
   if (!asset.previewPath) return true;
@@ -388,6 +403,32 @@ function requestsUnavailableAsset(commands, unavailableIds) {
     && command.type === 'replace-broll'
     && unavailableIds.has(command.assetId)
   ));
+}
+
+function stabilizeEditAssetFiles({ root, projectDir, replay }) {
+  const candidates = scanAssetFiles({ root, projectDir });
+  const currentByIdentity = new Map(candidates.map((asset) => (
+    [assetIdentityKey(asset), asset]
+  )));
+  if (candidates.length !== replay.assetFiles.size
+    || currentByIdentity.size !== candidates.length) {
+    rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
+  }
+  const assetFiles = new Map();
+  const descriptors = [];
+  for (const [id, registered] of replay.assetFiles) {
+    const current = currentByIdentity.get(assetIdentityKey(registered));
+    if (!current || !sameAuthoritativeAssetRecord(registered, current)) {
+      rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
+    }
+    assetFiles.set(id, current);
+    descriptors.push(descriptorForAsset(id, current));
+  }
+  return {
+    assetFiles,
+    descriptors,
+    nextAssetId: replay.nextAssetId,
+  };
 }
 
 function refreshRuntimeState({
@@ -929,13 +970,14 @@ function handleEditRoute({
       words: runtime.state.transcript.words,
       probeMediaImpl: probeReviewMediaImpl,
     });
-    runtime.assetFiles = replay.assetFiles;
-    runtime.nextAssetId = replay.nextAssetId;
-    runtime.state = { ...runtime.state, assets: replay.assetDescriptors };
+    const stableAssets = stabilizeEditAssetFiles({ root, projectDir, replay });
+    runtime.assetFiles = stableAssets.assetFiles;
+    runtime.nextAssetId = stableAssets.nextAssetId;
+    runtime.state = { ...runtime.state, assets: stableAssets.descriptors };
     sendJson(response, 200, {
       ok: true,
       destinationRevision: nextBriefPaths(replay.current.workspace).revision,
-      diff: browserSafeDiff(replay.diff, replay.assetFiles),
+      diff: browserSafeDiff(replay.diff, stableAssets.assetFiles),
       timing: replay.timing,
     });
     return;
@@ -952,12 +994,13 @@ function handleEditRoute({
     words: runtime.state.transcript.words,
     probeMediaImpl: probeReviewMediaImpl,
   });
+  const stableAssets = stabilizeEditAssetFiles({ root, projectDir, replay: checked });
   const browserCandidate = buildReviewCandidateBase({
     canonicalBrief: materialized,
-    assetFiles: checked.assetFiles,
+    assetFiles: stableAssets.assetFiles,
   });
   const nextState = buildReviewStateFromEdit({
-    state: { ...runtime.state, assets: checked.assetDescriptors },
+    state: { ...runtime.state, assets: stableAssets.descriptors },
     brief: browserCandidate,
     timing: checked.timing,
   });
@@ -975,8 +1018,8 @@ function handleEditRoute({
     throw error;
   }
 
-  runtime.assetFiles = checked.assetFiles;
-  runtime.nextAssetId = checked.nextAssetId;
+  runtime.assetFiles = stableAssets.assetFiles;
+  runtime.nextAssetId = stableAssets.nextAssetId;
   nextState.session = {
     editable: true,
     baseRevision: saved.revision,

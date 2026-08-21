@@ -1087,6 +1087,120 @@ test('review validate rebuilds the registry and sees imported duration changes a
   assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefs);
 });
 
+test('review validate rejects an unrelated asset removed during the selected probe without rebinding ids', async (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const assets = path.join(workspace.dir, 'assets', 'broll');
+  const basePath = path.join(assets, 'base.png');
+  const selectedPath = path.join(assets, 'selected.png');
+  const unrelatedPath = path.join(assets, 'unrelated.png');
+  const parkedPath = path.join(workspace.dir, 'unrelated-parked.png');
+  fs.writeFileSync(basePath, 'base image');
+  fs.writeFileSync(selectedPath, 'selected image');
+  fs.writeFileSync(unrelatedPath, 'unrelated image');
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[1] = {
+    scene: 'broll', start: 2, end: 4, brollSrc: 'assets/broll/base.png',
+    headCream: 'БАЗОВАЯ', headOrange: 'СХЕМА',
+  };
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  let moved = false;
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+    probeReviewMediaImpl: () => {
+      if (!moved) {
+        moved = true;
+        fs.renameSync(unrelatedPath, parkedPath);
+      }
+      return {
+        mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,
+      };
+    },
+  });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const selected = state.assets.find((asset) => asset.label === 'selected.png');
+  const unrelated = state.assets.find((asset) => asset.label === 'unrelated.png');
+  assert.ok(selected);
+  assert.ok(unrelated);
+  const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
+  const beforeBriefs = fs.readdirSync(path.join(projectDir, 'brief')).sort();
+
+  const response = await postJson(session, '/api/validate', {
+    baseRevision: state.session.baseRevision,
+    baseHash: state.session.baseHash,
+    manifestHash: state.session.manifestHash,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: selected.id }],
+  });
+  fs.renameSync(parkedPath, unrelatedPath);
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
+  assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefs);
+  const refreshed = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  assert.equal(refreshed.assets.find((asset) => asset.label === 'unrelated.png').id, unrelated.id);
+});
+
+test('review save allocates nothing when an unrelated asset is replaced during the selected probe', async (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const assets = path.join(workspace.dir, 'assets', 'broll');
+  const basePath = path.join(assets, 'base.png');
+  const selectedPath = path.join(assets, 'selected.png');
+  const unrelatedPath = path.join(assets, 'unrelated.png');
+  const replacementPath = path.join(assets, 'unrelated-replacement.png');
+  fs.writeFileSync(basePath, 'base image');
+  fs.writeFileSync(selectedPath, 'selected image');
+  fs.writeFileSync(unrelatedPath, 'unrelated image');
+  fs.writeFileSync(replacementPath, 'attacker replacement');
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[1] = {
+    scene: 'broll', start: 2, end: 4, brollSrc: 'assets/broll/base.png',
+    headCream: 'БАЗОВАЯ', headOrange: 'СХЕМА',
+  };
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  let replaced = false;
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+    probeReviewMediaImpl: () => {
+      if (!replaced) {
+        replaced = true;
+        fs.renameSync(replacementPath, unrelatedPath);
+      }
+      return {
+        mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,
+      };
+    },
+  });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const selected = state.assets.find((asset) => asset.label === 'selected.png');
+  assert.ok(selected);
+  const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
+  const beforeBriefs = fs.readdirSync(path.join(projectDir, 'brief')).sort();
+
+  const response = await postJson(session, '/api/save', {
+    baseRevision: state.session.baseRevision,
+    baseHash: state.session.baseHash,
+    manifestHash: state.session.manifestHash,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: selected.id }],
+  });
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
+  assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefs);
+});
+
 test('review save creates a draft and advances the browser-safe session state', async (t) => {
   const { projectDir } = makeReviewProject(t);
   const session = await startTestReviewServer({
