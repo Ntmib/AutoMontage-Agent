@@ -72,6 +72,45 @@ function writeBundle(projectDir, { mediaKind = 'video', id = UUID, metadataOverr
   return { assetMetadata, canonicalPath, mediaDirectory, previewPath };
 }
 
+function directoryIdentity(filePath) {
+  const stat = fs.lstatSync(filePath, { bigint: true });
+  return { dev: String(stat.dev), ino: String(stat.ino) };
+}
+
+function fileIdentity(filePath) {
+  const stat = fs.lstatSync(filePath, { bigint: true });
+  return {
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    size: String(stat.size),
+    mtimeNs: String(stat.mtimeNs),
+  };
+}
+
+function writePublicationClaim(projectDir, {
+  id = UUID,
+  mediaKind = 'video',
+  mediaDirectory,
+  canonicalPath,
+  previewPath = null,
+  claimOverrides = {},
+} = {}) {
+  const mediaType = mediaKind === 'image' ? 'images' : 'video';
+  const claimPath = path.join(projectDir, 'assets', 'broll', mediaType, `.${id}.claim`);
+  const claim = {
+    version: 1,
+    id,
+    purpose: 'review-media-import-publication',
+    mediaKind,
+    directory: mediaDirectory ? directoryIdentity(mediaDirectory) : null,
+    canonical: canonicalPath ? fileIdentity(canonicalPath) : null,
+    preview: previewPath ? fileIdentity(previewPath) : null,
+    ...claimOverrides,
+  };
+  fs.writeFileSync(claimPath, `${JSON.stringify(claim)}\n`, { mode: 0o600 });
+  return claimPath;
+}
+
 function requestState(session) {
   return new Promise((resolve, reject) => {
     const request = http.request({
@@ -356,4 +395,130 @@ test('orphan cleanup only removes owned UUID stages and previews without a publi
   assert.equal(fs.existsSync(preview), false);
   assert.equal(fs.existsSync(publishedStage), true);
   assert.equal(fs.lstatSync(symlinkStage).isSymbolicLink(), true);
+});
+
+test('orphan cleanup removes an exactly claimed crash remnant without asset.json', (t) => {
+  const projectDir = makeProject(t);
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+  const canonicalPath = path.join(mediaDirectory, 'media.mp4');
+  const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+  fs.writeFileSync(canonicalPath, 'canonical crash remnant');
+  fs.writeFileSync(previewPath, 'preview crash remnant');
+  const claimPath = writePublicationClaim(projectDir, {
+    mediaDirectory, canonicalPath, previewPath,
+  });
+
+  const removed = cleanupOrphanImportedStages({ projectDir });
+  assert.deepEqual(new Set(removed), new Set([
+    previewPath, canonicalPath, mediaDirectory, claimPath,
+  ]));
+  for (const target of [previewPath, canonicalPath, mediaDirectory, claimPath]) {
+    assert.equal(fs.existsSync(target), false, target);
+  }
+});
+
+test('orphan cleanup preserves a valid published bundle and removes only its matching stale claim', (t) => {
+  const projectDir = makeProject(t);
+  const bundle = writeBundle(projectDir);
+  const claimPath = writePublicationClaim(projectDir, {
+    mediaDirectory: bundle.mediaDirectory,
+    canonicalPath: bundle.canonicalPath,
+    previewPath: bundle.previewPath,
+  });
+
+  assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), [claimPath]);
+  assert.equal(fs.existsSync(claimPath), false);
+  assert.ok(inspectImportedAssetBundle({
+    projectDir,
+    assetDirectory: bundle.mediaDirectory,
+  }));
+});
+
+test('orphan cleanup preserves foreign UUID directories without a matching ownership claim', (t) => {
+  const projectDir = makeProject(t);
+  const noClaimId = '7c0f5b6a-a921-4a51-8787-467a3a5c7c20';
+  const foreignDirectory = path.join(projectDir, 'assets', 'broll', 'video', noClaimId);
+  const foreignMedia = path.join(foreignDirectory, 'media.mp4');
+  fs.mkdirSync(foreignDirectory, { recursive: true });
+  fs.writeFileSync(foreignMedia, 'foreign without claim');
+
+  const mismatchedDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+  const mismatchedMedia = path.join(mismatchedDirectory, 'media.mp4');
+  const mismatchedPreview = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(mismatchedDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(mismatchedPreview), { recursive: true });
+  fs.writeFileSync(mismatchedMedia, 'foreign with mismatched claim');
+  fs.writeFileSync(mismatchedPreview, 'foreign preview');
+  const actualDirectoryIdentity = directoryIdentity(mismatchedDirectory);
+  const claimPath = writePublicationClaim(projectDir, {
+    mediaDirectory: mismatchedDirectory,
+    canonicalPath: mismatchedMedia,
+    previewPath: mismatchedPreview,
+    claimOverrides: {
+      directory: {
+        ...actualDirectoryIdentity,
+        ino: String(BigInt(actualDirectoryIdentity.ino) + 1n),
+      },
+    },
+  });
+
+  const permissiveId = '6cfbc858-7e33-4d29-b948-7ce7992761fc';
+  const permissiveDirectory = path.join(projectDir, 'assets', 'broll', 'video', permissiveId);
+  const permissiveMedia = path.join(permissiveDirectory, 'media.mp4');
+  const permissivePreview = path.join(projectDir, 'previews', 'broll', `${permissiveId}.webm`);
+  fs.mkdirSync(permissiveDirectory);
+  fs.writeFileSync(permissiveMedia, 'foreign permissive canonical');
+  fs.writeFileSync(permissivePreview, 'foreign permissive preview');
+  const permissiveClaim = writePublicationClaim(projectDir, {
+    id: permissiveId,
+    mediaDirectory: permissiveDirectory,
+    canonicalPath: permissiveMedia,
+    previewPath: permissivePreview,
+  });
+  fs.chmodSync(permissiveClaim, 0o644);
+
+  assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), []);
+  for (const target of [foreignDirectory, foreignMedia, mismatchedDirectory,
+    mismatchedMedia, mismatchedPreview, claimPath, permissiveDirectory,
+    permissiveMedia, permissivePreview, permissiveClaim]) {
+    assert.equal(fs.existsSync(target), true, target);
+  }
+});
+
+test('orphan cleanup never follows or deletes claimed paths replaced after identity capture', async (t) => {
+  for (const replacement of ['preview', 'directory', 'directory symlink']) {
+    await t.test(replacement, () => {
+      const projectDir = makeProject(t);
+      const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+      const canonicalPath = path.join(mediaDirectory, 'media.mp4');
+      const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+      fs.mkdirSync(mediaDirectory, { recursive: true });
+      fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+      fs.writeFileSync(canonicalPath, 'claimed canonical');
+      fs.writeFileSync(previewPath, 'claimed preview');
+      const claimPath = writePublicationClaim(projectDir, {
+        mediaDirectory, canonicalPath, previewPath,
+      });
+
+      if (replacement === 'preview') {
+        fs.renameSync(previewPath, `${previewPath}.original`);
+        fs.writeFileSync(previewPath, 'replacement preview');
+      } else {
+        fs.renameSync(mediaDirectory, `${mediaDirectory}.original`);
+        if (replacement === 'directory') {
+          fs.mkdirSync(mediaDirectory);
+          fs.writeFileSync(path.join(mediaDirectory, 'media.mp4'), 'replacement canonical');
+        } else {
+          fs.symlinkSync(`${mediaDirectory}.original`, mediaDirectory);
+        }
+      }
+
+      assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), []);
+      assert.equal(fs.existsSync(previewPath), true);
+      assert.equal(fs.existsSync(mediaDirectory), true);
+      assert.equal(fs.existsSync(claimPath), true);
+    });
+  }
 });

@@ -16,6 +16,7 @@ const {
   requiredFreeBytes,
 } = require('../scripts/review/media-import');
 const { runMediaProcess } = require('../scripts/review/media-process');
+const { cleanupOrphanImportedStages } = require('../scripts/review/imported-assets');
 const {
   ffmpegEncoderAvailable,
   makeMediaFixtures,
@@ -365,6 +366,11 @@ test('video process argv is exact and metadata is the asset-last publication mar
     `previews/broll/${UUID}.webm`,
     `assets/broll/video/${UUID}/asset.json`,
   ]);
+  const claimPath = path.join(projectDir, 'assets', 'broll', 'video', `.${UUID}.claim`);
+  assert.equal(fs.statSync(claimPath).mode & 0o777, 0o600);
+  assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), [claimPath]);
+  assert.equal(fs.existsSync(result.filePath), true);
+  assert.equal(fs.existsSync(result.previewPath), true);
 });
 
 test('image normalization argv is exact, single-frame, oriented, metadata-free, and alpha-capable', async (t) => {

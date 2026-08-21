@@ -5,6 +5,7 @@ const path = require('node:path');
 const { parseMediaProbeJson } = require('../media-probe');
 const {
   buildImportedAssetRecord,
+  buildImportedPublicationClaim,
   verifyImportedAssetFiles,
 } = require('./imported-assets');
 
@@ -252,6 +253,9 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem) {
       uploadIdentity: openedFileIdentity(uploadStat, uploadNanosecondStat),
       assetParent: assetParent.directory,
       assetParentIdentity: assetParent.snapshots.get(assetParent.directory),
+      claimPath: path.join(assetParent.directory, `.${id}.claim`),
+      claimFd: null,
+      claimIdentity: null,
       previewParent: previewParent?.directory || null,
       previewParentIdentity: previewParent?.snapshots.get(previewParent.directory) || null,
       canonicalPath: path.join(bundlePath, mediaKind === 'image' ? 'media.webp' : 'media.mp4'),
@@ -647,6 +651,51 @@ function writeExclusive(fileSystem, filePath, bytes, onOwned = () => {}) {
   }
 }
 
+function writePublicationClaimState(owned, fileSystem) {
+  const claim = buildImportedPublicationClaim({
+    id: owned.id,
+    mediaKind: owned.normalizedPreviewPath ? 'video' : 'image',
+    directory: owned.assetFinalIdentity,
+    canonical: owned.canonicalFinalIdentity,
+    preview: owned.publishedPreviewIdentity,
+  });
+  if (!claim || owned.claimFd === null) throw unsafeFilesystem();
+  const bytes = Buffer.from(`${JSON.stringify(claim)}\n`);
+  fileSystem.ftruncateSync(owned.claimFd, 0);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = fileSystem.writeSync(
+      owned.claimFd,
+      bytes,
+      offset,
+      bytes.length - offset,
+      offset,
+    );
+    if (!Number.isSafeInteger(written) || written <= 0) throw unsafeFilesystem();
+    offset += written;
+  }
+  fileSystem.fsyncSync(owned.claimFd);
+  const stat = fileSystem.fstatSync(owned.claimFd);
+  const nanosecondStat = fileSystem.fstatSync(owned.claimFd, { bigint: true });
+  if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size !== bytes.length) {
+    throw unsafeFilesystem();
+  }
+  owned.claimIdentity = openedFileIdentity(stat, nanosecondStat);
+  assertOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
+}
+
+function openPublicationClaim(owned, fileSystem) {
+  const constants = fileSystem.constants || fs.constants;
+  owned.claimFd = fileSystem.openSync(
+    owned.claimPath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0),
+    0o600,
+  );
+  fileSystem.fchmodSync(owned.claimFd, 0o600);
+  owned.claimIdentity = identity(fileSystem.fstatSync(owned.claimFd));
+  writePublicationClaimState(owned, fileSystem);
+}
+
 function copyExclusiveFile({
   fileSystem,
   sourcePath,
@@ -767,6 +816,7 @@ function claimFinalDirectory(owned, fileSystem) {
 function publishImportedBundle({ owned, metadata, fileSystem }) {
   assertOwnedImport(fileSystem, owned);
   assertOutputIdentities(fileSystem, owned);
+  openPublicationClaim(owned, fileSystem);
   if (owned.normalizedPreviewPath) {
     const previewCopy = copyExclusiveFile({
       fileSystem,
@@ -777,8 +827,9 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
     });
     if (previewCopy.sha256 !== metadata.previewSha256) throw unsafeFilesystem();
     owned.previewStageIdentity = previewCopy.identity;
-    fileSystem.linkSync(owned.previewStagePath, owned.previewFinalPath);
     owned.publishedPreviewIdentity = previewCopy.identity;
+    writePublicationClaimState(owned, fileSystem);
+    fileSystem.linkSync(owned.previewStagePath, owned.previewFinalPath);
     assertOwnedFile(fileSystem, owned.previewFinalPath, owned.publishedPreviewIdentity);
     if (removeIfOwnedFile(fileSystem, owned.previewStagePath, owned.previewStageIdentity)) {
       owned.previewStageIdentity = null;
@@ -786,6 +837,7 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
   }
   assertOwnedDirectory(fileSystem, owned.assetParent, owned.assetParentIdentity, owned.projectReal);
   claimFinalDirectory(owned, fileSystem);
+  writePublicationClaimState(owned, fileSystem);
   const finalCanonicalPath = path.join(
     owned.assetFinalPath,
     metadata.mediaKind === 'image' ? 'media.webp' : 'media.mp4',
@@ -800,6 +852,7 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
   });
   if (canonicalCopy.sha256 !== metadata.canonicalSha256) throw unsafeFilesystem();
   owned.canonicalFinalIdentity = canonicalCopy.identity;
+  writePublicationClaimState(owned, fileSystem);
   const verified = verifyImportedAssetFiles({
     id: owned.id,
     mediaKind: metadata.mediaKind,
@@ -846,6 +899,10 @@ function cleanupOwnedImport(owned, fileSystem) {
     try { fileSystem.closeSync(owned.uploadFd); } catch (_) { /* owned descriptor */ }
     owned.uploadFd = null;
   }
+  if (owned.claimFd !== null) {
+    try { fileSystem.closeSync(owned.claimFd); } catch (_) { /* owned descriptor */ }
+    owned.claimFd = null;
+  }
   if (!owned.published) {
     removeIfOwnedFile(fileSystem, owned.previewFinalPath, owned.publishedPreviewIdentity);
     removeIfOwnedFile(fileSystem, owned.metadataFinalPath, owned.metadataFinalIdentity);
@@ -855,6 +912,7 @@ function cleanupOwnedImport(owned, fileSystem) {
       if (stat.isDirectory() && !stat.isSymbolicLink()
         && sameIdentity(stat, owned.assetFinalIdentity)) fileSystem.rmdirSync(owned.assetFinalPath);
     } catch (_) { /* a foreign collision remains unselectable and untouched */ }
+    removeIfOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
   }
   try {
     const stat = fileSystem.lstatSync(owned.quarantinePath);

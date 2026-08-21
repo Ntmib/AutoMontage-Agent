@@ -12,6 +12,10 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const CONTROL = /[\p{Cc}]/u;
 const METADATA_MAX_BYTES = 16 * 1024;
 const HASH_BUFFER_BYTES = 64 * 1024;
+const PUBLICATION_CLAIM_PURPOSE = 'review-media-import-publication';
+const PUBLICATION_CLAIM_KEYS = [
+  'version', 'id', 'purpose', 'mediaKind', 'directory', 'canonical', 'preview',
+];
 
 function isInside(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -62,6 +66,68 @@ function sameFileSnapshot(left, right) {
     && left.size === right.size && left.mtimeNs === right.mtimeNs;
 }
 
+function persistedDirectoryIdentity(value) {
+  return value ? { dev: String(value.dev), ino: String(value.ino) } : null;
+}
+
+function persistedFileIdentity(value) {
+  return value ? {
+    dev: String(value.dev),
+    ino: String(value.ino),
+    size: String(value.size),
+    mtimeNs: String(value.mtimeNs),
+  } : null;
+}
+
+function buildImportedPublicationClaim({
+  id,
+  mediaKind,
+  directory = null,
+  canonical = null,
+  preview = null,
+} = {}) {
+  if (!UUID.test(id) || !['image', 'video'].includes(mediaKind)) return null;
+  return {
+    version: 1,
+    id,
+    purpose: PUBLICATION_CLAIM_PURPOSE,
+    mediaKind,
+    directory: persistedDirectoryIdentity(directory),
+    canonical: persistedFileIdentity(canonical),
+    preview: persistedFileIdentity(preview),
+  };
+}
+
+function validPersistedIdentity(value, keys) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort())
+    && keys.every((key) => typeof value[key] === 'string'
+      && /^(0|[1-9][0-9]*)$/.test(value[key]));
+}
+
+function parseImportedPublicationClaim({ bytes, expectedId, expectedMediaKind } = {}) {
+  let claim;
+  try {
+    claim = JSON.parse(Buffer.from(bytes).toString('utf8'));
+  } catch (_) {
+    return null;
+  }
+  if (claim === null || typeof claim !== 'object' || Array.isArray(claim)
+    || !isDeepStrictEqual(Object.keys(claim).sort(), [...PUBLICATION_CLAIM_KEYS].sort())
+    || claim.version !== 1 || claim.id !== expectedId || !UUID.test(claim.id)
+    || claim.purpose !== PUBLICATION_CLAIM_PURPOSE
+    || claim.mediaKind !== expectedMediaKind
+    || !(claim.directory === null
+      || validPersistedIdentity(claim.directory, ['dev', 'ino']))
+    || !(claim.canonical === null
+      || validPersistedIdentity(claim.canonical, ['dev', 'ino', 'size', 'mtimeNs']))
+    || !(claim.preview === null
+      || validPersistedIdentity(claim.preview, ['dev', 'ino', 'size', 'mtimeNs']))
+    || (claim.canonical !== null && claim.directory === null)
+    || (claim.mediaKind === 'image' && claim.preview !== null)) return null;
+  return claim;
+}
+
 function readOpenedMetadata(fileSystem, filePath) {
   const constants = fileSystem.constants || fs.constants;
   let descriptor = null;
@@ -88,7 +154,9 @@ function readOpenedMetadata(fileSystem, filePath) {
       fileSystem.fstatSync(descriptor),
       fileSystem.fstatSync(descriptor, { bigint: true }),
     );
-    return sameFileSnapshot(before, after) ? { bytes, ...before } : null;
+    return sameFileSnapshot(before, after)
+      ? { bytes, mode: stat.mode & 0o777, ...before }
+      : null;
   } catch (_) {
     return null;
   } finally {
@@ -304,16 +372,187 @@ function listImportedAssetBundles({ projectDir, fileSystem = fs } = {}) {
   return bundles;
 }
 
+function targetIdentityState(fileSystem, target, expected, kind) {
+  let stat;
+  try {
+    stat = fileSystem.lstatSync(target, { bigint: true });
+  } catch (error) {
+    return error.code === 'ENOENT' ? { matches: true, exists: false } : { matches: false };
+  }
+  if (stat.isSymbolicLink()
+    || (kind === 'directory' ? !stat.isDirectory() : !stat.isFile())) {
+    return { matches: false, exists: true };
+  }
+  if (expected === null) return { matches: false, exists: true };
+  const matches = String(stat.dev) === expected.dev && String(stat.ino) === expected.ino
+    && (kind === 'directory' || (String(stat.size) === expected.size
+      && String(stat.mtimeNs) === expected.mtimeNs));
+  return { matches, exists: true };
+}
+
+function removeClaimSnapshot(fileSystem, target, expected) {
+  try {
+    const stat = fileSystem.lstatSync(target);
+    const nanosecondStat = fileSystem.lstatSync(target, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink()
+      || !sameFileSnapshot(fileSnapshot(stat, nanosecondStat), expected)) return false;
+    fileSystem.unlinkSync(target);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function removeClaimedTarget(fileSystem, target, expected, kind) {
+  const state = targetIdentityState(fileSystem, target, expected, kind);
+  if (!state.matches || !state.exists) return false;
+  try {
+    if (kind === 'directory') fileSystem.rmdirSync(target);
+    else fileSystem.unlinkSync(target);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function cleanupPublicationClaim({
+  projectDir,
+  parent,
+  mediaKind,
+  id,
+  claimPath,
+  fileSystem,
+}) {
+  const claimFile = readOpenedMetadata(fileSystem, claimPath);
+  if (!claimFile || claimFile.mode !== 0o600) return [];
+  const claim = parseImportedPublicationClaim({
+    bytes: claimFile.bytes,
+    expectedId: id,
+    expectedMediaKind: mediaKind,
+  });
+  if (!claim) return [];
+
+  const mediaDirectory = path.join(parent, id);
+  const canonicalPath = path.join(
+    mediaDirectory,
+    mediaKind === 'image' ? 'media.webp' : 'media.mp4',
+  );
+  const previewParent = mediaKind === 'video'
+    ? ownedDirectory(fileSystem, projectDir, ['previews', 'broll'])
+    : null;
+  if (mediaKind === 'video' && !previewParent) return [];
+  const previewPath = previewParent ? path.join(previewParent, `${id}.webm`) : null;
+
+  const directoryState = targetIdentityState(
+    fileSystem,
+    mediaDirectory,
+    claim.directory,
+    'directory',
+  );
+  const previewState = previewPath
+    ? targetIdentityState(fileSystem, previewPath, claim.preview, 'file')
+    : { matches: claim.preview === null, exists: false };
+  if (!directoryState.matches || !previewState.matches) return [];
+
+  let canonicalState = { matches: claim.canonical === null, exists: false };
+  let markerExists = false;
+  let committedMetadata = null;
+  if (directoryState.exists) {
+    canonicalState = targetIdentityState(
+      fileSystem,
+      canonicalPath,
+      claim.canonical,
+      'file',
+    );
+    if (!canonicalState.matches) return [];
+    const markerPath = path.join(mediaDirectory, 'asset.json');
+    try {
+      const markerStat = fileSystem.lstatSync(markerPath);
+      markerExists = true;
+      if (!markerStat.isFile() || markerStat.isSymbolicLink()) return [];
+      const markerFile = readOpenedMetadata(fileSystem, markerPath);
+      if (!markerFile) return [];
+      committedMetadata = parseImportedAssetMetadata({ bytes: markerFile.bytes, expectedId: id });
+    } catch (error) {
+      if (error.code !== 'ENOENT') return [];
+    }
+  } else if (claim.canonical !== null) {
+    canonicalState = { matches: true, exists: false };
+  }
+
+  if (markerExists) {
+    if (!committedMetadata || committedMetadata.mediaKind !== mediaKind
+      || claim.directory === null || claim.canonical === null
+      || (mediaKind === 'video' && claim.preview === null)) return [];
+    const mediaType = mediaKind === 'image' ? 'images' : 'video';
+    const published = inspectImportedAssetBundle({
+      projectDir,
+      assetDirectory: mediaDirectory,
+      fileSystem,
+    });
+    if (!published
+      || !targetIdentityState(fileSystem, mediaDirectory, claim.directory, 'directory').matches
+      || !targetIdentityState(fileSystem, canonicalPath, claim.canonical, 'file').matches
+      || (previewPath
+        && !targetIdentityState(fileSystem, previewPath, claim.preview, 'file').matches)
+      || path.basename(path.dirname(mediaDirectory)) !== mediaType) return [];
+    return removeClaimSnapshot(fileSystem, claimPath, claimFile) ? [claimPath] : [];
+  }
+
+  if (directoryState.exists) {
+    let entries;
+    try {
+      entries = fileSystem.readdirSync(mediaDirectory);
+    } catch (_) {
+      return [];
+    }
+    const expectedEntries = canonicalState.exists ? [path.basename(canonicalPath)] : [];
+    if (!isDeepStrictEqual([...entries].sort(), expectedEntries)) return [];
+  }
+
+  const removed = [];
+  let complete = true;
+  if (previewState.exists) {
+    if (removeClaimedTarget(fileSystem, previewPath, claim.preview, 'file')) {
+      removed.push(previewPath);
+    } else {
+      complete = false;
+    }
+  }
+  if (canonicalState.exists) {
+    if (removeClaimedTarget(fileSystem, canonicalPath, claim.canonical, 'file')) {
+      removed.push(canonicalPath);
+    } else {
+      complete = false;
+    }
+  }
+  if (directoryState.exists) {
+    if (removeClaimedTarget(fileSystem, mediaDirectory, claim.directory, 'directory')) {
+      removed.push(mediaDirectory);
+    } else {
+      complete = false;
+    }
+  }
+  if (complete && removeClaimSnapshot(fileSystem, claimPath, claimFile)) removed.push(claimPath);
+  return removed;
+}
+
 function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
   if (typeof projectDir !== 'string') return [];
   const resolvedProject = path.resolve(projectDir);
   const removed = [];
   const published = new Set();
   const stageParents = [
-    ownedDirectory(fileSystem, resolvedProject, ['assets', 'broll', 'images']),
-    ownedDirectory(fileSystem, resolvedProject, ['assets', 'broll', 'video']),
-  ].filter(Boolean);
-  for (const parent of stageParents) {
+    {
+      parent: ownedDirectory(fileSystem, resolvedProject, ['assets', 'broll', 'images']),
+      mediaKind: 'image',
+    },
+    {
+      parent: ownedDirectory(fileSystem, resolvedProject, ['assets', 'broll', 'video']),
+      mediaKind: 'video',
+    },
+  ].filter(({ parent }) => Boolean(parent));
+  for (const { parent, mediaKind } of stageParents) {
     let entries;
     try {
       entries = fileSystem.readdirSync(parent, { withFileTypes: true });
@@ -321,12 +560,21 @@ function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
       continue;
     }
     for (const entry of entries) {
-      if (UUID.test(entry.name) && entry.isDirectory() && !entry.isSymbolicLink()) {
-        published.add(entry.name);
+      if (UUID.test(entry.name)) published.add(entry.name);
+      const claimMatch = /^\.([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.claim$/.exec(entry.name);
+      if (claimMatch && entry.isFile() && !entry.isSymbolicLink()) {
+        removed.push(...cleanupPublicationClaim({
+          projectDir: resolvedProject,
+          parent,
+          mediaKind,
+          id: claimMatch[1],
+          claimPath: path.join(parent, entry.name),
+          fileSystem,
+        }));
       }
     }
   }
-  for (const parent of stageParents) {
+  for (const { parent } of stageParents) {
     let entries;
     try {
       entries = fileSystem.readdirSync(parent, { withFileTypes: true });
@@ -378,6 +626,7 @@ function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
 
 module.exports = {
   buildImportedAssetRecord,
+  buildImportedPublicationClaim,
   cleanupOrphanImportedStages,
   inspectImportedAssetBundle,
   listImportedAssetBundles,
