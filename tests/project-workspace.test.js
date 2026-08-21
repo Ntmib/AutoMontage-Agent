@@ -387,6 +387,7 @@ test('approval freezes a reviewed draft under an approved filename', (t) => {
     version: 1,
     status: 'draft',
     source: fixture.sourcePath,
+    theme: 'lesson-neutral',
     title: 'Утверждённый brief',
     output: {
       aspect: 'horizontal',
@@ -396,7 +397,7 @@ test('approval freezes a reviewed draft under an approved filename', (t) => {
       durationInFrames: 240,
     },
     corrections: [],
-    scenes: [],
+    scenes: [{ scene: 'fullscreen', start: 0, end: 8, caption: 'УТВЕРЖДЕНО' }],
   };
   fs.writeFileSync(draft.jsonPath, JSON.stringify(draftBrief));
   fs.writeFileSync(draft.markdownPath, formatBriefMarkdown(draftBrief));
@@ -431,7 +432,16 @@ test('approval leaves no outputs when approved Markdown generation fails', (t) =
     now: new Date('2026-08-05T12:00:00Z'),
   });
   const draft = nextBriefPaths(workspace);
-  fs.writeFileSync(draft.jsonPath, JSON.stringify({ status: 'draft', scenes: [] }));
+  fs.writeFileSync(draft.jsonPath, JSON.stringify({
+    version: 1,
+    status: 'draft',
+    source: fixture.sourcePath,
+    theme: 'lesson-neutral',
+    title: 'Некорректная геометрия',
+    output: { width: 1920, height: 1080, fps: 30, durationInFrames: 240 },
+    corrections: [],
+    scenes: [{ scene: 'fullscreen', start: 0, end: 8, caption: 'ТЕСТ' }],
+  }));
   fs.writeFileSync(draft.markdownPath, 'Статус: `draft`\n');
   recordBrief(workspace, {
     revision: draft.revision,
@@ -1101,6 +1111,12 @@ test('approval rolls back manifest and outputs when a destination commit fails',
           : state.approvedJson;
       const failingFs = {
         ...fs,
+        linkSync(source, target) {
+          if (path.resolve(target) === path.resolve(failedPath)) {
+            throw new Error(`simulated ${destination} failure`);
+          }
+          return fs.linkSync(source, target);
+        },
         renameSync(source, target) {
           if (path.resolve(target) === path.resolve(failedPath)) {
             throw new Error(`simulated ${destination} failure`);

@@ -314,6 +314,12 @@ function failureFileSystem({ stagePurpose = null, commitPurpose = null }) {
       }
       return fs.renameSync(source, target);
     },
+    linkSync(source, target) {
+      if (commitPurpose && source.includes(`.tmp-${commitPurpose}-`)) {
+        throw new Error(`simulated ${commitPurpose} commit failure`);
+      }
+      return fs.linkSync(source, target);
+    },
   };
 }
 
@@ -509,7 +515,7 @@ test('review save publishes Markdown and JSON before the manifest exposes them',
   const commits = [];
   const observingFs = {
     ...fs,
-    renameSync(source, target) {
+    linkSync(source, target) {
       if (source.includes('.tmp-review-draft-markdown-')) {
         assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v01-approved.lesson.json');
         assert.equal(fs.existsSync(outputs.markdownPath), false);
@@ -520,7 +526,11 @@ test('review save publishes Markdown and JSON before the manifest exposes them',
         assert.equal(fs.existsSync(outputs.markdownPath), true);
         assert.equal(fs.existsSync(outputs.jsonPath), false);
         commits.push('json');
-      } else if (source.includes('.tmp-review-draft-manifest-')) {
+      }
+      return fs.linkSync(source, target);
+    },
+    renameSync(source, target) {
+      if (source.includes('.tmp-review-draft-manifest-')) {
         assert.equal(readProjectManifest(state.workspace.dir).currentBrief, 'brief/v01-approved.lesson.json');
         assert.equal(fs.existsSync(outputs.markdownPath), true);
         assert.equal(fs.existsSync(outputs.jsonPath), true);
@@ -590,10 +600,13 @@ test('review save returns committed data when only post-commit temp cleanup fail
   let cleanupAttempted = false;
   const cleanupFailureFs = {
     ...fs,
-    renameSync(source, target) {
-      const result = fs.renameSync(source, target);
+    linkSync(source, target) {
+      const result = fs.linkSync(source, target);
       if (source.includes('.tmp-review-draft-json-')) jsonCommitted = true;
       return result;
+    },
+    renameSync(source, target) {
+      return fs.renameSync(source, target);
     },
     unlinkSync(target) {
       if (jsonCommitted && target.includes('.tmp-review-draft-rollback-')) {
@@ -955,32 +968,22 @@ test('review save CAS preserves a foreign manifest and referenced temp injected 
   assert.deepEqual(fs.readFileSync(state.baseJsonPath), Buffer.from(`${JSON.stringify(state.baseBrief, null, 2)}\n`));
 });
 
-test('review save CAS preserves foreign manifest and referenced outputs after its manifest commit', (t) => {
-  const state = makeReviewWorkspace(t, { name: 'cas-after-commit' });
+test('review save no-replace preserves a foreign JSON created after Markdown publication', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'foreign-json-collision' });
   const manifestPath = path.join(state.workspace.dir, 'project.json');
   const outputs = expectedDraftPaths(state.workspace);
-  const jsonTempPath = `${outputs.jsonPath}.tmp-review-draft-json-${TEMPORARY_ID}`;
-  const jsonTempRelative = path.relative(state.workspace.dir, jsonTempPath).split(path.sep).join('/');
+  const beforeManifest = fs.readFileSync(manifestPath);
   const beforeBase = fs.readFileSync(state.baseJsonPath);
-  let foreignManifestBytes = null;
+  const foreignJson = Buffer.from('foreign-json-destination');
+  let injected = false;
   const racingFs = {
     ...fs,
-    renameSync(source, target) {
-      if (source.includes('.tmp-review-draft-json-')) {
-        throw new Error('simulated later JSON failure');
+    linkSync(source, target) {
+      if (!injected && path.resolve(target) === path.resolve(outputs.jsonPath)) {
+        fs.writeFileSync(outputs.jsonPath, foreignJson, { flag: 'wx' });
+        injected = true;
       }
-      const result = fs.renameSync(source, target);
-      if (source.includes('.tmp-review-draft-markdown-')) {
-        const foreignManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        foreignManifest.name = 'Foreign writer after commit';
-        foreignManifest.updatedAt = '2026-08-20T10:00:00.000Z';
-        foreignManifest.briefs.at(-1).jsonPath = jsonTempRelative;
-        foreignManifest.currentBrief = jsonTempRelative;
-        foreignManifestBytes = Buffer.from(`${JSON.stringify(foreignManifest, null, 2)}\n`);
-        fs.writeFileSync(outputs.markdownPath, 'foreign-referenced-markdown');
-        fs.writeFileSync(manifestPath, foreignManifestBytes);
-      }
-      return result;
+      return fs.linkSync(source, target);
     },
   };
 
@@ -989,14 +992,13 @@ test('review save CAS preserves foreign manifest and referenced outputs after it
     brief: editedCandidate(state.baseBrief),
     fileSystem: racingFs,
     temporaryId: () => TEMPORARY_ID,
-  }), /simulated later JSON failure/);
+  }), (error) => error && error.code === 'EEXIST');
 
-  assert.ok(foreignManifestBytes);
-  assert.deepEqual(fs.readFileSync(manifestPath), foreignManifestBytes);
-  assert.equal(fs.readFileSync(outputs.markdownPath, 'utf8'), 'foreign-referenced-markdown');
-  assert.equal(JSON.parse(fs.readFileSync(jsonTempPath, 'utf8')).status, 'draft');
-  assert.equal(fs.existsSync(outputs.jsonPath), false);
-  assert.equal(readProjectManifest(state.workspace.dir).currentBrief, jsonTempRelative);
+  assert.equal(injected, true);
+  assert.deepEqual(fs.readFileSync(manifestPath), beforeManifest);
+  assert.deepEqual(fs.readFileSync(outputs.jsonPath), foreignJson);
+  assert.equal(fs.existsSync(outputs.markdownPath), false);
+  assert.equal(readProjectManifest(state.workspace.dir).currentBrief, state.workspace.manifest.currentBrief);
   assert.deepEqual(fs.readFileSync(state.baseJsonPath), beforeBase);
 });
 

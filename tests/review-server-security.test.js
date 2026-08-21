@@ -1292,7 +1292,7 @@ test('review save stays committed but fresh state fails closed when canonical tr
     ...fs,
     renameSync(source, target) {
       const result = fs.renameSync(source, target);
-      if (!transcriptRemovedAfterCommit && source.includes('.tmp-review-draft-json-')) {
+      if (!transcriptRemovedAfterCommit && source.includes('.tmp-review-draft-manifest-')) {
         fs.unlinkSync(transcriptPath);
         transcriptRemovedAfterCommit = true;
       }
@@ -1333,10 +1333,13 @@ test('review save advances session when only post-commit temp cleanup fails', as
   let cleanupAttempted = false;
   const postCommitCleanupFailureFs = {
     ...fs,
-    renameSync(source, target) {
-      const result = fs.renameSync(source, target);
+    linkSync(source, target) {
+      const result = fs.linkSync(source, target);
       if (source.includes('.tmp-review-draft-json-')) jsonCommitted = true;
       return result;
+    },
+    renameSync(source, target) {
+      return fs.renameSync(source, target);
     },
     unlinkSync(target) {
       if (jsonCommitted && target.includes('.tmp-review-draft-rollback-')) {

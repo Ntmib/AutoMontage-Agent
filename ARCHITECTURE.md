@@ -1,6 +1,6 @@
 # Архитектура AutoMontage-Agent
 
-Актуально на 2026-08-21. Документ описывает существующий код, а не будущую дорожную карту.
+Актуально на 2026-08-22. Документ описывает существующий код, а не будущую дорожную карту.
 
 ## 1. Назначение и границы
 
@@ -82,6 +82,14 @@ no-follow flags там, где платформа их поддерживает.
 синхронизируется и атомарно переименовывается; cleanup удаляет его только при совпадении
 file identity с созданным процессом.
 
+Все изменяющие project-операции используют один межпроцессный lease из
+`scripts/project/workspace.js`: Save, approval, регистрация brief и lifecycle render не могут
+одновременно менять один workspace, но чтения остаются доступными. Полный owner record
+публикуется атомарно; live owner и owner с другого host сохраняются. Lease умершего PID на том
+же host можно забрать через identity-проверенный recovery claim. Под lease manifest заново
+читается с диска, stale in-memory snapshot получает `PROJECT_MANIFEST_CONFLICT`, а замена
+`project.json` выполняется только после повторной проверки persisted file snapshot.
+
 Containment защищает от вредоносного manifest и symlink, существующих на момент проверки.
 Соперничающий локальный процесс с правом записи в workspace или внешний `--outdir` может заменить предка между
 проверкой и файловой операцией; portable Node API не даёт для этого кроссплатформенный
@@ -110,10 +118,13 @@ flowchart LR
 `scripts/lesson/brief.js` валидирует данные и превращает approved brief в props.
 `schema/lesson-brief.schema.json` фиксирует контракт.
 
-Approval сначала готовит owned sibling temp для JSON, Markdown, нового manifest и rollback-копии.
-Commit идёт в порядке manifest, Markdown, JSON: renderable approved JSON появляется последним.
-Сбой до этого шага удаляет опубликованный Markdown, возвращает прежний manifest и очищает только
-owned temps. При рендере точный legacy `faceSrc: "source.mp4"` внутри сцены переводится на
+Approval под project lease заново читает и полностью валидирует текущий persisted draft и
+manifest. Markdown и JSON публикуются первыми атомарными no-replace hard links, поэтому уже
+существующая историческая ревизия никогда не заменяется. `project.json` публикуется CAS-последним:
+reader либо видит прежний currentBrief, либо новый указатель на уже существующий JSON. Сбой до
+manifest удаляет только собственные опубликованные файлы; hard exit может оставить безопасный
+orphan, и следующая draft-ревизия пропускает занятое имя. При рендере точный legacy
+`faceSrc: "source.mp4"` внутри сцены переводится на
 текущий source lease вместе с top-level `faceSrc` и `audioSrc`.
 
 Brief замораживает исходник, тему, аспект, размеры, FPS, длительность, сцены и проверенное
@@ -160,12 +171,13 @@ asset preview даёт `404`, а validate/save — `422`.
 и возвращает browser-safe diff. Save повторяет эту проверку на свежем snapshot и через project
 workspace создаёт новую draft Markdown/JSON-ревизию и ровно одну manifest entry. Исходный draft,
 approved-файлы и render history не перезаписываются. Review не вызывает approval или Remotion.
-Перед повторным чтением CAS и выделением номера workspace берёт фиксированный exclusive
-reservation через `O_CREAT | O_EXCL | O_NOFOLLOW`. Чужой или symlink lock закрывает операцию;
-owned lock освобождается по file identity на success и rollback. Review сначала публикует
-Markdown, затем канонический JSON, повторно сверяет старый manifest и лишь после этого атомарно
-публикует новый manifest. Поэтому `/api/state` продолжает видеть старую согласованную ревизию,
-пока оба файла новой пары не стали видимы; ошибки проходят через прежний identity-safe rollback.
+Перед повторным чтением CAS и выделением номера workspace берёт общий project mutation lease.
+Живой или foreign-host owner даёт прежний `409`, а lease завершившегося PID восстанавливается
+без удаления чужих байтов. Review публикует Markdown и канонический JSON через atomic
+no-replace, повторно сверяет старый manifest и лишь после этого атомарно публикует новый
+manifest. Поэтому `/api/state` продолжает видеть старую согласованную ревизию, пока оба файла
+новой пары не стали видимы. Orphan после hard exit не перезаписывается: allocator выбирает
+следующий свободный номер ревизии.
 
 Редактор принимает только `move-boundary`, `replace-broll`, `set-broll-fit`,
 `set-broll-video-start` и `set-broll-audio-mode` с непрозрачным `asset-N` из текущего allowlist.

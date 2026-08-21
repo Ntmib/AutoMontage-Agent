@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { createHash, randomUUID, timingSafeEqual } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
@@ -188,9 +189,17 @@ function stageOwnedSiblingFile(destination, data, {
   let committedPath = null;
   return {
     path: temporaryPath,
-    commit(target = destination) {
+    commitReplace(target = destination) {
       fileSystem.renameSync(temporaryPath, target);
       committedPath = target;
+    },
+    commitNoReplace(target = destination) {
+      fileSystem.linkSync(temporaryPath, target);
+      committedPath = target;
+      fileSystem.unlinkSync(temporaryPath);
+    },
+    commit(target = destination) {
+      this.commitReplace(target);
     },
     cleanupTemp() {
       const current = lstatIfPresent(fileSystem, temporaryPath);
@@ -266,7 +275,7 @@ function readProjectManifest(projectDir) {
   return validateProjectManifest(manifest, { projectDir: resolvedProjectDir });
 }
 
-function writeProjectManifest(projectDir, manifest, {
+function writeProjectManifestAtomic(projectDir, manifest, {
   fileSystem = fs,
   temporaryId = randomUUID,
 } = {}) {
@@ -287,10 +296,23 @@ function writeProjectManifest(projectDir, manifest, {
     { fileSystem, temporaryId, purpose: 'manifest' },
   );
   try {
-    staged.commit();
+    staged.commitReplace();
   } finally {
     staged.cleanupTemp();
   }
+}
+
+function writeProjectManifest(projectDir, manifest, options = {}) {
+  const resolvedProjectDir = path.resolve(projectDir);
+  const manifestPath = path.join(resolvedProjectDir, 'project.json');
+  if (!lstatIfPresent(options.fileSystem || fs, manifestPath)) {
+    return writeProjectManifestAtomic(resolvedProjectDir, manifest, options);
+  }
+  return withProjectMutation(
+    { dir: resolvedProjectDir, manifest: readProjectManifest(resolvedProjectDir) },
+    (transaction) => transaction.commitManifest(manifest, { purpose: 'manifest' }),
+    { ...options, expectedManifest: false },
+  );
 }
 
 function ensureProjectDirectories(projectDir) {
@@ -429,31 +451,37 @@ function relativeProjectPath(workspace, filePath) {
   return relative.split(path.sep).join('/');
 }
 
-function nextBriefPaths(workspace, kind = 'lesson') {
+function nextBriefPaths(workspace, kind = 'lesson', { fileSystem = fs } = {}) {
   const highestRevision = workspace.manifest.briefs.reduce(
     (highest, brief) => Math.max(highest, Number(brief.revision) || 0),
     0,
   );
-  const revision = highestRevision + 1;
-  const prefix = `${formatVersion(revision)}-draft.${kind}`;
   resolveProjectPath(workspace.dir, 'brief', {
     label: 'project directory brief',
+    fileSystem,
     mustExist: true,
     type: 'directory',
   });
-  return {
-    revision,
-    jsonPath: resolveProjectPath(workspace.dir, path.posix.join('brief', `${prefix}.json`), {
+  let revision = highestRevision + 1;
+  while (true) {
+    const prefix = `${formatVersion(revision)}-draft.${kind}`;
+    const jsonPath = resolveProjectPath(workspace.dir, path.posix.join('brief', `${prefix}.json`), {
       label: 'next brief JSON path',
+      fileSystem,
       mustExist: false,
       type: 'file',
-    }),
-    markdownPath: resolveProjectPath(workspace.dir, path.posix.join('brief', `${prefix}.md`), {
+    });
+    const markdownPath = resolveProjectPath(workspace.dir, path.posix.join('brief', `${prefix}.md`), {
       label: 'next brief Markdown path',
+      fileSystem,
       mustExist: false,
       type: 'file',
-    }),
-  };
+    });
+    if (!lstatIfPresent(fileSystem, jsonPath) && !lstatIfPresent(fileSystem, markdownPath)) {
+      return { revision, jsonPath, markdownPath };
+    }
+    revision += 1;
+  }
 }
 
 function recordBrief(workspace, {
@@ -463,79 +491,235 @@ function recordBrief(workspace, {
   status,
   theme = null,
   aspect = null,
-}) {
-  const entry = {
-    revision,
-    jsonPath: relativeProjectPath(workspace, jsonPath),
-    markdownPath: markdownPath ? relativeProjectPath(workspace, markdownPath) : null,
-    status,
-    theme,
-    aspect,
-  };
-  workspace.manifest.briefs.push(entry);
-  workspace.manifest.currentBrief = entry.jsonPath;
-  workspace.manifest.updatedAt = new Date().toISOString();
-  writeProjectManifest(workspace.dir, workspace.manifest);
-  return workspace;
+}, options = {}) {
+  return withProjectMutation(workspace, (transaction) => {
+    const entry = {
+      revision,
+      jsonPath: relativeProjectPath(workspace, jsonPath),
+      markdownPath: markdownPath ? relativeProjectPath(workspace, markdownPath) : null,
+      status,
+      theme,
+      aspect,
+    };
+    const nextManifest = JSON.parse(JSON.stringify(transaction.manifest));
+    nextManifest.briefs.push(entry);
+    nextManifest.currentBrief = entry.jsonPath;
+    nextManifest.updatedAt = new Date().toISOString();
+    workspace.manifest = transaction.commitManifest(nextManifest, { purpose: 'brief-manifest' });
+    return workspace;
+  }, options);
 }
 
 const MANIFEST_CONFLICT = 'PROJECT_MANIFEST_CONFLICT';
 const REVIEW_DRAFT_RESERVATION = '.review-draft-reservation';
+const PROJECT_MUTATION_LEASE = '.project-mutation.lock';
 
 function manifestConflict() {
-  const error = new Error('project manifest changed concurrently');
+  const error = new Error('project manifest changed concurrently; stale snapshot');
   error.code = MANIFEST_CONFLICT;
   return error;
 }
 
-function acquireReviewDraftReservation(workspace, fileSystem) {
-  const directPath = path.join(path.resolve(workspace.dir), REVIEW_DRAFT_RESERVATION);
-  let reservationPath;
-  try {
-    reservationPath = resolveProjectPath(workspace.dir, REVIEW_DRAFT_RESERVATION, {
-      label: 'review draft reservation',
-      fileSystem,
-      mustExist: false,
-      type: 'file',
-    });
-  } catch (error) {
-    if (lstatIfPresent(fileSystem, directPath)) throw manifestConflict();
-    throw error;
+function isProvablyDeadLeaseOwner(owner, {
+  hostname = os.hostname(),
+  killProcess = process.kill,
+} = {}) {
+  if (!owner || owner.version !== 1 || owner.hostname !== hostname
+    || !Number.isInteger(owner.pid) || owner.pid <= 0
+    || typeof owner.token !== 'string' || !TEMPORARY_ID.test(owner.token)) {
+    return false;
   }
-
-  const constants = fileSystem.constants || fs.constants;
-  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-    | (constants.O_NOFOLLOW || 0);
-  let handle = null;
-  let identity = null;
   try {
-    handle = fileSystem.openSync(reservationPath, flags, 0o600);
-    identity = fileSystem.fstatSync(handle);
-    if (!identity.isFile()) throw manifestConflict();
-    fileSystem.closeSync(handle);
-    handle = null;
+    killProcess(owner.pid, 0);
+    return false;
   } catch (error) {
-    if (handle !== null) fileSystem.closeSync(handle);
-    const current = lstatIfPresent(fileSystem, reservationPath);
-    if (identity && current && sameFileIdentity(identity, current)) {
-      fileSystem.unlinkSync(reservationPath);
+    return Boolean(error && error.code === 'ESRCH');
+  }
+}
+
+function readLeaseOwner(fileSystem, leasePath) {
+  const snapshot = readFileSnapshot(fileSystem, leasePath);
+  let owner;
+  try {
+    owner = JSON.parse(snapshot.bytes.toString('utf8'));
+  } catch (_) {
+    throw manifestConflict();
+  }
+  return { owner, snapshot };
+}
+
+function acquireProjectMutationLease(projectDir, {
+  fileSystem = fs,
+  temporaryId = randomUUID,
+  hostname = os.hostname(),
+  pid = process.pid,
+  killProcess = process.kill,
+  now = () => new Date(),
+} = {}) {
+  const resolvedProjectDir = path.resolve(projectDir);
+  const leasePath = resolveProjectPath(resolvedProjectDir, PROJECT_MUTATION_LEASE, {
+    label: 'project mutation lease',
+    fileSystem,
+    mustExist: false,
+    type: 'file',
+  });
+  const token = safeTemporaryId(temporaryId);
+  const owner = {
+    version: 1,
+    token,
+    pid,
+    hostname,
+    acquiredAt: now().toISOString(),
+  };
+  const ownerBytes = Buffer.from(`${JSON.stringify(owner)}\n`);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const staged = stageOwnedSiblingFile(leasePath, ownerBytes, {
+      fileSystem,
+      temporaryId: () => token,
+      purpose: 'project-mutation-owner',
+    });
+    try {
+      fileSystem.linkSync(staged.path, leasePath);
+      const identity = lstatIfPresent(fileSystem, leasePath);
+      if (!identity || identity.isSymbolicLink() || !identity.isFile()) throw manifestConflict();
+      const committed = { identity, bytes: ownerBytes };
+      assertFileSnapshot(fileSystem, leasePath, committed);
+      return {
+        path: leasePath,
+        owner,
+        release() {
+          assertFileSnapshot(fileSystem, leasePath, committed);
+          fileSystem.unlinkSync(leasePath);
+        },
+      };
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') throw error;
+    } finally {
+      staged.cleanupTemp();
     }
-    if ((error && (error.code === 'EEXIST' || error.code === 'ELOOP')) || current) {
+
+    let existing;
+    try {
+      existing = readLeaseOwner(fileSystem, leasePath);
+    } catch (error) {
       throw manifestConflict();
     }
-    throw error;
-  }
-
-  return {
-    release() {
-      const current = lstatIfPresent(fileSystem, reservationPath);
-      if (!current || current.isSymbolicLink() || !current.isFile()
-        || !sameFileIdentity(identity, current)) {
-        throw manifestConflict();
+    if (!isProvablyDeadLeaseOwner(existing.owner, { hostname, killProcess })) {
+      throw manifestConflict();
+    }
+    assertFileSnapshot(fileSystem, leasePath, existing.snapshot);
+    const tombstonePath = `${leasePath}.dead-${existing.owner.token}`;
+    try {
+      fileSystem.linkSync(leasePath, tombstonePath);
+      assertFileSnapshot(fileSystem, tombstonePath, existing.snapshot);
+      assertFileSnapshot(fileSystem, leasePath, existing.snapshot);
+      fileSystem.unlinkSync(leasePath);
+      fileSystem.unlinkSync(tombstonePath);
+    } catch (error) {
+      const tombstone = lstatIfPresent(fileSystem, tombstonePath);
+      const current = lstatIfPresent(fileSystem, leasePath);
+      if (!current && tombstone && sameFileIdentity(tombstone, existing.snapshot.identity)) {
+        try {
+          fileSystem.unlinkSync(tombstonePath);
+        } catch (_) {
+          // The dead lease path is already gone; the tombstone cannot block acquisition.
+        }
+        continue;
       }
-      fileSystem.unlinkSync(reservationPath);
-    },
-  };
+      if (error && error.code === 'EEXIST'
+        && tombstone && current
+        && sameFileIdentity(tombstone, existing.snapshot.identity)
+        && sameFileIdentity(current, existing.snapshot.identity)) {
+        fileSystem.unlinkSync(tombstonePath);
+        continue;
+      }
+      throw manifestConflict();
+    }
+  }
+  throw manifestConflict();
+}
+
+function withProjectMutation(workspace, operation, {
+  fileSystem = fs,
+  temporaryId = randomUUID,
+  mutationLease = null,
+  expectedManifest = workspace.manifest,
+  hostname,
+  pid,
+  killProcess,
+  now,
+} = {}) {
+  const lease = mutationLease || acquireProjectMutationLease(workspace.dir, {
+    fileSystem, temporaryId, hostname, pid, killProcess, now,
+  });
+  const ownsLease = !mutationLease;
+  let operationError = null;
+  try {
+    const manifestPath = resolveProjectPath(workspace.dir, 'project.json', {
+      label: 'project.json', fileSystem, mustExist: true, type: 'file',
+    });
+    let manifestSnapshot = readFileSnapshot(fileSystem, manifestPath);
+    let persistedManifest = validateProjectManifest(
+      JSON.parse(manifestSnapshot.bytes.toString('utf8')),
+      { projectDir: workspace.dir, fileSystem },
+    );
+    if (expectedManifest !== false
+      && canonicalJsonHash(persistedManifest) !== canonicalJsonHash(expectedManifest)) {
+      throw manifestConflict();
+    }
+    const transaction = {
+      lease,
+      get manifest() {
+        return persistedManifest;
+      },
+      commitManifest(nextManifest, { purpose = 'project-mutation-manifest' } = {}) {
+        const validated = validateProjectManifest(nextManifest, {
+          projectDir: workspace.dir,
+          fileSystem,
+        });
+        const bytes = Buffer.from(`${JSON.stringify(validated, null, 2)}\n`);
+        const staged = stageOwnedSiblingFile(manifestPath, bytes, {
+          fileSystem,
+          temporaryId,
+          purpose,
+        });
+        let committed = false;
+        try {
+          assertFileSnapshot(fileSystem, manifestPath, manifestSnapshot);
+          staged.commitReplace();
+          committed = true;
+          const nextSnapshot = readFileSnapshot(fileSystem, manifestPath);
+          if (!nextSnapshot.bytes.equals(bytes)) throw manifestConflict();
+          manifestSnapshot = nextSnapshot;
+          persistedManifest = validated;
+          return validated;
+        } finally {
+          if (!committed) staged.cleanupTemp();
+          else {
+            try {
+              staged.cleanupTemp();
+            } catch (_) {
+              // The manifest replacement is already the transaction commit point.
+            }
+          }
+        }
+      },
+    };
+    return operation(transaction);
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    if (ownsLease) {
+      try {
+        lease.release();
+      } catch (releaseError) {
+        if (operationError) operationError.leaseReleaseError = releaseError;
+        else throw releaseError;
+      }
+    }
+  }
 }
 
 function canonicalJsonHash(value) {
@@ -660,7 +844,7 @@ function saveDraftRevisionReserved(workspace, {
   }
 
   const allocationWorkspace = { ...workspace, manifest: persistedManifest };
-  const allocated = nextBriefPaths(allocationWorkspace);
+  const allocated = nextBriefPaths(allocationWorkspace, 'lesson', { fileSystem });
   const jsonPath = resolveProjectPath(
     workspace.dir,
     relativeProjectPath(workspace, allocated.jsonPath),
@@ -737,10 +921,10 @@ function saveDraftRevisionReserved(workspace, {
 
     assertFileSnapshot(fileSystem, resolvedBasePath, baseBriefSnapshot);
     assertFileSnapshot(fileSystem, manifestPath, oldManifestSnapshot);
-    markdownStage.commit();
-    jsonStage.commit();
+    markdownStage.commitNoReplace();
+    jsonStage.commitNoReplace();
     assertFileSnapshot(fileSystem, manifestPath, oldManifestSnapshot);
-    manifestStage.commit();
+    manifestStage.commitReplace();
     manifestCommitted = true;
     const committedIdentity = lstatIfPresent(fileSystem, manifestPath);
     if (!committedIdentity || committedIdentity.isSymbolicLink() || !committedIdentity.isFile()) {
@@ -766,7 +950,7 @@ function saveDraftRevisionReserved(workspace, {
     if (manifestCommitted) {
       try {
         assertFileSnapshot(fileSystem, manifestPath, committedManifestSnapshot);
-        rollbackStage.commit(manifestPath);
+        rollbackStage.commitReplace(manifestPath);
         manifestCommitted = false;
         const restoredManifest = readFileSnapshot(fileSystem, manifestPath);
         if (!restoredManifest.bytes.equals(oldManifestSnapshot.bytes)) throw manifestConflict();
@@ -814,21 +998,14 @@ function saveDraftRevisionReserved(workspace, {
 
 function saveDraftRevision(workspace, options = {}) {
   const fileSystem = options.fileSystem || fs;
-  const reservation = acquireReviewDraftReservation(workspace, fileSystem);
-  let operationError = null;
-  try {
-    return saveDraftRevisionReserved(workspace, { ...options, fileSystem });
-  } catch (error) {
-    operationError = error;
-    throw error;
-  } finally {
-    try {
-      reservation.release();
-    } catch (releaseError) {
-      if (operationError) operationError.reservationError = releaseError;
-      else throw releaseError;
-    }
+  if (lstatIfPresent(fileSystem, path.join(path.resolve(workspace.dir), REVIEW_DRAFT_RESERVATION))) {
+    throw manifestConflict();
   }
+  return withProjectMutation(
+    workspace,
+    () => saveDraftRevisionReserved(workspace, { ...options, fileSystem }),
+    { ...options, fileSystem },
+  );
 }
 
 function approveBrief(workspace, draftJsonPath, {
@@ -836,169 +1013,161 @@ function approveBrief(workspace, draftJsonPath, {
   temporaryId = randomUUID,
   root = path.resolve(__dirname, '../..'),
   runToolImpl,
+  mutationLease = null,
 } = {}) {
-  const draftRelativePath = relativeProjectPath(workspace, path.resolve(draftJsonPath));
-  const draftEntry = workspace.manifest.briefs.find(
-    (brief) => brief.jsonPath === draftRelativePath,
-  );
-  if (!draftEntry) throw new Error('черновик не зарегистрирован в project.json');
-  const draftPath = resolveProjectPath(workspace.dir, draftEntry.jsonPath, {
-    label: 'manifest.briefs[].jsonPath',
-    fileSystem,
-    mustExist: true,
-    type: 'file',
-  });
-  if (!/-draft\.[^.]+\.json$/i.test(draftPath)) {
-    throw new Error('имя черновика должно содержать -draft');
-  }
-  const draft = JSON.parse(fileSystem.readFileSync(draftPath, 'utf8'));
-  if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
-  preflightBriefBrollMedia(draft);
-  if (!Array.isArray(draft.scenes)
-    || draft.scenes.some((scene) => scene?.brollMedia)) {
+  return withProjectMutation(workspace, (transaction) => {
+    const persistedManifest = transaction.manifest;
+    const persistedWorkspace = { ...workspace, manifest: persistedManifest };
+    const draftRelativePath = relativeProjectPath(workspace, path.resolve(draftJsonPath));
+    const draftEntry = persistedManifest.briefs.find(
+      (brief) => brief.jsonPath === draftRelativePath,
+    );
+    if (!draftEntry) throw new Error('черновик не зарегистрирован в project.json');
+    if (persistedManifest.currentBrief !== draftRelativePath) throw manifestConflict();
+    const draftPath = resolveProjectPath(workspace.dir, draftEntry.jsonPath, {
+      label: 'manifest.briefs[].jsonPath',
+      fileSystem,
+      mustExist: true,
+      type: 'file',
+    });
+    if (!/-draft\.[^.]+\.json$/i.test(draftPath)) {
+      throw new Error('имя черновика должно содержать -draft');
+    }
+    const draftSnapshot = readFileSnapshot(fileSystem, draftPath);
+    const draft = JSON.parse(draftSnapshot.bytes.toString('utf8'));
+    if (draft.status !== 'draft') throw new Error('утвердить можно только brief со статусом draft');
+    preflightBriefBrollMedia(draft);
     const draftValidation = validateLessonBrief(draft);
     if (!draftValidation.ok) {
       throw new Error(`draft brief is invalid: ${draftValidation.errors.join('\n')}`);
     }
-  }
-  for (const [index, scene] of (Array.isArray(draft.scenes) ? draft.scenes : []).entries()) {
-    if (scene?.scene === 'broll' && !scene.brollMedia && !isRenderableBrollSource(scene.brollSrc)) {
-      throw new Error(`scenes[${index}].brollSrc: b-roll поддерживает только изображения`);
+    for (const [index, scene] of draft.scenes.entries()) {
+      if (scene?.scene === 'broll' && !scene.brollMedia && !isRenderableBrollSource(scene.brollSrc)) {
+        throw new Error(`scenes[${index}].brollSrc: b-roll поддерживает только изображения`);
+      }
     }
-  }
 
-  const approvedJsonPath = draftPath.replace(/-draft(\.[^.]+\.json)$/i, '-approved$1');
-  const approvedJsonRelativePath = relativeProjectPath(workspace, approvedJsonPath);
-  resolveProjectPath(workspace.dir, approvedJsonRelativePath, {
-    label: 'approved brief JSON path',
-    fileSystem,
-    mustExist: false,
-  });
-  const draftMarkdownPath = draftEntry.markdownPath
-    ? resolveProjectPath(workspace.dir, draftEntry.markdownPath, {
-      label: 'manifest.briefs[].markdownPath',
-      fileSystem,
-      mustExist: true,
-      type: 'file',
-    })
-    : null;
-  const approvedMarkdownPath = draftMarkdownPath
-    ? draftMarkdownPath.replace(/-draft(\.[^.]+\.md)$/i, '-approved$1')
-    : null;
-  if (approvedMarkdownPath) {
-    resolveProjectPath(workspace.dir, relativeProjectPath(workspace, approvedMarkdownPath), {
-      label: 'approved brief Markdown path',
+    const approvedJsonPath = draftPath.replace(/-draft(\.[^.]+\.json)$/i, '-approved$1');
+    const approvedJsonRelativePath = relativeProjectPath(workspace, approvedJsonPath);
+    resolveProjectPath(workspace.dir, approvedJsonRelativePath, {
+      label: 'approved brief JSON path',
       fileSystem,
       mustExist: false,
     });
-  }
-  for (const [label, destination] of [
-    ['approved brief JSON path', approvedJsonPath],
-    ['approved brief Markdown path', approvedMarkdownPath],
-  ]) {
-    if (destination && lstatIfPresent(fileSystem, destination)) {
-      throw new Error(`${label} already exists`);
-    }
-  }
-  const approvedBrief = { ...draft, status: 'approved' };
-  const approvedMarkdown = approvedMarkdownPath ? formatBriefMarkdown(approvedBrief) : null;
-  const entry = {
-    revision: draftEntry.revision,
-    jsonPath: approvedJsonRelativePath,
-    markdownPath: approvedMarkdownPath
-      ? relativeProjectPath(workspace, approvedMarkdownPath)
-      : null,
-    status: 'approved',
-    theme: draftEntry.theme,
-    aspect: draftEntry.aspect,
-  };
-  const nextManifest = JSON.parse(JSON.stringify(workspace.manifest));
-  nextManifest.briefs.push(entry);
-  nextManifest.currentBrief = entry.jsonPath;
-  nextManifest.updatedAt = new Date().toISOString();
-  const validatedManifest = validateProjectManifest(nextManifest, {
-    projectDir: workspace.dir,
-    fileSystem,
-  });
-  const manifestPath = resolveProjectPath(workspace.dir, 'project.json', {
-    label: 'project.json',
-    fileSystem,
-    mustExist: true,
-    type: 'file',
-  });
-  const oldManifest = fileSystem.readFileSync(manifestPath, 'utf8');
-  const mediaVerification = verifyBriefBrollMedia({
-    root, workspace, brief: draft, runToolImpl, fileSystem,
-  });
-  const stages = [];
-  let manifestStage;
-  let rollbackStage;
-  let markdownStage = null;
-  let jsonStage;
-  let manifestCommitted = false;
-  try {
-    manifestStage = stageOwnedSiblingFile(
-      manifestPath,
-      `${JSON.stringify(validatedManifest, null, 2)}\n`,
-      { fileSystem, temporaryId, purpose: 'approval-manifest' },
-    );
-    stages.push(manifestStage);
-    rollbackStage = stageOwnedSiblingFile(manifestPath, oldManifest, {
-      fileSystem,
-      temporaryId,
-      purpose: 'approval-rollback',
-    });
-    stages.push(rollbackStage);
-    if (approvedMarkdownPath) {
-      markdownStage = stageOwnedSiblingFile(approvedMarkdownPath, approvedMarkdown, {
+    const draftMarkdownPath = draftEntry.markdownPath
+      ? resolveProjectPath(workspace.dir, draftEntry.markdownPath, {
+        label: 'manifest.briefs[].markdownPath',
         fileSystem,
-        temporaryId,
-        purpose: 'approval-markdown',
+        mustExist: true,
+        type: 'file',
+      })
+      : null;
+    const approvedMarkdownPath = draftMarkdownPath
+      ? draftMarkdownPath.replace(/-draft(\.[^.]+\.md)$/i, '-approved$1')
+      : null;
+    if (approvedMarkdownPath) {
+      resolveProjectPath(workspace.dir, relativeProjectPath(workspace, approvedMarkdownPath), {
+        label: 'approved brief Markdown path',
+        fileSystem,
+        mustExist: false,
       });
-      stages.push(markdownStage);
     }
-    jsonStage = stageOwnedSiblingFile(
-      approvedJsonPath,
-      `${JSON.stringify(approvedBrief, null, 2)}\n`,
-      { fileSystem, temporaryId, purpose: 'approval-json' },
-    );
-    stages.push(jsonStage);
-
-    mediaVerification.assertCurrent();
-    manifestStage.commit();
-    manifestCommitted = true;
-    if (markdownStage) markdownStage.commit();
-    jsonStage.commit();
-  } catch (error) {
-    const rollbackErrors = [];
-    try {
-      if (markdownStage) markdownStage.removeCommitted();
-    } catch (rollbackError) {
-      rollbackErrors.push(rollbackError);
-    }
-    if (manifestCommitted) {
-      try {
-        rollbackStage.commit(manifestPath);
-        manifestCommitted = false;
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
+    for (const [label, destination] of [
+      ['approved brief JSON path', approvedJsonPath],
+      ['approved brief Markdown path', approvedMarkdownPath],
+    ]) {
+      if (destination && lstatIfPresent(fileSystem, destination)) {
+        throw new Error(`${label} already exists`);
       }
     }
-    if (rollbackErrors.length) error.rollbackErrors = rollbackErrors;
-    throw error;
-  } finally {
+    const approvedBrief = { ...draft, status: 'approved' };
+    const approvedMarkdown = approvedMarkdownPath ? formatBriefMarkdown(approvedBrief) : null;
+    const entry = {
+      revision: draftEntry.revision,
+      jsonPath: approvedJsonRelativePath,
+      markdownPath: approvedMarkdownPath
+        ? relativeProjectPath(workspace, approvedMarkdownPath)
+        : null,
+      status: 'approved',
+      theme: draftEntry.theme,
+      aspect: draftEntry.aspect,
+    };
+    const nextManifest = JSON.parse(JSON.stringify(persistedManifest));
+    nextManifest.briefs.push(entry);
+    nextManifest.currentBrief = entry.jsonPath;
+    nextManifest.updatedAt = new Date().toISOString();
+    const mediaVerification = verifyBriefBrollMedia({
+      root, workspace: persistedWorkspace, brief: draft, runToolImpl, fileSystem,
+    });
+    const stages = [];
+    let markdownStage = null;
+    let jsonStage = null;
+    let manifestCommitted = false;
     try {
-      for (const stage of stages) stage.cleanupTemp();
+      if (approvedMarkdownPath) {
+        markdownStage = stageOwnedSiblingFile(approvedMarkdownPath, approvedMarkdown, {
+          fileSystem,
+          temporaryId,
+          purpose: 'approval-markdown',
+        });
+        stages.push(markdownStage);
+      }
+      jsonStage = stageOwnedSiblingFile(
+        approvedJsonPath,
+        `${JSON.stringify(approvedBrief, null, 2)}\n`,
+        { fileSystem, temporaryId, purpose: 'approval-json' },
+      );
+      stages.push(jsonStage);
+
+      assertFileSnapshot(fileSystem, draftPath, draftSnapshot);
+      mediaVerification.assertCurrent();
+      if (markdownStage) markdownStage.commitNoReplace();
+      jsonStage.commitNoReplace();
+      assertFileSnapshot(fileSystem, draftPath, draftSnapshot);
+      const validatedManifest = transaction.commitManifest(nextManifest, {
+        purpose: 'approval-manifest',
+      });
+      manifestCommitted = true;
+      workspace.manifest = validatedManifest;
+      return {
+        revision: draftEntry.revision,
+        jsonPath: approvedJsonPath,
+        markdownPath: approvedMarkdownPath,
+      };
+    } catch (error) {
+      const rollbackErrors = [];
+      if (!manifestCommitted) {
+        for (const stage of [jsonStage, markdownStage]) {
+          if (!stage) continue;
+          try {
+            stage.removeCommitted();
+          } catch (rollbackError) {
+            rollbackErrors.push(rollbackError);
+          }
+        }
+      }
+      if (rollbackErrors.length) error.rollbackErrors = rollbackErrors;
+      throw error;
     } finally {
-      mediaVerification.close();
+      const cleanup = () => {
+        for (const stage of stages) stage.cleanupTemp();
+        mediaVerification.close();
+      };
+      if (manifestCommitted) {
+        try {
+          cleanup();
+        } catch (_) {
+          // Historical files and the manifest are already durably published.
+        }
+      } else {
+        cleanup();
+      }
     }
-  }
-  workspace.manifest = validatedManifest;
-  return {
-    revision: draftEntry.revision,
-    jsonPath: approvedJsonPath,
-    markdownPath: approvedMarkdownPath,
-  };
+  }, {
+    fileSystem,
+    temporaryId,
+    mutationLease,
+  });
 }
 
 function nextRenderPaths(workspace, label = 'render') {
@@ -1053,29 +1222,32 @@ function recordRender(workspace, {
   dir,
   briefPath = null,
   status,
-}) {
-  const entry = {
-    version,
-    label,
-    dir: relativeProjectPath(workspace, dir),
-    briefPath: briefPath ? relativeProjectPath(workspace, briefPath) : null,
-    status,
-  };
-  const existingIndex = workspace.manifest.renders.findIndex(
-    (render) => Number(render.version) === Number(version),
-  );
-  if (existingIndex >= 0) {
-    workspace.manifest.renders[existingIndex] = {
-      ...workspace.manifest.renders[existingIndex],
-      ...entry,
+}, options = {}) {
+  return withProjectMutation(workspace, (transaction) => {
+    const entry = {
+      version,
+      label,
+      dir: relativeProjectPath(workspace, dir),
+      briefPath: briefPath ? relativeProjectPath(workspace, briefPath) : null,
+      status,
     };
-  } else {
-    workspace.manifest.renders.push(entry);
-  }
-  if (status === 'complete') workspace.manifest.latestRender = entry.dir;
-  workspace.manifest.updatedAt = new Date().toISOString();
-  writeProjectManifest(workspace.dir, workspace.manifest);
-  return workspace;
+    const nextManifest = JSON.parse(JSON.stringify(transaction.manifest));
+    const existingIndex = nextManifest.renders.findIndex(
+      (render) => Number(render.version) === Number(version),
+    );
+    if (existingIndex >= 0) {
+      nextManifest.renders[existingIndex] = {
+        ...nextManifest.renders[existingIndex],
+        ...entry,
+      };
+    } else {
+      nextManifest.renders.push(entry);
+    }
+    if (status === 'complete') nextManifest.latestRender = entry.dir;
+    nextManifest.updatedAt = new Date().toISOString();
+    workspace.manifest = transaction.commitManifest(nextManifest, { purpose: 'render-manifest' });
+    return workspace;
+  }, options);
 }
 
 function publishFinal(workspace, renderFinalPath, {
@@ -1121,23 +1293,27 @@ function runRenderLifecycle(workspace, render, operation, {
     dir: render.dir,
     briefPath: render.briefPath || null,
   };
-  recordRender(workspace, { ...metadata, status: 'started' });
-  try {
-    const renderFinalPath = operation();
-    const destination = publish(workspace, renderFinalPath);
-    recordRender(workspace, { ...metadata, status: 'complete' });
-    return destination;
-  } catch (error) {
+  return withProjectMutation(workspace, (transaction) => {
+    const options = { mutationLease: transaction.lease };
+    recordRender(workspace, { ...metadata, status: 'started' }, options);
     try {
-      recordRender(workspace, { ...metadata, status: 'failed' });
-    } catch (manifestError) {
-      error.manifestError = manifestError;
+      const renderFinalPath = operation();
+      const destination = publish(workspace, renderFinalPath);
+      recordRender(workspace, { ...metadata, status: 'complete' }, options);
+      return destination;
+    } catch (error) {
+      try {
+        recordRender(workspace, { ...metadata, status: 'failed' }, options);
+      } catch (manifestError) {
+        error.manifestError = manifestError;
+      }
+      throw error;
     }
-    throw error;
-  }
+  });
 }
 
 module.exports = {
+  acquireProjectMutationLease,
   approveBrief,
   createOrOpenProject,
   formatProjectId,
@@ -1152,5 +1328,6 @@ module.exports = {
   saveDraftRevision,
   slugifyProjectName,
   validateProjectManifest,
+  withProjectMutation,
   writeProjectManifest,
 };

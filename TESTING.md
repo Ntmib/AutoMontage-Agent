@@ -24,8 +24,9 @@ npm test
   или generated путь обязан остаться внутри своего workspace/outdir;
 - общий lesson/Dynamic export: реальный existing/dangling final symlink и symlinked/non-directory
   parent отклоняются без изменения внешнего sentinel, а новый вложенный `--outdir` создаётся;
-- exclusive unpredictable temp для manifest; версии draft/approved brief, rollback JSON/Markdown/
-  manifest при I/O failure, render history и канонический final;
+- единый cross-process project mutation lease для Save/approval/brief/render, сохранность
+  live/foreign owner, reclaim умершего PID, persisted-snapshot CAS manifest-last и atomic
+  no-replace для исторических draft/approved JSON/Markdown;
 - lifecycle `started → failed/complete`, сохранность прежнего final и атомарную публикацию;
 - CLI-правила `--project`, `--project-dir` и `--version-label`;
 - process regression matrix: leading `-`, пробелы, кавычки, `$()`, `;`, newline и Unicode;
@@ -38,8 +39,8 @@ npm test
   `SIGINT`/`SIGTERM` с восстановлением process listeners;
 - Review edit contract: только adjacent boundary и allowlisted image/video b-roll, отсутствие
   global ripple, opaque asset handles, fit/start/audio commands, покадровый clip overrun,
-  frame/word timing reasons, межпроцессный revision reservation, in-memory undo/redo, новая
-  draft-пара на Save, manifest-last visibility и byte-identical approved;
+  frame/word timing reasons, межпроцессный project lease, in-memory undo/redo, новая draft-пара
+  на Save, manifest-last visibility и byte-identical approved;
 - media import: exact-length streaming в owned quarantine, type/size/geometry/duration/disk
   limits, abort/semaphore, real ffprobe/decode, WebP/H.264 master + WebM proxy, UUID publication,
   отсутствие auto-select, browser path/hash privacy и immutable cleanup boundaries;
@@ -64,8 +65,14 @@ npm test
 
 ```bash
 node --test tests/review-waveform.test.js tests/process-security.test.js
+node --test tests/project-mutation-transaction.test.js
 npm run test:review-ui
 ```
+
+Project transaction suite запускает независимые Node-процессы для Save против approval и
+approval против render writer, убивает владельца после lease/Markdown/JSON/manifest boundaries
+и проверяет, что currentBrief всегда указывает на существующий JSON. Отдельно фиксируются
+foreign destination collision, stale snapshot conflict и сохранность live/foreign owner bytes.
 
 Chromium suite поднимает настоящий loopback-сервер и проверяет read-only/edit DOM, token/origin,
 waveform fallback, word-snap drag, накопительное frame-only Arrow movement, реальные

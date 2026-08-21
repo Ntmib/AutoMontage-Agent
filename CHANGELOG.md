@@ -30,6 +30,10 @@
 
 ### Исправлено
 
+- Save, approval и render/brief manifest writers теперь используют один recoverable
+  project-wide lease: stale snapshot получает `409`, live/foreign owner не удаляется, а lease
+  завершившегося локального PID восстанавливается. Исторические Markdown/JSON публикуются
+  no-replace до manifest CAS, поэтому hard exit не оставляет `currentBrief` без JSON.
 - Render bundle больше не принимает безопасное асинхронное обновление `ctime` от macOS iCloud
   File Provider за подмену файла: новый `ctime` фиксируется только после повторной проверки всех
   остальных identity-полей и стабильного полного SHA-256; digest при сдвиге `ctime` во время

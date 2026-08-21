@@ -148,7 +148,7 @@ identity, поэтому два разных b-roll с одинаковыми б
 ## D-012 – Approved brief публикуется как rollback-транзакция
 
 **Дата:** 2026-08-06
-**Статус:** принято
+**Статус:** заменено D-015
 
 JSON, Markdown и `project.json` нельзя атомарно заменить одной portable filesystem-операцией.
 Поэтому approval сначала полностью записывает и синхронизирует непредсказуемые owned sibling
@@ -258,3 +258,27 @@ fail-closed до Remotion callback.
 делает клип основным и приглушает source только в интервале сцены. Отдельный per-asset loudness
 pass отклонён: он увеличил бы импорт и мог бы неожиданно менять авторский скринкаст; громкость
 входного клипа в V1 является ответственностью подготовки медиа.
+
+## D-015 – Project mutations используют общий recoverable lease и manifest-last CAS
+
+**Дата:** 2026-08-22
+**Статус:** принято; заменяет D-012
+
+JSON, Markdown и `project.json` нельзя опубликовать одной portable filesystem-операцией, а
+несколько процессов могут одновременно вызвать Save, approval или render lifecycle. Поэтому
+все manifest mutations используют один project-wide lease с полным owner record. Чтения не
+блокируются. Live owner и owner другого host сохраняются; reclaim разрешён только когда PID
+того же host отвечает `ESRCH`, и recovery claim привязан к identity старого lease.
+
+Под lease операция заново читает persisted manifest и сравнивает его с ожидаемым snapshot.
+Draft/approved Markdown и JSON публикуются atomic no-replace hard links до manifest. Только после
+их появления `project.json` заменяется с повторной проверкой прежних identity и bytes. Поэтому
+`currentBrief` никогда не указывает на отсутствующий JSON, foreign destination остаётся
+byte-identical, а crash-orphan не перезаписывается: новая draft получает следующий свободный
+номер. Approval дополнительно всегда запускает полный `validateLessonBrief()` над заново
+прочитанным текущим draft.
+
+D-012 заменено: прежний порядок manifest до approved JSON создавал crash-окно с битым
+`currentBrief`, а rollback после publication не мог защитить от hard exit. Отклонены отдельные
+locks для Review/approval/render: они сериализовали каждый путь сам с собой, но не закрывали
+межпроцессную гонку разных writers одного `project.json`.
