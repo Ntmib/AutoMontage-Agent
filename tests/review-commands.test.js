@@ -371,6 +371,28 @@ test('video b-roll commands reject extra keys, wrong media, missing audio, and s
     assets: shortAssets,
     fps: 25,
   }), /duration|clip|command/i);
+
+  const fractionalScene = fixtureBrief();
+  fractionalScene.scenes = [
+    { scene: 'fullscreen', start: 0, end: 0.02, caption: 'КОРОТКО' },
+    {
+      scene: 'broll', start: 0.02, end: 1.04,
+      brollMedia: { kind: 'image', assetId: 'asset-1', fit: 'cover' },
+      headCream: 'ДВАДЦАТЬ', headOrange: 'ШЕСТЬ КАДРОВ',
+    },
+    {
+      scene: 'split', start: 1.04, end: 10,
+      headCream: 'ФИНАЛЬНЫЙ', headOrange: 'БЛОК', bullets: ['Одна', 'Две'],
+    },
+  ];
+  const exactSecond = assetMap();
+  exactSecond.set('asset-7', { ...exactSecond.get('asset-7'), durationSec: 1 });
+  assert.throws(() => applyReviewCommand({
+    brief: fractionalScene,
+    command: { type: 'replace-broll', sceneIndex: 1, assetId: 'asset-7' },
+    assets: exactSecond,
+    fps: 25,
+  }), /duration|clip|command/i);
 });
 
 test('video b-roll replay is undo-compatible and diff exposes only safe media values', () => {

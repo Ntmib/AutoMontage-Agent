@@ -151,7 +151,7 @@ function validateMediaSelection(scene, assets, fps) {
   }
   const trimStartFrame = Math.round(media.trimStartSec * fps);
   if (media.trimStartSec !== trimStartFrame / fps) commandError('video start is not frame snapped');
-  const sceneFrames = Math.round(scene.end * fps) - Math.round(scene.start * fps);
+  const sceneFrames = Math.round((scene.end - scene.start) * fps);
   const clipFrames = Math.round(Number(asset.durationSec) * fps);
   if (!Number.isSafeInteger(sceneFrames) || sceneFrames <= 0
     || !Number.isSafeInteger(clipFrames) || clipFrames <= 0

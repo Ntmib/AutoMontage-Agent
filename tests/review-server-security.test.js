@@ -960,7 +960,7 @@ test('review b-roll commands accept images and normalized video but reject audio
     projectDir,
     editable: true,
     open: false,
-    probeReviewMediaImpl: (filePath) => path.extname(filePath) === '.mp4'
+    probeReviewMediaImpl: (target) => path.extname(target.filePath) === '.mp4'
       ? {
         mediaKind: 'video', width: 1920, height: 1080, fps: 25,
         durationSec: 18.4, hasAudio: true,
@@ -1005,6 +1005,86 @@ test('review b-roll commands accept images and normalized video but reject audio
     audioMode: 'mute',
   });
   assert.equal(saved.scenes[1].brollSrc, undefined);
+});
+
+test('review validate runs the same media probe gate as save without allocating a revision', async (t) => {
+  const { projectDir, briefPath, workspace } = makeReviewProject(t);
+  const assets = path.join(workspace.dir, 'assets', 'broll');
+  fs.writeFileSync(path.join(assets, 'base.png'), 'base image');
+  fs.writeFileSync(path.join(assets, 'replacement.png'), 'replacement image');
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[1] = {
+    scene: 'broll', start: 2, end: 4, brollSrc: 'assets/broll/base.png',
+    headCream: 'БАЗОВАЯ', headOrange: 'СХЕМА',
+  };
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
+  const beforeBriefs = fs.readdirSync(path.join(projectDir, 'brief')).sort();
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+    probeReviewMediaImpl: () => { throw new Error('simulated authoritative probe failure'); },
+  });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const replacement = state.assets.find((asset) => asset.label === 'replacement.png');
+  const response = await postJson(session, '/api/validate', {
+    baseRevision: state.session.baseRevision,
+    baseHash: state.session.baseHash,
+    manifestHash: state.session.manifestHash,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: replacement.id }],
+  });
+
+  assert.equal(response.status, 422);
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
+  assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefs);
+});
+
+test('review validate rebuilds the registry and sees imported duration changes after startup', async (t) => {
+  const { projectDir, briefPath } = makeReviewProject(t);
+  const imported = writeImportedVideoBundle(projectDir, { label: 'Fresh duration.mov' });
+  const brief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+  brief.scenes[1] = {
+    scene: 'broll', start: 2, end: 4, brollSrc: 'broll/growth.png',
+    headCream: 'БАЗОВАЯ', headOrange: 'СХЕМА',
+  };
+  fs.writeFileSync(briefPath, `${JSON.stringify(brief, null, 2)}\n`);
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    editable: true,
+    open: false,
+    probeReviewMediaImpl: () => ({
+      mediaKind: 'video', width: 1920, height: 1080, fps: 25,
+      durationSec: 1, hasAudio: true,
+    }),
+  });
+  t.after(() => closeServer(session.server));
+  const state = JSON.parse((await request(session, '/api/state', {
+    token: session.token,
+  })).body.toString('utf8'));
+  const video = state.assets.find((asset) => asset.label === 'Fresh duration.mov');
+  assert.ok(video);
+  const metadataPath = path.join(imported.mediaDirectory, 'asset.json');
+  const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  metadata.durationSec = 1;
+  fs.writeFileSync(metadataPath, `${JSON.stringify(metadata)}\n`);
+  const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
+  const beforeBriefs = fs.readdirSync(path.join(projectDir, 'brief')).sort();
+
+  const response = await postJson(session, '/api/validate', {
+    baseRevision: state.session.baseRevision,
+    baseHash: state.session.baseHash,
+    manifestHash: state.session.manifestHash,
+    commands: [{ type: 'replace-broll', sceneIndex: 1, assetId: video.id }],
+  });
+  assert.equal(response.status, 422);
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, 'project.json')), beforeManifest);
+  assert.deepEqual(fs.readdirSync(path.join(projectDir, 'brief')).sort(), beforeBriefs);
 });
 
 test('review save creates a draft and advances the browser-safe session state', async (t) => {

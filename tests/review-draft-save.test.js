@@ -999,6 +999,86 @@ test('review materialization rechecks immutable registry identity before any rev
     state.workspace.manifest.currentBrief);
 });
 
+test('review materialization cannot probe swapped pathname bytes and hash a restored file', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'materialize-probe-swap-back' });
+  const current = loadReviewBase({ projectDir: state.workspace.dir });
+  const records = listReviewAssetRecords({ root: REPOSITORY_ROOT, projectDir: state.workspace.dir });
+  const assetFiles = new Map(records.map((record, index) => [`asset-${index + 1}`, record]));
+  const selected = [...assetFiles].find(([, record]) => record.reference === 'assets/broll/diagram.png');
+  const candidate = buildReviewCandidateBase({ canonicalBrief: current.brief, assetFiles });
+  delete candidate.scenes[1].brollSrc;
+  candidate.scenes[1].brollMedia = { kind: 'image', assetId: selected[0], fit: 'cover' };
+  const mediaPath = selected[1].filePath;
+  const parkedPath = path.join(state.root, 'parked-original.png');
+  const beforeBriefs = fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort();
+
+  assert.throws(() => materializeReviewAssets({
+    root: REPOSITORY_ROOT,
+    current,
+    assetFiles,
+    candidate,
+    words: [],
+    probeMediaImpl(target) {
+      fs.renameSync(mediaPath, parkedPath);
+      fs.writeFileSync(mediaPath, 'attacker bytes');
+      if (typeof target === 'string') {
+        assert.equal(target, mediaPath);
+        fs.unlinkSync(mediaPath);
+        fs.renameSync(parkedPath, mediaPath);
+      } else {
+        assert.equal(typeof target.fileDescriptor, 'number');
+        assert.match(target.probePath, /^\/dev\/fd\/\d+$/);
+      }
+      return {
+        mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,
+      };
+    },
+  }), /asset|media|identity|unresolved/i);
+  assert.deepEqual(fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(), beforeBriefs);
+  assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
+});
+
+test('review materialization rejects a media ancestor renamed and replaced by a symlink during probe', (t) => {
+  const state = makeReviewWorkspace(t, { name: 'materialize-probe-ancestor-symlink' });
+  const current = loadReviewBase({ projectDir: state.workspace.dir });
+  const records = listReviewAssetRecords({ root: REPOSITORY_ROOT, projectDir: state.workspace.dir });
+  const assetFiles = new Map(records.map((record, index) => [`asset-${index + 1}`, record]));
+  const selected = [...assetFiles].find(([, record]) => record.reference === 'assets/broll/diagram.png');
+  const candidate = buildReviewCandidateBase({ canonicalBrief: current.brief, assetFiles });
+  delete candidate.scenes[1].brollSrc;
+  candidate.scenes[1].brollMedia = { kind: 'image', assetId: selected[0], fit: 'cover' };
+  const brollDirectory = path.dirname(selected[1].filePath);
+  const parkedDirectory = path.join(state.workspace.dir, 'assets', 'broll-parked');
+  const outsideDirectory = path.join(state.root, 'outside-broll');
+  fs.mkdirSync(outsideDirectory);
+  fs.writeFileSync(path.join(outsideDirectory, 'diagram.png'), 'attacker bytes');
+  const beforeBriefs = fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort();
+
+  assert.throws(() => materializeReviewAssets({
+    root: REPOSITORY_ROOT,
+    current,
+    assetFiles,
+    candidate,
+    words: [],
+    probeMediaImpl(target) {
+      fs.renameSync(brollDirectory, parkedDirectory);
+      fs.symlinkSync(outsideDirectory, brollDirectory);
+      if (typeof target === 'string') {
+        fs.unlinkSync(brollDirectory);
+        fs.renameSync(parkedDirectory, brollDirectory);
+      } else {
+        assert.equal(typeof target.fileDescriptor, 'number');
+        assert.match(target.probePath, /^\/dev\/fd\/\d+$/);
+      }
+      return {
+        mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,
+      };
+    },
+  }), /asset|media|identity|unresolved/i);
+  assert.deepEqual(fs.readdirSync(path.join(state.workspace.dir, 'brief')).sort(), beforeBriefs);
+  assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
+});
+
 test('video materialization rechecks probe fields and persists snapped seconds without changing approved bytes', (t) => {
   const state = makeReviewWorkspace(t, { name: 'video-materialize' });
   writeImportedVideo(state.workspace.dir);
@@ -1042,6 +1122,21 @@ test('video materialization rechecks probe fields and persists snapped seconds w
       durationSec: 20, hasAudio: false,
     }),
   }), /probe|media|audio|unresolved/i);
+  assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
+
+  const freshDurationOverrun = structuredClone(candidate);
+  freshDurationOverrun.scenes[1].brollMedia.trimStartSec = 17;
+  assert.throws(() => materializeReviewAssets({
+    root: REPOSITORY_ROOT,
+    current,
+    assetFiles,
+    candidate: freshDurationOverrun,
+    words: [],
+    probeMediaImpl: () => ({
+      mediaKind: 'video', width: 1920, height: 1080, fps: 25,
+      durationSec: 19.96, hasAudio: true,
+    }),
+  }), /duration|clip|media|unresolved/i);
   assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
 
   const materialized = materializeReviewAssets({
