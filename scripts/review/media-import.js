@@ -8,9 +8,11 @@ const {
   buildImportedAssetRecord,
   buildImportedPublicationClaim,
   cleanupOrphanImportedStages,
+  inspectImportedAssetBundle,
   verifyImportedAssetFiles,
 } = require('./imported-assets');
 const { acquireProjectMutationLease } = require('../project/workspace');
+const { claimAndRemoveOwnedPath } = require('../project/owned-removal');
 
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 1024 * 1024 * 1024;
@@ -190,6 +192,12 @@ function appendOwnerRecord(owned, fileSystem) {
     offset += written;
   }
   fileSystem.fsyncSync(owned.ownerFd);
+  owned.ownerBytes = Buffer.concat([owned.ownerBytes, bytes]);
+  owned.ownerIdentity = openedFileIdentity(
+    fileSystem.fstatSync(owned.ownerFd),
+    fileSystem.fstatSync(owned.ownerFd, { bigint: true }),
+  );
+  owned.ownerIdentity.bytes = Buffer.from(owned.ownerBytes);
 }
 
 function createOwnedOutputPlaceholder(fileSystem, filePath) {
@@ -331,6 +339,7 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease) {
       assetParent: assetParent.directory,
       assetParentIdentity: assetParent.snapshots.get(assetParent.directory),
       claimPath: path.join(assetParent.directory, `.${id}.claim`),
+      claimPrivatePath: path.join(quarantinePath, 'publication.claim'),
       claimFd: null,
       claimIdentity: null,
       previewParent: previewParent?.directory || null,
@@ -348,6 +357,8 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease) {
       ownerPath: path.join(quarantinePath, 'owner.jsonl'),
       ownerAnchorPath: path.join(quarantinePath, 'owner.anchor'),
       ownerFd: null,
+      ownerBytes: Buffer.alloc(0),
+      claimBytes: Buffer.alloc(0),
     };
     owned.ownerFd = fileSystem.openSync(
       owned.ownerPath,
@@ -356,8 +367,24 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease) {
       0o600,
     );
     fileSystem.fchmodSync(owned.ownerFd, 0o600);
-    owned.ownerIdentity = identity(fileSystem.fstatSync(owned.ownerFd));
+    owned.ownerIdentity = openedFileIdentity(
+      fileSystem.fstatSync(owned.ownerFd),
+      fileSystem.fstatSync(owned.ownerFd, { bigint: true }),
+    );
+    owned.ownerIdentity.bytes = Buffer.alloc(0);
     fileSystem.linkSync(owned.ownerPath, owned.ownerAnchorPath);
+    owned.claimFd = fileSystem.openSync(
+      owned.claimPrivatePath,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL
+        | (constants.O_NOFOLLOW || 0),
+      0o600,
+    );
+    fileSystem.fchmodSync(owned.claimFd, 0o600);
+    owned.claimIdentity = openedFileIdentity(
+      fileSystem.fstatSync(owned.claimFd),
+      fileSystem.fstatSync(owned.claimFd, { bigint: true }),
+    );
+    owned.claimIdentity.bytes = Buffer.alloc(0);
     owned.canonicalIdentity = createOwnedOutputPlaceholder(
       fileSystem, owned.canonicalPath,
     );
@@ -375,6 +402,9 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease) {
     }
     if (owned?.ownerFd !== null && owned?.ownerFd !== undefined) {
       try { fileSystem.closeSync(owned.ownerFd); } catch (_) { /* owned descriptor */ }
+    }
+    if (owned?.claimFd !== null && owned?.claimFd !== undefined) {
+      try { fileSystem.closeSync(owned.claimFd); } catch (_) { /* owned descriptor */ }
     }
     try {
       const current = fileSystem.lstatSync(quarantinePath);
@@ -790,7 +820,9 @@ function writePublicationClaimState(owned, fileSystem) {
     || stat.size !== before.size + bytes.length) {
     throw unsafeFilesystem();
   }
+  owned.claimBytes = Buffer.concat([owned.claimBytes, bytes]);
   owned.claimIdentity = openedFileIdentity(stat, nanosecondStat);
+  owned.claimIdentity.bytes = Buffer.from(owned.claimBytes);
   assertOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
 }
 
@@ -810,15 +842,10 @@ function fsyncDirectoryIfSupported(fileSystem, directory) {
 }
 
 function openPublicationClaim(owned, fileSystem) {
-  const constants = fileSystem.constants || fs.constants;
-  owned.claimFd = fileSystem.openSync(
-    owned.claimPath,
-    constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL
-      | (constants.O_NOFOLLOW || 0),
-    0o600,
-  );
-  fileSystem.fchmodSync(owned.claimFd, 0o600);
-  owned.claimIdentity = identity(fileSystem.fstatSync(owned.claimFd));
+  assertOwnedFile(fileSystem, owned.claimPrivatePath, owned.claimIdentity);
+  fileSystem.linkSync(owned.claimPrivatePath, owned.claimPath);
+  assertOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
+  fsyncDirectoryIfSupported(fileSystem, owned.assetParent);
   writePublicationClaimState(owned, fileSystem);
   fsyncDirectoryIfSupported(fileSystem, owned.assetParent);
   appendOwnerRecord(owned, fileSystem);
@@ -829,6 +856,7 @@ function copyExclusiveFile({
   sourcePath,
   sourceIdentity,
   targetPath,
+  preownedIdentity = null,
   onOwned = () => {},
 }) {
   const constants = fileSystem.constants || fs.constants;
@@ -844,13 +872,17 @@ function copyExclusiveFile({
       fileSystem.fstatSync(sourceFd, { bigint: true }),
     );
     if (!sameFileIdentity(sourceBefore, sourceIdentity)) throw unsafeFilesystem();
-    targetFd = fileSystem.openSync(
-      targetPath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0),
-      0o600,
-    );
+    targetFd = fileSystem.openSync(targetPath, preownedIdentity
+      ? constants.O_WRONLY | (constants.O_NOFOLLOW || 0)
+      : constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0),
+    0o600);
     fileSystem.fchmodSync(targetFd, 0o600);
-    onOwned(identity(fileSystem.fstatSync(targetFd)));
+    const openedTarget = openedFileIdentity(
+      fileSystem.fstatSync(targetFd),
+      fileSystem.fstatSync(targetFd, { bigint: true }),
+    );
+    if (preownedIdentity && !sameIdentity(openedTarget, preownedIdentity)) throw unsafeFilesystem();
+    onOwned(openedTarget);
     const hash = crypto.createHash('sha256');
     const buffer = Buffer.allocUnsafe(64 * 1024);
     let count;
@@ -916,11 +948,7 @@ function buildCanonicalMetadata(owned, headers, master, fileSystem) {
 function removeIfOwnedFile(fileSystem, target, expected) {
   if (!target || !expected) return false;
   try {
-    const stat = fileSystem.lstatSync(target);
-    if (stat.isFile() && !stat.isSymbolicLink() && sameIdentity(stat, expected)) {
-      fileSystem.unlinkSync(target);
-      return true;
-    }
+    return claimAndRemoveOwnedPath({ target, expected, fileSystem });
   } catch (_) { /* never broaden cleanup after a race */ }
   return false;
 }
@@ -928,27 +956,18 @@ function removeIfOwnedFile(fileSystem, target, expected) {
 function ownedFileAbsentOrRemoved(fileSystem, target, expected) {
   if (!target) return true;
   try {
-    const stat = fileSystem.lstatSync(target);
-    if (!expected || !stat.isFile() || stat.isSymbolicLink() || !sameIdentity(stat, expected)) {
-      return false;
-    }
-    fileSystem.unlinkSync(target);
-    return true;
-  } catch (error) {
-    return error.code === 'ENOENT';
+    return claimAndRemoveOwnedPath({ target, expected, fileSystem });
+  } catch (_) {
+    return false;
   }
 }
 
 function ownedDirectoryAbsentOrRemoved(fileSystem, target, expected) {
   if (!target) return true;
   try {
-    const stat = fileSystem.lstatSync(target);
-    if (!expected || !stat.isDirectory() || stat.isSymbolicLink()
-      || !sameIdentity(stat, expected)) return false;
-    fileSystem.rmdirSync(target);
-    return true;
-  } catch (error) {
-    return error.code === 'ENOENT';
+    return claimAndRemoveOwnedPath({ target, expected, kind: 'directory', fileSystem });
+  } catch (_) {
+    return false;
   }
 }
 
@@ -973,11 +992,16 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
   assertOutputIdentities(fileSystem, owned);
   openPublicationClaim(owned, fileSystem);
   if (owned.normalizedPreviewPath) {
+    owned.previewStageIdentity = createOwnedOutputPlaceholder(
+      fileSystem, owned.previewStagePath,
+    );
+    appendOwnerRecord(owned, fileSystem);
     const previewCopy = copyExclusiveFile({
       fileSystem,
       sourcePath: owned.normalizedPreviewPath,
       sourceIdentity: owned.previewIdentity,
       targetPath: owned.previewStagePath,
+      preownedIdentity: owned.previewStageIdentity,
       onOwned: (value) => { owned.previewStageIdentity = value; },
     });
     if (previewCopy.sha256 !== metadata.previewSha256) throw unsafeFilesystem();
@@ -994,6 +1018,7 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
   }
   assertOwnedDirectory(fileSystem, owned.assetParent, owned.assetParentIdentity, owned.projectReal);
   claimFinalDirectory(owned, fileSystem);
+  appendOwnerRecord(owned, fileSystem);
   writePublicationClaimState(owned, fileSystem);
   appendOwnerRecord(owned, fileSystem);
   const finalCanonicalPath = path.join(
@@ -1001,11 +1026,16 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
     metadata.mediaKind === 'image' ? 'media.webp' : 'media.mp4',
   );
   owned.canonicalFinalPath = finalCanonicalPath;
+  owned.canonicalFinalIdentity = createOwnedOutputPlaceholder(
+    fileSystem, owned.canonicalFinalPath,
+  );
+  appendOwnerRecord(owned, fileSystem);
   const canonicalCopy = copyExclusiveFile({
     fileSystem,
     sourcePath: owned.canonicalPath,
     sourceIdentity: owned.canonicalIdentity,
     targetPath: finalCanonicalPath,
+    preownedIdentity: owned.canonicalFinalIdentity,
     onOwned: (value) => { owned.canonicalFinalIdentity = value; },
   });
   if (canonicalCopy.sha256 !== metadata.canonicalSha256) throw unsafeFilesystem();
@@ -1099,7 +1129,9 @@ function cleanupOwnedImport(owned, fileSystem) {
     }
   }
   try {
-    const expectedRoot = new Set(['owner.jsonl', 'owner.anchor', 'bundle', 'upload.bin']);
+    const expectedRoot = new Set([
+      'owner.jsonl', 'owner.anchor', 'publication.claim', 'bundle', 'upload.bin',
+    ]);
     if (owned.previewIdentity) expectedRoot.add('preview.webm');
     const expectedBundle = new Set(owned.canonicalIdentity
       ? [owned.previewIdentity ? 'media.mp4' : 'media.webp'] : []);
@@ -1109,18 +1141,22 @@ function cleanupOwnedImport(owned, fileSystem) {
       && rootEntries.every((entry) => expectedRoot.has(entry))
       && bundleEntries.length === expectedBundle.size
       && bundleEntries.every((entry) => expectedBundle.has(entry))) {
-      removeIfOwnedFile(fileSystem, owned.canonicalPath, owned.canonicalIdentity);
-      removeIfOwnedFile(fileSystem, owned.normalizedPreviewPath, owned.previewIdentity);
-      removeIfOwnedFile(fileSystem, owned.uploadPath, owned.uploadIdentity);
-      const owner = fileSystem.lstatSync(owned.ownerPath);
-      const anchor = fileSystem.lstatSync(owned.ownerAnchorPath);
-      if (owner.isFile() && !owner.isSymbolicLink() && anchor.isFile()
-        && !anchor.isSymbolicLink() && sameIdentity(owner, owned.ownerIdentity)
-        && sameIdentity(anchor, owned.ownerIdentity)) {
-        fileSystem.unlinkSync(owned.ownerAnchorPath);
-        fileSystem.unlinkSync(owned.ownerPath);
-        fileSystem.rmdirSync(owned.bundlePath);
-        fileSystem.rmdirSync(owned.quarantinePath);
+      const contentRemoved = [
+        [owned.canonicalPath, owned.canonicalIdentity],
+        [owned.normalizedPreviewPath, owned.previewIdentity],
+        [owned.uploadPath, owned.uploadIdentity],
+        [owned.claimPrivatePath, owned.claimIdentity],
+      ].every(([target, expected]) => !target || !expected
+        || removeIfOwnedFile(fileSystem, target, expected));
+      if (contentRemoved
+        && removeIfOwnedFile(fileSystem, owned.ownerAnchorPath, owned.ownerIdentity)
+        && removeIfOwnedFile(fileSystem, owned.ownerPath, owned.ownerIdentity)
+        && ownedDirectoryAbsentOrRemoved(
+          fileSystem, owned.bundlePath, owned.bundleIdentity,
+        )) {
+        ownedDirectoryAbsentOrRemoved(
+          fileSystem, owned.quarantinePath, owned.quarantineIdentity,
+        );
       }
     }
   } catch (_) { /* an identity race leaves the exact remnant for lease recovery */ }
@@ -1188,7 +1224,13 @@ function readRecoveryOwner(fileSystem, quarantinePath, id) {
   }
   return latest ? {
     record: latest,
-    ownerIdentity: { dev: String(ownerStat.dev), ino: String(ownerStat.ino) },
+    ownerIdentity: {
+      dev: String(ownerStat.dev),
+      ino: String(ownerStat.ino),
+      size: String(ownerStat.size),
+      mtimeNs: String(ownerStat.mtimeNs),
+      bytes: Buffer.from(bytes),
+    },
     ownerPath,
     anchorPath,
   } : null;
@@ -1207,39 +1249,18 @@ function recoveryTargetMatches(fileSystem, target, expected, directory = false) 
   }
 }
 
-function recoveryNodeMatches(fileSystem, target, expected) {
-  if (!expected) return false;
-  try {
-    const stat = fileSystem.lstatSync(target, { bigint: true });
-    return stat.isFile() && !stat.isSymbolicLink()
-      && String(stat.dev) === expected.dev && String(stat.ino) === expected.ino;
-  } catch (_) {
-    return false;
-  }
-}
-
 function removeRecoveryFile(fileSystem, target, expected) {
   try {
-    fileSystem.lstatSync(target);
-  } catch (error) {
-    if (error && error.code === 'ENOENT') return true;
-    return false;
-  }
-  if (!recoveryTargetMatches(fileSystem, target, expected)) return false;
-  fileSystem.unlinkSync(target);
-  return true;
+    return claimAndRemoveOwnedPath({ target, expected, fileSystem });
+  } catch (_) { return false; }
 }
 
 function removeRecoveryNode(fileSystem, target, expected) {
   try {
-    fileSystem.lstatSync(target);
-  } catch (error) {
-    if (error && error.code === 'ENOENT') return true;
-    return false;
-  }
-  if (!recoveryNodeMatches(fileSystem, target, expected)) return false;
-  fileSystem.unlinkSync(target);
-  return true;
+    return claimAndRemoveOwnedPath({
+      target, expected, kind: 'mutable-file', fileSystem,
+    });
+  } catch (_) { return false; }
 }
 
 function recoverQuarantine({ projectDir, quarantinePath, id, fileSystem, hostname, killProcess }) {
@@ -1257,7 +1278,9 @@ function recoverQuarantine({ projectDir, quarantinePath, id, fileSystem, hostnam
     return [];
   }
   const bundlePath = path.join(quarantinePath, 'bundle');
-  const expectedRoot = new Set(['owner.jsonl', 'owner.anchor', 'bundle', 'upload.bin']);
+  const expectedRoot = new Set([
+    'owner.jsonl', 'owner.anchor', 'publication.claim', 'bundle', 'upload.bin',
+  ]);
   if (record.preview) expectedRoot.add('preview.webm');
   const expectedBundle = new Set(record.canonical
     ? [record.preview === null ? 'media.webp' : 'media.mp4'] : []);
@@ -1271,15 +1294,57 @@ function recoverQuarantine({ projectDir, quarantinePath, id, fileSystem, hostnam
   }
   if (!rootEntries.includes('owner.jsonl') || !rootEntries.includes('owner.anchor')
     || !rootEntries.includes('bundle')
-    || rootEntries.some((entry) => !expectedRoot.has(entry))
-    || bundleEntries.some((entry) => !expectedBundle.has(entry))) return [];
+    || rootEntries.some((entry) => !expectedRoot.has(entry)
+      && !/^\.(?:upload\.bin|preview\.webm|publication\.claim|owner\.jsonl|owner\.anchor|bundle)\.remove-[A-Za-z0-9_-]+$/.test(entry))
+    || bundleEntries.some((entry) => !expectedBundle.has(entry)
+      && !/^\.media\.(?:mp4|webp)\.remove-[A-Za-z0-9_-]+$/.test(entry))) return [];
 
   const removed = [];
+  const mediaType = record.preview === null ? 'images' : 'video';
+  const assetDirectory = path.join(projectDir, 'assets', 'broll', mediaType, id);
+  const committed = record.committed || Boolean(inspectImportedAssetBundle({
+    projectDir,
+    assetDirectory,
+    fileSystem,
+  }));
+  if (!committed) {
+    for (const [target, expected, kind] of [
+      [record.previewFinal ? path.join(projectDir, 'previews', 'broll', `${id}.webm`) : null,
+        record.previewFinal, 'file'],
+      [record.metadataFinal ? path.join(assetDirectory, 'asset.json') : null,
+        record.metadataFinal, 'file'],
+      [record.canonicalFinal ? path.join(
+        assetDirectory, record.preview === null ? 'media.webp' : 'media.mp4',
+      ) : null, record.canonicalFinal, 'mutable-file'],
+      [record.previewStage ? path.join(projectDir, 'previews', 'broll', `.${id}.stage.webm`) : null,
+        record.previewStage, 'mutable-file'],
+      [record.claim ? path.join(
+        projectDir, 'assets', 'broll', mediaType, `.${id}.claim`,
+      ) : null, record.claim, 'mutable-file'],
+    ]) {
+      if (!target || !expected) continue;
+      try {
+        if (!claimAndRemoveOwnedPath({ target, expected, kind, fileSystem })) return removed;
+        removed.push(target);
+      } catch (_) { return removed; }
+    }
+    if (record.assetDirectory) {
+      try {
+        if (!claimAndRemoveOwnedPath({
+          target: assetDirectory,
+          expected: record.assetDirectory,
+          kind: 'directory',
+          fileSystem,
+        })) return removed;
+        removed.push(assetDirectory);
+      } catch (_) { return removed; }
+    }
+  }
   for (const [target, expected, mutable] of [
-    [record.previewStage ? path.join(projectDir, 'previews', 'broll', `.${id}.stage.webm`) : null, record.previewStage, false],
     [path.join(bundlePath, record.preview === null ? 'media.webp' : 'media.mp4'), record.canonical, true],
     [path.join(quarantinePath, 'preview.webm'), record.preview, true],
     [path.join(quarantinePath, 'upload.bin'), record.upload, true],
+    [path.join(quarantinePath, 'publication.claim'), record.claim, true],
   ]) {
     if (!target || !expected) continue;
     try {
@@ -1290,16 +1355,15 @@ function recoverQuarantine({ projectDir, quarantinePath, id, fileSystem, hostnam
     } catch (_) { return removed; }
   }
   try {
-    const anchor = fileSystem.lstatSync(owned.anchorPath, { bigint: true });
-    const owner = fileSystem.lstatSync(owned.ownerPath, { bigint: true });
-    if (String(anchor.dev) !== owned.ownerIdentity.dev || String(anchor.ino) !== owned.ownerIdentity.ino
-      || String(owner.dev) !== owned.ownerIdentity.dev || String(owner.ino) !== owned.ownerIdentity.ino) {
-      return removed;
-    }
-    fileSystem.unlinkSync(owned.anchorPath);
-    fileSystem.unlinkSync(owned.ownerPath);
-    fileSystem.rmdirSync(bundlePath);
-    fileSystem.rmdirSync(quarantinePath);
+    if (!claimAndRemoveOwnedPath({
+      target: owned.anchorPath, expected: owned.ownerIdentity, fileSystem,
+    }) || !claimAndRemoveOwnedPath({
+      target: owned.ownerPath, expected: owned.ownerIdentity, fileSystem,
+    }) || !claimAndRemoveOwnedPath({
+      target: bundlePath, expected: record.bundle, kind: 'directory', fileSystem,
+    }) || !claimAndRemoveOwnedPath({
+      target: quarantinePath, expected: record.quarantine, kind: 'directory', fileSystem,
+    })) return removed;
     removed.push(owned.anchorPath, owned.ownerPath, bundlePath, quarantinePath);
   } catch (_) { /* resumable on the next lease owner */ }
   return removed;
@@ -1351,6 +1415,7 @@ async function importReviewMedia({
   if (!controller?.acquire()) throw mediaImportError(409, 'MEDIA_IMPORT_BUSY');
   let owned;
   let mutationLease;
+  let workError = null;
   try {
     const parsedHeaders = parseImportHeaders(headers);
     let filesystemStats;
@@ -1421,10 +1486,26 @@ async function importReviewMedia({
       if (error.status) throw error;
       throw mediaImportError(500, 'MEDIA_IMPORT_FILESYSTEM_UNSAFE', undefined, { cause: error });
     }
+  } catch (error) {
+    workError = error;
+    throw error;
   } finally {
-    cleanupOwnedImport(owned, fileSystem);
-    if (mutationLease) mutationLease.release();
-    controller.release();
+    let finalizationError = null;
+    try {
+      cleanupOwnedImport(owned, fileSystem);
+    } catch (error) {
+      finalizationError = error;
+    }
+    try {
+      if (mutationLease) mutationLease.release();
+    } catch (error) {
+      if (workError) workError.leaseReleaseError = error;
+      else if (finalizationError) finalizationError.leaseReleaseError = error;
+      else finalizationError = error;
+    } finally {
+      controller.release();
+    }
+    if (!workError && finalizationError) throw finalizationError;
   }
 }
 

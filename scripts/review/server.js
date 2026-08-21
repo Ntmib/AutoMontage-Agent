@@ -1101,6 +1101,7 @@ async function routeRequest({
       return;
     }
     const importAbortController = new AbortController();
+    runtime.activeImportAbortControllers.add(importAbortController);
     const socket = request.socket;
     let importPending = true;
     const abortPendingImport = () => {
@@ -1131,6 +1132,7 @@ async function routeRequest({
       });
     } finally {
       importPending = false;
+      runtime.activeImportAbortControllers.delete(importAbortController);
       request.off('aborted', abortPendingImport);
       response.off('close', abortPendingImport);
       socket?.off('close', abortPendingImport);
@@ -1392,6 +1394,7 @@ async function startReviewServer({
     nextAssetId,
     importController,
     fileSystem,
+    activeImportAbortControllers: new Set(),
   };
   const token = randomBytes(32).toString('base64url');
   let origin = 'http://127.0.0.1';
@@ -1470,6 +1473,9 @@ async function startReviewServer({
     url,
     origin,
     handoffPath: handoff ? handoff.path : null,
+    abortActiveImports() {
+      for (const controller of runtime.activeImportAbortControllers) controller.abort();
+    },
   };
 }
 

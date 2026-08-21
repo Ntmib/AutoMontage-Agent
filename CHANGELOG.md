@@ -30,6 +30,8 @@
 - Import publication и orphan cleanup теперь держат общий project mutation lease. Durable
   owner/publication records позволяют после hard exit удалить только identity-проверенные
   quarantine/stage/claim bytes; live/foreign/malformed/replaced и name-only UUID остаются нетронуты.
+- Stage/claim/canonical identities теперь журналируются до записи bytes, cleanup переносит цель в
+  private tombstone до проверки и удаления, а shutdown abort-ит import с bounded SIGTERM→SIGKILL.
 
 ### Исправлено
 
@@ -42,6 +44,8 @@
   snapshot, поэтому stale writer и destination race не перезаписывают историю.
 - Project lesson planning очищает exact identity-pinned generated JSON/Markdown temp-пару после
   успеха и ошибки; foreign replacement сохраняется и завершает операцию fail closed.
+- Transient lease-release ошибка повторяется ограниченно; persistent ошибка не маскирует исходный
+  import failure и больше не оставляет локальный import controller занятым.
 - Render bundle больше не принимает безопасное асинхронное обновление `ctime` от macOS iCloud
   File Provider за подмену файла: новый `ctime` фиксируется только после повторной проверки всех
   остальных identity-полей и стабильного полного SHA-256; digest при сдвиге `ctime` во время

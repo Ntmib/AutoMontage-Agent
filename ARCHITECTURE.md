@@ -208,6 +208,13 @@ owner journal с hard-link anchor; master/proxy inode создаются и фи
 inode и ожидаемым набором детей. UUID, имя и возраст не доказывают ownership; malformed/foreign,
 symlink, replacement и неожиданный child сохраняются. Publication claim так же удаляет только
 identity-записанные stage/final paths, а валидный bundle с marker-last `asset.json` неизменяем.
+Preview stage, claim и canonical final получают private inode и owner-journal запись до первой
+записи bytes; identity final-каталога журналируется сразу после `mkdir`. Удаление сначала атомарно
+перемещает pathname в случайный `0700` tombstone, проверяет перенесённый inode/размер/mtime и лишь
+затем удаляет его; малые immutable owner/claim/temp-файлы дополнительно сверяются побайтово.
+Подмена исходного pathname, попавшая в claim-rename, сохраняется внутри tombstone. Node 20 не даёт
+unlink по descriptor или rename no-replace, поэтому это намеренная strongest-available граница,
+а не обещание абсолютной атомарности против процесса с тем же UID и открытым private pathname.
 Затем ffprobe и полный decode подтверждают реальный контейнер, codec, геометрию, длительность и
 аудио. Изображение нормализуется в WebP; видео — в H.264/yuv420p master с AAC 48 kHz stereo при
 наличии звука и отдельный VP8/Opus WebM proxy для браузера. Metadata удаляется. Публикация
@@ -219,7 +226,12 @@ identity-записанные stage/final paths, а валидный bundle с m
 
 Project lesson planning использует уникальную JSON/Markdown temp-пару только как handoff от
 генератора к transactional publisher. После успеха и ошибки удаляются лишь заранее снятые inode;
-подмена сохраняется и завершает planning fail closed.
+подмена сохраняется в private tombstone и завершает planning fail closed.
+
+SIGINT/SIGTERM Review сначала abort-ит активный import, затем закрывает HTTP server. Media child
+получает `SIGTERM`, а после ограниченного grace period — `SIGKILL`; import в любом случае освобождает
+controller и делает bounded retry shared lease release. Persistent release error остаётся явным и
+прикрепляется к исходной ошибке операции, не маскируя её.
 
 Save не доверяет browser descriptor. Он повторно сканирует immutable bundle, открывает master
 без следования symlink, передаёт тот же descriptor в bounded ffprobe, хэширует те же байты и

@@ -719,12 +719,28 @@ function acquireProjectMutationLease(projectDir, {
       if (!identity || identity.isSymbolicLink() || !identity.isFile()) throw manifestConflict();
       const committed = { identity, bytes: ownerBytes };
       assertFileSnapshot(fileSystem, leasePath, committed);
+      let released = false;
       return {
         path: leasePath,
         owner,
         release() {
-          assertFileSnapshot(fileSystem, leasePath, committed);
-          fileSystem.unlinkSync(leasePath);
+          if (released) return;
+          let releaseError = null;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              assertFileSnapshot(fileSystem, leasePath, committed);
+              fileSystem.unlinkSync(leasePath);
+              released = true;
+              return;
+            } catch (error) {
+              releaseError = error;
+              if (!lstatIfPresent(fileSystem, leasePath)) {
+                released = true;
+                return;
+              }
+            }
+          }
+          throw releaseError;
         },
       };
     } catch (error) {

@@ -47,6 +47,7 @@ const {
   copyOutputFile,
   createBuildContext,
 } = require('./project/build-context');
+const { claimAndRemoveOwnedPath } = require('./project/owned-removal');
 const {
   publishBriefRevision,
   runRenderLifecycle,
@@ -147,9 +148,22 @@ const remotion = resolveRemotionCommand();
 
 function snapshotGeneratedTemp(filePath) {
   try {
-    const stat = fs.lstatSync(filePath);
-    if (!stat.isFile() || stat.isSymbolicLink()) return null;
-    return { filePath, dev: stat.dev, ino: stat.ino };
+    const before = fs.lstatSync(filePath, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink()) return null;
+    const bytes = fs.readFileSync(filePath);
+    const stat = fs.lstatSync(filePath, { bigint: true });
+    if (stat.dev !== before.dev || stat.ino !== before.ino
+      || stat.size !== before.size || stat.mtimeNs !== before.mtimeNs) {
+      throw new Error('generated lesson temporary file changed while recording ownership');
+    }
+    return {
+      filePath,
+      dev: stat.dev,
+      ino: stat.ino,
+      size: stat.size,
+      mtimeNs: stat.mtimeNs,
+      bytes,
+    };
   } catch (error) {
     if (error && error.code === 'ENOENT') return null;
     throw error;
@@ -159,20 +173,15 @@ function snapshotGeneratedTemp(filePath) {
 function cleanupGeneratedTemps(snapshots) {
   let identityError = null;
   for (const snapshot of snapshots.filter(Boolean)) {
-    let current;
     try {
-      current = fs.lstatSync(snapshot.filePath);
+      if (!claimAndRemoveOwnedPath({
+        target: snapshot.filePath,
+        expected: snapshot,
+        fileSystem: fs,
+      })) identityError ||= new Error('generated lesson temporary file identity changed');
     } catch (error) {
-      if (error && error.code === 'ENOENT') continue;
       identityError ||= error;
-      continue;
     }
-    if (!current.isFile() || current.isSymbolicLink()
-      || current.dev !== snapshot.dev || current.ino !== snapshot.ino) {
-      identityError ||= new Error('generated lesson temporary file identity changed');
-      continue;
-    }
-    fs.unlinkSync(snapshot.filePath);
   }
   if (identityError) throw identityError;
 }

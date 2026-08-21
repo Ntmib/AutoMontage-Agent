@@ -60,7 +60,10 @@ async function main(argv = process.argv.slice(2)) {
   try {
     const options = parseReviewOptions(argv);
     const session = await startReviewServer(options);
-    installReviewShutdownHandlers({ server: session.server });
+    installReviewShutdownHandlers({
+      server: session.server,
+      abortActiveImport: session.abortActiveImports,
+    });
     for (const message of formatReviewSessionMessages({ session, editable: options.editable })) {
       console.log(message);
     }
@@ -70,11 +73,16 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-function installReviewShutdownHandlers({ server, processLike = process } = {}) {
+function installReviewShutdownHandlers({
+  server,
+  processLike = process,
+  abortActiveImport = () => {},
+} = {}) {
   if (!server || typeof server.close !== 'function'
     || !processLike || typeof processLike.on !== 'function'
     || typeof processLike.removeListener !== 'function'
-    || typeof processLike.exit !== 'function') {
+    || typeof processLike.exit !== 'function'
+    || typeof abortActiveImport !== 'function') {
     throw new Error('review shutdown handler requires a server and process');
   }
   let installed = true;
@@ -91,6 +99,7 @@ function installReviewShutdownHandlers({ server, processLike = process } = {}) {
   const shutdown = (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    try { abortActiveImport(); } catch (_) { /* shutdown must still close the server */ }
     const finish = () => {
       restore();
       processLike.exit(SIGNAL_EXIT_CODES[signal]);

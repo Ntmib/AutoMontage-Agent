@@ -44,7 +44,8 @@ npm test
 - media import: exact-length streaming в owned quarantine, type/size/geometry/duration/disk
   limits, abort/semaphore, real ffprobe/decode, WebP/H.264 master + WebM proxy, UUID publication,
   отсутствие auto-select, browser path/hash privacy, общий project lease, durable owner journal,
-  hard-exit recovery и identity-only immutable cleanup boundaries;
+  hard-exit recovery, late-syscall replacement/tombstone, shutdown escalation и identity-only
+  immutable cleanup boundaries;
 - approval/render media: descriptor probe/hash, normalized metadata/proxy, silent/audio rules,
   repeated asset dedup, одноразовый render bundle, безопасный полный rehash при File Provider
   `ctime`-only drift, bounded retry при drift во время hash, fail-closed same-size/append/overwrite

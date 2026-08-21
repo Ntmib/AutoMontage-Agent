@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
+const { claimAndRemoveOwnedPath } = require('../project/owned-removal');
 
 const REQUIRED_KEYS = [
   'version', 'id', 'label', 'mediaKind', 'canonicalSha256',
@@ -410,24 +411,15 @@ function targetIdentityState(fileSystem, target, expected, kind) {
 
 function removeClaimSnapshot(fileSystem, target, expected) {
   try {
-    const stat = fileSystem.lstatSync(target);
-    const nanosecondStat = fileSystem.lstatSync(target, { bigint: true });
-    if (!stat.isFile() || stat.isSymbolicLink()
-      || !sameFileSnapshot(fileSnapshot(stat, nanosecondStat), expected)) return false;
-    fileSystem.unlinkSync(target);
-    return true;
+    return claimAndRemoveOwnedPath({ target, expected, fileSystem });
   } catch (_) {
     return false;
   }
 }
 
 function removeClaimedTarget(fileSystem, target, expected, kind) {
-  const state = targetIdentityState(fileSystem, target, expected, kind);
-  if (!state.matches || !state.exists) return false;
   try {
-    if (kind === 'directory') fileSystem.rmdirSync(target);
-    else fileSystem.unlinkSync(target);
-    return true;
+    return claimAndRemoveOwnedPath({ target, expected, kind, fileSystem });
   } catch (_) {
     return false;
   }
@@ -528,21 +520,21 @@ function cleanupPublicationClaim({
 
   const removed = [];
   let complete = true;
-  if (previewState.exists) {
+  if (claim.preview !== null) {
     if (removeClaimedTarget(fileSystem, previewPath, claim.preview, 'file')) {
       removed.push(previewPath);
     } else {
       complete = false;
     }
   }
-  if (canonicalState.exists) {
+  if (claim.canonical !== null) {
     if (removeClaimedTarget(fileSystem, canonicalPath, claim.canonical, 'file')) {
       removed.push(canonicalPath);
     } else {
       complete = false;
     }
   }
-  if (directoryState.exists) {
+  if (claim.directory !== null) {
     if (removeClaimedTarget(
       fileSystem,
       mediaDirectory,

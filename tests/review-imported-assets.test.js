@@ -87,6 +87,20 @@ function fileIdentity(filePath) {
   };
 }
 
+function findRegularFileWithBytes(root, expected) {
+  if (!fs.existsSync(root)) return null;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      const nested = findRegularFileWithBytes(candidate, expected);
+      if (nested) return nested;
+    } else if (entry.isFile() && fs.readFileSync(candidate, 'utf8') === expected) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function writePublicationClaim(projectDir, {
   id = UUID,
   mediaKind = 'video',
@@ -417,6 +431,78 @@ test('orphan cleanup removes an exactly claimed crash remnant without asset.json
   for (const target of [previewPath, canonicalPath, mediaDirectory, claimPath]) {
     assert.equal(fs.existsSync(target), false, target);
   }
+});
+
+test('publication cleanup preserves foreign preview bytes swapped at final removal', (t) => {
+  const projectDir = makeProject(t);
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+  const canonicalPath = path.join(mediaDirectory, 'media.mp4');
+  const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+  fs.writeFileSync(canonicalPath, 'canonical crash remnant');
+  fs.writeFileSync(previewPath, 'preview crash remnant');
+  writePublicationClaim(projectDir, { mediaDirectory, canonicalPath, previewPath });
+
+  const ownedBackup = `${previewPath}.owned-backup`;
+  const fileSystem = Object.create(fs);
+  let swapped = false;
+  const swap = () => {
+    if (swapped) return;
+    swapped = true;
+    fs.renameSync(previewPath, ownedBackup);
+    fs.writeFileSync(previewPath, 'foreign-preview-at-unlink');
+  };
+  fileSystem.unlinkSync = (target) => {
+    if (target === previewPath) swap();
+    return fs.unlinkSync(target);
+  };
+  fileSystem.renameSync = (from, to) => {
+    if (from === previewPath) swap();
+    return fs.renameSync(from, to);
+  };
+
+  cleanupOrphanImportedStages({ projectDir, fileSystem });
+  assert.equal(swapped, true);
+  assert.ok(findRegularFileWithBytes(projectDir, 'foreign-preview-at-unlink'));
+});
+
+test('publication cleanup resumes an exact private claim after one unlink failure', (t) => {
+  const projectDir = makeProject(t);
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+  const canonicalPath = path.join(mediaDirectory, 'media.mp4');
+  const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+  fs.writeFileSync(canonicalPath, 'canonical crash remnant');
+  fs.writeFileSync(previewPath, 'preview crash remnant');
+  const claimPath = writePublicationClaim(projectDir, {
+    mediaDirectory, canonicalPath, previewPath,
+  });
+  const fileSystem = Object.create(fs);
+  let injected = false;
+  fileSystem.unlinkSync = (target) => {
+    if (!injected && path.basename(target) === 'claimed'
+      && path.basename(path.dirname(target)).startsWith(`.${UUID}.webm.remove-`)) {
+      injected = true;
+      const error = new Error('injected claimed unlink');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.unlinkSync(target);
+  };
+
+  cleanupOrphanImportedStages({ projectDir, fileSystem });
+  assert.equal(injected, true);
+  assert.equal(fs.existsSync(claimPath), true);
+  cleanupOrphanImportedStages({ projectDir });
+  for (const target of [previewPath, canonicalPath, mediaDirectory, claimPath]) {
+    assert.equal(fs.existsSync(target), false, target);
+  }
+  assert.equal(
+    fs.readdirSync(path.join(projectDir, 'previews', 'broll')).some((entry) => entry.includes('.remove-')),
+    false,
+  );
 });
 
 test('orphan cleanup preserves a directory absent from the last durable claim', (t) => {

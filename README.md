@@ -272,6 +272,9 @@ brief: он атомарно создаёт новую пару `vNN-draft.lesso
 live/foreign owner не удаляется. Browser import и его startup cleanup используют этот же lease:
 второй Review сохраняет активные quarantine/stage bytes, а после hard exit удаляются только
 объекты с durable owner record и совпавшим inode. UUID и возраст файла ownership не доказывают.
+Cleanup сначала уносит exact target в private tombstone и сохраняет позднюю подмену. При завершении
+Review по SIGINT/SIGTERM активный import отменяется, зависший child ограниченно эскалируется до
+SIGKILL, а controller и project lease освобождаются для следующего запуска.
 При
 `409` браузер блокирует timeline, b-roll и Save до безопасной повторной проверки либо загрузки
 свежего disk state; устаревшие команды не применяются автоматически. Approved-ревизии остаются

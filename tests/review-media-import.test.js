@@ -43,6 +43,33 @@ function tempProject(t) {
   return projectDir;
 }
 
+function findRegularFileWithBytes(root, expected) {
+  if (!fs.existsSync(root)) return null;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      const nested = findRegularFileWithBytes(candidate, expected);
+      if (nested) return nested;
+    } else if (entry.isFile() && fs.readFileSync(candidate, 'utf8') === expected) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function findSymlinkTo(root, expected) {
+  if (!fs.existsSync(root)) return null;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isSymbolicLink() && fs.readlinkSync(candidate) === expected) return candidate;
+    if (entry.isDirectory()) {
+      const nested = findSymlinkTo(candidate, expected);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
 function probeJson({
   kind = 'video',
   width = 320,
@@ -245,6 +272,62 @@ test('controller releases after normalize timeout, non-zero exit, and publicatio
       assert.equal(controller.busy, false);
     });
   }
+});
+
+test('lease release retries transient failure and never strands the import controller', async (t) => {
+  const projectDir = tempProject(t);
+  const controller = createImportController();
+  const leasePath = path.join(projectDir, '.project-mutation.lock');
+  const fileSystem = Object.create(fs);
+  let releaseAttempts = 0;
+  fileSystem.unlinkSync = (target) => {
+    if (target === leasePath && releaseAttempts++ === 0) {
+      const error = new Error('transient lease unlink');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.unlinkSync(target);
+  };
+
+  const imported = await importReviewMedia({
+    request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+    headers: rawHeaders('retry-release.png', 'image/png', 1), controller, fileSystem,
+    statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+    runMediaProcessImpl: fakeProcessor({ source: probeJson({ kind: 'image' }) }),
+  });
+  assert.equal(imported.mediaKind, 'image');
+  assert.equal(releaseAttempts, 2);
+  assert.equal(controller.busy, false);
+  assert.equal(fs.existsSync(leasePath), false);
+});
+
+test('persistent lease release failure preserves the work error and still frees the controller', async (t) => {
+  const projectDir = tempProject(t);
+  const controller = createImportController();
+  const leasePath = path.join(projectDir, '.project-mutation.lock');
+  const fileSystem = Object.create(fs);
+  let releaseAttempts = 0;
+  fileSystem.unlinkSync = (target) => {
+    if (target === leasePath) {
+      releaseAttempts += 1;
+      const error = new Error('persistent lease unlink');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.unlinkSync(target);
+  };
+  const workError = new Error('authoritative probe failed');
+  await assert.rejects(importReviewMedia({
+    request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+    headers: rawHeaders('release-error.png', 'image/png', 1), controller, fileSystem,
+    statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
+    runMediaProcessImpl: async () => { throw workError; },
+  }), (error) => error.code === 'MEDIA_IMPORT_DECODE_FAILED'
+    && error.cause === workError
+    && error.leaseReleaseError?.code === 'EIO');
+  assert.equal(releaseAttempts, 3);
+  assert.equal(controller.busy, false);
+  assert.equal(fs.existsSync(leasePath), true);
 });
 
 test('streaming requires exact bytes, ignores post-body close, and keeps private exact modes', async (t) => {
@@ -502,7 +585,7 @@ test('parent replacement during processing and dangling final destinations abort
     statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }), randomId: () => UUID,
     runMediaProcessImpl: fakeProcessor({ source: probeJson() }),
   }), (error) => error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
-  assert.equal(fs.lstatSync(path.join(danglingProject, 'previews', 'broll', `${UUID}.webm`)).isSymbolicLink(), true);
+  assert.ok(findSymlinkTo(danglingProject, path.join(danglingProject, 'missing.webm')));
 });
 
 test('upload pathname replacement before probing is rejected by opened-file identity', async (t) => {
@@ -704,7 +787,11 @@ test('failure after preview and final-directory claim leaves no selectable parti
       assert.equal(fs.existsSync(path.join(projectDir, 'previews', 'broll', `${UUID}.webm`)), false);
       const finalDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
       assert.equal(fs.existsSync(path.join(finalDirectory, 'asset.json')), false);
-      assert.equal(fs.existsSync(finalDirectory), false);
+      assert.equal(
+        fs.existsSync(finalDirectory),
+        false,
+        fs.existsSync(finalDirectory) ? fs.readdirSync(finalDirectory).join(',') : '',
+      );
     });
   }
 });
@@ -735,7 +822,11 @@ test('rollback retains the durable claim when an owned canonical cannot be delet
     return fs.openSync(target, flags, mode);
   };
   fileSystem.unlinkSync = (target) => {
-    if (target === canonicalPath) throw new Error('canonical deletion failed');
+    if (target === canonicalPath
+      || (path.basename(target) === 'claimed'
+        && path.basename(path.dirname(target)).startsWith('.media.mp4.remove-'))) {
+      throw new Error('canonical deletion failed');
+    }
     return fs.unlinkSync(target);
   };
 
@@ -746,7 +837,7 @@ test('rollback retains the durable claim when an owned canonical cannot be delet
     runMediaProcessImpl: fakeProcessor(),
   }));
   assert.equal(controller.busy, false);
-  assert.equal(fs.existsSync(canonicalPath), true);
+  assert.ok(findRegularFileWithBytes(projectDir, 'normalized:.mp4'));
   assert.equal(fs.existsSync(claimPath), true);
 });
 

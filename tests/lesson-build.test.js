@@ -22,6 +22,7 @@ function runLessonBuildWithIntercept(t, args, {
   materializePlan = false,
   failPlan = false,
   replacePlanJson = false,
+  racePlanJsonRemoval = false,
 } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-lesson-intercept-'));
   const hook = path.join(directory, 'hook.js');
@@ -35,7 +36,11 @@ function runLessonBuildWithIntercept(t, args, {
     `const materializePlan = ${JSON.stringify(materializePlan)};`,
     `const failPlan = ${JSON.stringify(failPlan)};`,
     `const replacePlanJson = ${JSON.stringify(replacePlanJson)};`,
+    `const racePlanJsonRemoval = ${JSON.stringify(racePlanJsonRemoval)};`,
     'let generatedPlanJson = null;',
+    'let removalRaced = false;',
+    'const nativeUnlinkSync = fs.unlinkSync.bind(fs);',
+    'const nativeRenameSync = fs.renameSync.bind(fs);',
     'childProcess.spawnSync = (command, args) => {',
     "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
     "  if (args.length === 1 && args[0] === '--version') return { status: 0, stdout: 'Python 3.12.0', stderr: '' };",
@@ -56,6 +61,23 @@ function runLessonBuildWithIntercept(t, args, {
     '  }',
     "  return { status: 0, stdout: '' };",
     '};',
+    'if (racePlanJsonRemoval) {',
+    '  const swapRemovalTarget = (reportedTarget) => {',
+    '    if (removalRaced) return;',
+    '    removalRaced = true;',
+    "    nativeRenameSync(generatedPlanJson, generatedPlanJson + '.owned-race');",
+    "    fs.writeFileSync(generatedPlanJson, 'foreign-plan-at-removal');",
+    "    fs.appendFileSync(calls, JSON.stringify({ raceTarget: reportedTarget }) + '\\n');",
+    '  };',
+    '  fs.unlinkSync = (target) => {',
+    '    if (target === generatedPlanJson) swapRemovalTarget(target);',
+    '    return nativeUnlinkSync(target);',
+    '  };',
+    '  fs.renameSync = (from, to) => {',
+    '    if (from === generatedPlanJson) swapRemovalTarget(to);',
+    '    return nativeRenameSync(from, to);',
+    '  };',
+    '}',
     "if (replacePlanJson) {",
     "  const workspace = require(path.join(process.cwd(), 'scripts/project/workspace'));",
     '  const publish = workspace.publishBriefRevision;',
@@ -95,6 +117,20 @@ function makePlanProject(t) {
     sourcePath: path.join(ROOT, 'examples', 'demo-source.mp4'),
     now: new Date('2026-08-22T10:00:00.000Z'),
   });
+}
+
+function findRegularFileWithBytes(root, expected) {
+  if (!fs.existsSync(root)) return null;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      const nested = findRegularFileWithBytes(candidate, expected);
+      if (nested) return nested;
+    } else if (entry.isFile() && fs.readFileSync(candidate, 'utf8') === expected) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 test('lesson workflow exposes one public default theme', () => {
@@ -337,8 +373,31 @@ test('project lesson planning preserves a foreign replacement of its generated t
       }
     }
   });
-  assert.equal(fs.readFileSync(jsonPath, 'utf8'), 'foreign replacement');
+  assert.ok(findRegularFileWithBytes(path.dirname(jsonPath), 'foreign replacement'));
   assert.equal(fs.existsSync(markdownPath), false);
+});
+
+test('project lesson cleanup preserves foreign bytes swapped at the final removal syscall', (t) => {
+  const workspace = makePlanProject(t);
+  const { result, invocations } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--no-transcribe',
+    '--project-dir', workspace.dir,
+  ], { materializePlan: true, racePlanJsonRemoval: true });
+  assert.equal(result.status, 1);
+  const race = invocations.find((entry) => entry.raceTarget);
+  assert.ok(race, result.stderr);
+  assert.equal(fs.readFileSync(race.raceTarget, 'utf8'), 'foreign-plan-at-removal');
+  t.after(() => {
+    for (const entry of invocations) {
+      if (entry.raceTarget) {
+        try { fs.unlinkSync(entry.raceTarget); } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+    }
+  });
 });
 
 test('lesson rejects source-changing flags that invalidate approved timings', () => {

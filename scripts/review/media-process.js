@@ -2,6 +2,7 @@ const { spawn } = require('node:child_process');
 
 const DEFAULT_OUTPUT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TERMINATION_GRACE_MS = 2_000;
 
 function processError(code, message, properties = {}) {
   return Object.assign(new Error(message), { code, ...properties });
@@ -15,6 +16,7 @@ function runMediaProcess({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxStdoutBytes = DEFAULT_OUTPUT_BYTES,
   maxStderrBytes = DEFAULT_OUTPUT_BYTES,
+  terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
   spawnImpl = spawn,
 }) {
   return new Promise((resolve, reject) => {
@@ -36,12 +38,18 @@ function runMediaProcess({
     let stderrBytes = 0;
     let pendingError = null;
     let terminationSent = false;
+    let escalationTimer = null;
 
     const terminate = (error) => {
       if (!pendingError) pendingError = error;
       if (!terminationSent) {
         terminationSent = true;
         child.kill('SIGTERM');
+        const grace = Number.isFinite(terminationGraceMs) && terminationGraceMs >= 0
+          ? terminationGraceMs
+          : DEFAULT_TERMINATION_GRACE_MS;
+        escalationTimer = setTimeout(() => child.kill('SIGKILL'), grace);
+        escalationTimer.unref?.();
       }
     };
     const collect = (chunks, limit, streamName) => (chunk) => {
@@ -75,6 +83,7 @@ function runMediaProcess({
     });
     child.once('close', (code, closeSignal) => {
       if (timer) clearTimeout(timer);
+      if (escalationTimer) clearTimeout(escalationTimer);
       signal?.removeEventListener('abort', onAbort);
       const stdout = Buffer.concat(stdoutChunks).toString('utf8');
       const stderr = Buffer.concat(stderrChunks).toString('utf8');

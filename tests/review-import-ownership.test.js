@@ -87,6 +87,20 @@ function waitForMessage(child, expected) {
   });
 }
 
+function findRegularFileWithBytes(root, expected) {
+  if (!fs.existsSync(root)) return null;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      const nested = findRegularFileWithBytes(candidate, expected);
+      if (nested) return nested;
+    } else if (entry.isFile() && fs.readFileSync(candidate, 'utf8') === expected) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 test('a real import process keeps a second process out until normal release', async (t) => {
   const projectDir = tempProject(t);
   const workerPath = path.join(projectDir, 'live-import-worker.js');
@@ -279,7 +293,9 @@ importReviewMedia({
   const failingFileSystem = Object.create(fs);
   let injected = false;
   failingFileSystem.unlinkSync = (target) => {
-    if (!injected && target === uploadPath) {
+    if (!injected && (target === uploadPath
+      || (path.basename(target) === 'claimed'
+        && path.basename(path.dirname(target)).startsWith('.upload.bin.remove-')))) {
       injected = true;
       const error = new Error('injected unlink failure');
       error.code = 'EIO';
@@ -293,6 +309,94 @@ importReviewMedia({
 
   cleanupOrphanImportQuarantines({ projectDir });
   assert.equal(fs.existsSync(path.dirname(uploadPath)), false);
+});
+
+test('orphan recovery restores and retries an exact quarantine after rmdir fails once', async (t) => {
+  const projectDir = tempProject(t);
+  const workerPath = path.join(projectDir, 'crash-before-rmdir-worker.js');
+  fs.writeFileSync(workerPath, String.raw`
+const { Readable } = require('node:stream');
+const [mediaImportPath, projectDir, id] = process.argv.slice(2);
+const { createImportController, importReviewMedia } = require(mediaImportPath);
+importReviewMedia({
+  request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+  headers: { 'content-length': '1', 'content-type': 'image/png', 'x-automontage-filename': 'crash.png' },
+  controller: createImportController(), randomId: () => id,
+  statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }),
+  runMediaProcessImpl: async (invocation) => {
+    if (invocation.command === 'ffprobe') process.exit(81);
+    return { stdout: '', stderr: '', code: 0, signal: null };
+  },
+}).then(() => process.exit(99), () => process.exit(98));
+`);
+  const child = fork(workerPath, [
+    require.resolve('../scripts/review/media-import'), projectDir, FIRST_ID,
+  ], { stdio: 'ignore' });
+  assert.deepEqual(await waitForExit(child), { code: 81, signal: null });
+
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const failingFileSystem = Object.create(fs);
+  let injected = false;
+  failingFileSystem.rmdirSync = (target) => {
+    if (!injected && path.basename(target) === 'claimed'
+      && path.basename(path.dirname(target)).startsWith(`.${FIRST_ID}.remove-`)) {
+      injected = true;
+      const error = new Error('injected rmdir failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.rmdirSync(target);
+  };
+  cleanupOrphanImportQuarantines({ projectDir, fileSystem: failingFileSystem });
+  assert.equal(injected, true);
+
+  cleanupOrphanImportQuarantines({ projectDir });
+  assert.equal(fs.existsSync(quarantinePath), false);
+  assert.deepEqual(fs.readdirSync(path.dirname(quarantinePath)), []);
+});
+
+test('quarantine cleanup never deletes a foreign file swapped at the final removal syscall', async (t) => {
+  const projectDir = tempProject(t);
+  const workerPath = path.join(projectDir, 'crash-for-removal-race.js');
+  fs.writeFileSync(workerPath, String.raw`
+const { Readable } = require('node:stream');
+const [mediaImportPath, projectDir, id] = process.argv.slice(2);
+const { createImportController, importReviewMedia } = require(mediaImportPath);
+importReviewMedia({
+  request: Readable.from([Buffer.from('x')]), projectDir, outputFps: 25,
+  headers: { 'content-length': '1', 'content-type': 'image/png', 'x-automontage-filename': 'race.png' },
+  controller: createImportController(), randomId: () => id,
+  statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }),
+  runMediaProcessImpl: async () => process.exit(71),
+}).then(() => process.exit(99), () => process.exit(98));
+`);
+  const child = fork(workerPath, [
+    require.resolve('../scripts/review/media-import'), projectDir, FIRST_ID,
+  ], { stdio: 'ignore' });
+  assert.deepEqual(await waitForExit(child), { code: 71, signal: null });
+
+  const uploadPath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID, 'upload.bin');
+  const ownedBackup = `${uploadPath}.owned-backup`;
+  const fileSystem = Object.create(fs);
+  let swapped = false;
+  const swap = () => {
+    if (swapped) return;
+    swapped = true;
+    fs.renameSync(uploadPath, ownedBackup);
+    fs.writeFileSync(uploadPath, 'foreign-at-unlink');
+  };
+  fileSystem.unlinkSync = (target) => {
+    if (target === uploadPath) swap();
+    return fs.unlinkSync(target);
+  };
+  fileSystem.renameSync = (from, to) => {
+    if (from === uploadPath) swap();
+    return fs.renameSync(from, to);
+  };
+
+  cleanupOrphanImportQuarantines({ projectDir, fileSystem });
+  assert.equal(swapped, true);
+  assert.ok(findRegularFileWithBytes(projectDir, 'foreign-at-unlink'));
 });
 
 test('hard-exit during normalization removes the pre-owned output inode on the next import', async (t) => {
@@ -335,6 +439,9 @@ test('hard-exit recovery covers master, proxy, claim, pre-marker, and committed-
     ['master', 73, false],
     ['proxy', 74, false],
     ['claim', 75, false],
+    ['mid-stage', 78, false],
+    ['after-mkdir', 79, false],
+    ['mid-canonical', 80, false],
     ['pre-marker', 76, false],
     ['marker', 77, true],
   ]) {
@@ -349,12 +456,29 @@ const { createImportController, importReviewMedia } = require(mediaImportPath);
 const fileSystem = Object.create(fs);
 let claimFd = null;
 let markerFd = null;
+let previewStageFd = null;
+let canonicalFinalFd = null;
+let finalDirectoryCreated = false;
+fileSystem.mkdirSync = (target, options) => {
+  const result = fs.mkdirSync(target, options);
+  if (String(target).endsWith('/' + id)) finalDirectoryCreated = true;
+  return result;
+};
 fileSystem.openSync = (target, flags, mode) => {
   if (String(target).endsWith('/asset.json') && boundary === 'pre-marker') process.exit(76);
   const fd = fs.openSync(target, flags, mode);
   if (String(target).endsWith('.claim')) claimFd = fd;
   if (String(target).endsWith('/asset.json')) markerFd = fd;
+  if (String(target).endsWith('.stage.webm')) previewStageFd = fd;
+  if (String(target).endsWith('/media.mp4') && !String(target).includes('/tmp/review-imports/')) canonicalFinalFd = fd;
   return fd;
+};
+fileSystem.writeSync = (fd, ...args) => {
+  if (boundary === 'after-mkdir' && finalDirectoryCreated && fd === claimFd) process.exit(79);
+  const result = fs.writeSync(fd, ...args);
+  if (boundary === 'mid-stage' && fd === previewStageFd) process.exit(78);
+  if (boundary === 'mid-canonical' && fd === canonicalFinalFd) process.exit(80);
+  return result;
 };
 fileSystem.fsyncSync = (fd) => {
   const result = fs.fsyncSync(fd);
@@ -391,13 +515,23 @@ importReviewMedia({
 
       const finalDirectory = path.join(projectDir, 'assets', 'broll', 'video', FIRST_ID);
       const marker = path.join(finalDirectory, 'asset.json');
+      const claim = path.join(
+        projectDir, 'assets', 'broll', 'video', `.${FIRST_ID}.claim`,
+      );
+      const previewStage = path.join(
+        projectDir, 'previews', 'broll', `.${FIRST_ID}.stage.webm`,
+      );
+      const preview = path.join(projectDir, 'previews', 'broll', `${FIRST_ID}.webm`);
       const committedBytes = committed ? fs.readFileSync(marker) : null;
       await importImage(projectDir, SECOND_ID);
       assert.equal(
         fs.existsSync(path.join(projectDir, 'tmp', 'review-imports', FIRST_ID)),
         false,
       );
+      assert.equal(fs.existsSync(claim), false, claim);
+      assert.equal(fs.existsSync(previewStage), false, previewStage);
       assert.equal(fs.existsSync(finalDirectory), committed);
+      assert.equal(fs.existsSync(preview), committed);
       if (committed) assert.deepEqual(fs.readFileSync(marker), committedBytes);
     });
   }

@@ -62,6 +62,22 @@ test('media process sends one SIGTERM on timeout and rejects only after child cl
     && error.stdout === 'partial output' && error.stderr === 'bounded diagnostic');
 });
 
+test('an aborted media process escalates to SIGKILL after a bounded grace period', async () => {
+  const child = fakeChild();
+  const abort = new AbortController();
+  const promise = runMediaProcess({
+    command: 'ffmpeg', args: [], signal: abort.signal,
+    terminationGraceMs: 10,
+    spawnImpl: () => child,
+  });
+  abort.abort();
+  assert.deepEqual(child.killCalls, ['SIGTERM']);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(child.killCalls, ['SIGTERM', 'SIGKILL']);
+  child.emit('close', null, 'SIGKILL');
+  await assert.rejects(promise, (error) => error.code === 'MEDIA_PROCESS_ABORTED');
+});
+
 test('media process abort, overflow, spawn error, and non-zero exit remain bounded', async (t) => {
   await t.test('abort', async () => {
     const child = fakeChild();

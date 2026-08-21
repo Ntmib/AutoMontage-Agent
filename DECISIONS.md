@@ -301,3 +301,11 @@ lease не берут. Crash recovery доверяет только append-only 
 inode, никогда UUID или TTL. Encoder outputs создаются как private owned inode заранее, чтобы
 hard exit во время записи оставался доказуемым. Marker-last сохраняет committed bundle, а
 неподтверждённые replacement/unexpected children намеренно остаются для ручной диагностики.
+
+Node 20 не предоставляет `renameat2(RENAME_NOREPLACE)` или unlink по открытому descriptor. Поэтому
+cleanup не обещает невозможной абсолютной same-UID syscall-атомарности: pathname сначала переносится
+в непредсказуемый `0700` tombstone, и удаляется уже совпавший перенесённый объект; малые immutable
+records сверяются и по bytes. Если в claim-rename исходного pathname попал другой inode, он
+сохраняется в tombstone. Процесс с тем же UID, который уже узнал private pathname, остаётся за
+границей гарантии Node 20. Отвергнут прежний `lstat → unlink`, потому что race между этими syscall
+мог удалить foreign bytes.
