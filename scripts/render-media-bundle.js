@@ -6,6 +6,7 @@ const { isCanonicalBrollReference } = require('./lesson/broll-media');
 const { sanitizeNamespace } = require('./public-media');
 
 const COPY_BUFFER_BYTES = 64 * 1024;
+const MAX_CTIME_REPIN_ROUNDS = 3;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp']);
@@ -67,6 +68,13 @@ function sameFile(left, right) {
   return Boolean(left && right
     && left.dev === right.dev && left.ino === right.ino && left.size === right.size
     && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs
+    && left.mode === right.mode && left.nlink === right.nlink);
+}
+
+function sameFileExceptCtime(left, right) {
+  return Boolean(left && right
+    && left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
     && left.mode === right.mode && left.nlink === right.nlink);
 }
 
@@ -364,7 +372,12 @@ function writeAll(fileSystem, descriptor, buffer, length) {
   }
 }
 
-function hashOpenedDescriptor(fileSystem, descriptor, expectedIdentity, label) {
+function hashOpenedDescriptor(
+  fileSystem,
+  descriptor,
+  expectedIdentity,
+  label,
+) {
   if (expectedIdentity.size < 0n || expectedIdentity.size > BigInt(Number.MAX_SAFE_INTEGER)) {
     fail(`${label} size cannot be verified safely`);
   }
@@ -385,10 +398,27 @@ function hashOpenedDescriptor(fileSystem, descriptor, expectedIdentity, label) {
     position += bytesRead;
   }
   const after = fileSystem.fstatSync(descriptor, { bigint: true });
-  if (!after.isFile() || !sameFile(expectedIdentity, fileIdentity(after))) {
+  const afterIdentity = fileIdentity(after);
+  if (!after.isFile() || !sameFileExceptCtime(expectedIdentity, afterIdentity)) {
     fail(`${label} identity changed while hashing`);
   }
-  return hash.digest('hex');
+  return {
+    sha256: hash.digest('hex'),
+    identity: afterIdentity,
+    stable: sameFile(expectedIdentity, afterIdentity),
+  };
+}
+
+function hashOpenedDescriptorStable(fileSystem, descriptor, expectedIdentity, label) {
+  let identity = expectedIdentity;
+  for (let round = 0; round < MAX_CTIME_REPIN_ROUNDS; round += 1) {
+    const result = hashOpenedDescriptor(fileSystem, descriptor, identity, label);
+    if (result.stable) return result;
+    // A ctime-only move can be delayed File Provider metadata or changed bytes.
+    // Discard this digest and hash the full descriptor again from the new identity.
+    identity = result.identity;
+  }
+  fail(`${label} ctime did not stabilize while hashing`);
 }
 
 function copyTracked({ tracked, destination, fileSystem, onCreated }) {
@@ -432,14 +462,16 @@ function copyTracked({ tracked, destination, fileSystem, onCreated }) {
     }
     const sourceDigest = hash.digest('hex');
     const destinationIdentity = fileIdentity(finalDestination);
-    const destinationDigest = hashOpenedDescriptor(
+    const destinationHash = hashOpenedDescriptorStable(
       fileSystem,
       destinationDescriptor,
       destinationIdentity,
       'bundle destination',
     );
-    if (destinationDigest !== sourceDigest) fail('bundle destination hash differs from copied bytes');
-    return { sha256: sourceDigest, identity: destinationIdentity };
+    if (destinationHash.sha256 !== sourceDigest) {
+      fail('bundle destination hash differs from copied bytes');
+    }
+    return { sha256: sourceDigest, identity: destinationHash.identity };
   } finally {
     if (destinationDescriptor !== undefined) fileSystem.closeSync(destinationDescriptor);
   }
@@ -540,55 +572,82 @@ function prepareRenderMediaBundle({
     }
   }
 
-  function assertBundlePathIdentitiesCurrent() {
+  function inspectBundlePathIdentitiesCurrent() {
     assertOwnedDirectoryCurrent();
     assertExactOwnedEntries(directory);
+    const ctimeDrifted = [];
     for (const [name, record] of ownedFiles) {
       const stat = lstat(fileSystem, path.join(directory, name));
-      if (!stat || stat.isSymbolicLink() || !stat.isFile()
-        || !sameFile(record.identity, fileIdentity(stat))) {
+      if (!stat || stat.isSymbolicLink() || !stat.isFile()) {
         fail('bundle file identity changed before render');
       }
+      const currentIdentity = fileIdentity(stat);
+      if (sameFile(record.identity, currentIdentity)) continue;
+      if (!sameFileExceptCtime(record.identity, currentIdentity)) {
+        fail('bundle file identity changed before render');
+      }
+      ctimeDrifted.push(name);
     }
     assertOwnedDirectoryCurrent();
+    return ctimeDrifted;
+  }
+
+  function verifyOwnedBundleFile(name, record) {
+    const constants = fileSystem.constants || fs.constants;
+    if (!record.identity || !record.sha256) fail('bundle file verification is incomplete');
+    const filename = path.join(directory, name);
+    let descriptor;
+    try {
+      descriptor = fileSystem.openSync(
+        filename,
+        constants.O_RDONLY | (constants.O_NOFOLLOW || 0),
+      );
+      const descriptorStat = fileSystem.fstatSync(descriptor, { bigint: true });
+      const pathStat = lstat(fileSystem, filename);
+      if (!descriptorStat.isFile() || !pathStat || pathStat.isSymbolicLink()
+        || !pathStat.isFile()) {
+        fail('bundle file identity changed before render');
+      }
+      const descriptorIdentity = fileIdentity(descriptorStat);
+      const pathIdentity = fileIdentity(pathStat);
+      if (!sameFile(descriptorIdentity, pathIdentity)
+        && !sameFileExceptCtime(descriptorIdentity, pathIdentity)) {
+        fail('bundle file identity changed before render');
+      }
+      if (!sameFile(record.identity, pathIdentity)
+        && !sameFileExceptCtime(record.identity, pathIdentity)) {
+        fail('bundle file identity changed before render');
+      }
+      const verified = hashOpenedDescriptorStable(
+        fileSystem,
+        descriptor,
+        pathIdentity,
+        'bundle file',
+      );
+      if (verified.sha256 !== record.sha256) fail('bundle file hash changed before render');
+      // File Provider may attach metadata after close. Re-pin ctime only after the opened bytes,
+      // inode, size, mtime, mode and link count have all passed the full SHA-256 verification.
+      record.identity = verified.identity;
+    } finally {
+      if (descriptor !== undefined) fileSystem.closeSync(descriptor);
+    }
   }
 
   function verifyBundleFilesCurrent() {
     assertOwnedDirectoryCurrent();
     assertExactOwnedEntries(directory);
-    const constants = fileSystem.constants || fs.constants;
-    for (const [name, record] of ownedFiles) {
-      if (!record.identity || !record.sha256) fail('bundle file verification is incomplete');
-      const filename = path.join(directory, name);
-      let descriptor;
-      try {
-        descriptor = fileSystem.openSync(
-          filename,
-          constants.O_RDONLY | (constants.O_NOFOLLOW || 0),
-        );
-        const descriptorStat = fileSystem.fstatSync(descriptor, { bigint: true });
-        const pathStat = lstat(fileSystem, filename);
-        if (!descriptorStat.isFile() || !pathStat || pathStat.isSymbolicLink()
-          || !pathStat.isFile()
-          || !sameFile(record.identity, fileIdentity(descriptorStat))
-          || !sameFile(record.identity, fileIdentity(pathStat))) {
-          fail('bundle file identity changed before render');
-        }
-        const digest = hashOpenedDescriptor(
-          fileSystem,
-          descriptor,
-          record.identity,
-          'bundle file',
-        );
-        if (digest !== record.sha256) fail('bundle file hash changed before render');
-      } finally {
-        if (descriptor !== undefined) fileSystem.closeSync(descriptor);
+    let names = [...ownedFiles.keys()];
+    for (let round = 0; round < MAX_CTIME_REPIN_ROUNDS; round += 1) {
+      for (const name of names) verifyOwnedBundleFile(name, ownedFiles.get(name));
+      names = inspectBundlePathIdentitiesCurrent();
+      if (names.length === 0) {
+        // Every descriptor is closed before this final pathname-only sweep. Nothing
+        // user-controlled runs between it and the operation callback; the documented same-UID
+        // syscall gap remains the Node 20 boundary.
+        return;
       }
     }
-    // Every descriptor is closed before this final pathname-only sweep. Nothing user-controlled
-    // runs between this sweep and the operation callback; the documented same-UID syscall gap is
-    // the remaining Node 20 boundary.
-    assertBundlePathIdentitiesCurrent();
+    fail('bundle file ctime did not stabilize before render');
   }
 
   function attemptCleanupContainerCreate() {

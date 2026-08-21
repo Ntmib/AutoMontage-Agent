@@ -241,6 +241,17 @@ Review показывает opaque `asset-N`, а Save материализует
 после чего lesson build копирует source и все approved b-roll в один одноразовый immutable
 render bundle. Так рендер не читает живой project path и repeated asset копируется один раз.
 
+На macOS каталог может находиться внутри iCloud File Provider: после безопасной записи сервис
+асинхронно меняет только `ctime` файла из-за своих metadata, не меняя байты или `mtime`. Полностью
+игнорировать `ctime` или ждать фиксированный timeout нельзя. Поэтому render bundle принимает
+только `ctime`-only drift: `dev/ino/size/mtime/mode/nlink` обязаны совпасть, открытый no-follow
+descriptor и pathname обязаны указывать на тот же regular file, а SHA-256 всех байтов считается
+заново. Hash принимается только при неизменной identity от начала до конца чтения: если за это
+время сдвинулся даже один `ctime`, digest отбрасывается и выполняется полный повтор. Лишь после
+стабильного совпавшего hash новый `ctime` становится baseline; число rehash/repin-циклов
+ограничено. Любая другая identity-разница, непрерывный drift или изменение bytes остаются
+fail-closed до Remotion callback.
+
 Для V1 выбран Remotion `OffthreadVideo`, а не собственный browser renderer, OpenCut runtime или
 ручная покадровая декомпозиция. Родительская `Sequence` ограничивает сцену, `trimBefore` задаёт
 старт. `mute` оставляет source voice, `mix` добавляет clip на фиксированных −18 dB, `replace`

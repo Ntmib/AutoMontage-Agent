@@ -44,7 +44,9 @@ npm test
   limits, abort/semaphore, real ffprobe/decode, WebP/H.264 master + WebM proxy, UUID publication,
   отсутствие auto-select, browser path/hash privacy и immutable cleanup boundaries;
 - approval/render media: descriptor probe/hash, normalized metadata/proxy, silent/audio rules,
-  repeated asset dedup, одноразовый render bundle и `Img`/`OffthreadVideo` audio envelopes;
+  repeated asset dedup, одноразовый render bundle, безопасный полный rehash при File Provider
+  `ctime`-only drift, bounded retry при drift во время hash, fail-closed same-size/append/overwrite
+  и `Img`/`OffthreadVideo` audio envelopes;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;

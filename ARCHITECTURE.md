@@ -236,7 +236,11 @@ keyframes или masks. Канонический путь остаётся пр�
 brief -> `scripts/build.js --brief` -> Remotion. Перед вызовом Remotion lesson build копирует
 source и все локальные legacy/structured b-roll в один immutable одноразовый каталог
 `public/.automontage/`, переписывает только clone props на безопасные basenames, ещё раз сверяет
-identity/hash и удаляет owned bundle после success/error. Approved JSON не меняется.
+identity/hash и удаляет owned bundle после success/error. На iCloud File Provider допустим только
+`ctime`-only metadata drift: при неизменных `dev/ino/size/mtime/mode/nlink` файл заново полностью
+хэшируется и лишь затем получает новый bounded identity baseline. Если `ctime` сдвинулся во время
+чтения, этот digest отбрасывается и выполняется ограниченный полный повтор. Изменение bytes или
+любого другого identity-поля останавливает build до Remotion. Approved JSON не меняется.
 
 ## 4. Remotion-слой
 

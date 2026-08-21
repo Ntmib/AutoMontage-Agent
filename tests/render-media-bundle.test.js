@@ -1007,6 +1007,324 @@ test('cleanup retries partial unlink and tombstone rmdir failures without leakin
   });
 });
 
+test('ctime-only File Provider drift is re-pinned only after a full bundle hash check', async (t) => {
+  const driftPoints = [
+    { label: 'after destination close 1', afterClose: 1 },
+    { label: 'after destination close 2', afterClose: 2 },
+    { label: 'after destination close 3', afterClose: 3 },
+    { label: 'during the final hash', duringFinalHash: true },
+  ];
+  for (const driftPoint of driftPoints) {
+    await t.test(`ctime drift ${driftPoint.label}`, () => {
+      const fixture = makeFixture(t);
+      const descriptors = new Map();
+      let destinationCloses = 0;
+      let destinationReads = 0;
+      let ctimeOffset = 0n;
+      let driftAtNextFstat = false;
+      let postDriftReads = 0;
+      const isOwnedBundleFile = (filename) => typeof filename === 'string'
+        && /[\\/]\.automontage[\\/].*[\\/]media-1\.mp4$/.test(filename);
+      const withCtimeOffset = (stat) => {
+        if (ctimeOffset === 0n) return stat;
+        const shifted = Object.create(stat);
+        Object.defineProperty(shifted, 'ctimeNs', {
+          configurable: true,
+          enumerable: true,
+          value: stat.ctimeNs + ctimeOffset,
+        });
+        return shifted;
+      };
+      const fileProviderFs = {
+        ...fs,
+        openSync(filename, flags, mode) {
+          const descriptor = fs.openSync(filename, flags, mode);
+          descriptors.set(descriptor, filename);
+          return descriptor;
+        },
+        closeSync(descriptor) {
+          const filename = descriptors.get(descriptor);
+          const result = fs.closeSync(descriptor);
+          descriptors.delete(descriptor);
+          if (isOwnedBundleFile(filename)) {
+            destinationCloses += 1;
+            if (destinationCloses === driftPoint.afterClose) ctimeOffset += 1n;
+          }
+          return result;
+        },
+        fstatSync(descriptor, options) {
+          if (driftAtNextFstat && isOwnedBundleFile(descriptors.get(descriptor))) {
+            ctimeOffset += 1n;
+            driftAtNextFstat = false;
+          }
+          const stat = fs.fstatSync(descriptor, options);
+          return isOwnedBundleFile(descriptors.get(descriptor)) ? withCtimeOffset(stat) : stat;
+        },
+        lstatSync(filename, options) {
+          const stat = fs.lstatSync(filename, options);
+          return isOwnedBundleFile(filename) ? withCtimeOffset(stat) : stat;
+        },
+        readSync(descriptor, ...args) {
+          const ownedBundleFile = isOwnedBundleFile(descriptors.get(descriptor));
+          if (ctimeOffset > 0n && ownedBundleFile) {
+            postDriftReads += 1;
+          }
+          const bytesRead = fs.readSync(descriptor, ...args);
+          if (ownedBundleFile) {
+            destinationReads += 1;
+            if (driftPoint.duringFinalHash && destinationReads === 3) {
+              driftAtNextFstat = true;
+            }
+          }
+          return bytesRead;
+        },
+      };
+      let invoked = false;
+
+      const result = withRenderMediaBundle({
+        ...bundleInput(fixture, []),
+        fileSystem: fileProviderFs,
+      }, () => {
+        invoked = true;
+        return 'rendered';
+      });
+
+      assert.equal(result, 'rendered');
+      assert.equal(invoked, true);
+      assert.equal(ctimeOffset, 1n);
+      assert.ok(postDriftReads > 0, 'ctime re-pin must re-read and hash the owned bytes');
+      assert.equal(fs.existsSync(path.join(
+        fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+      )), false);
+    });
+  }
+
+  for (const driftPhase of ['after close', 'during hash']) {
+    await t.test(`continuous ctime drift ${driftPhase} stays bounded`, () => {
+      const fixture = makeFixture(t);
+      const descriptors = new Map();
+      let ctimeOffset = 0n;
+      let destinationCloses = 0;
+      let driftAtNextFstat = false;
+      let hashDrifts = 0;
+      let invoked = false;
+      const isOwnedBundleFile = (filename) => typeof filename === 'string'
+        && /[\\/]\.automontage[\\/].*[\\/]media-1\.mp4$/.test(filename);
+      const withCtimeOffset = (stat) => {
+        if (ctimeOffset === 0n) return stat;
+        const shifted = Object.create(stat);
+        Object.defineProperty(shifted, 'ctimeNs', {
+          configurable: true,
+          enumerable: true,
+          value: stat.ctimeNs + ctimeOffset,
+        });
+        return shifted;
+      };
+      const unstableFileProviderFs = {
+        ...fs,
+        openSync(filename, flags, mode) {
+          const descriptor = fs.openSync(filename, flags, mode);
+          descriptors.set(descriptor, filename);
+          return descriptor;
+        },
+        closeSync(descriptor) {
+          const filename = descriptors.get(descriptor);
+          const result = fs.closeSync(descriptor);
+          descriptors.delete(descriptor);
+          if (isOwnedBundleFile(filename)) {
+            destinationCloses += 1;
+            if (driftPhase === 'after close') ctimeOffset += 1n;
+          }
+          return result;
+        },
+        fstatSync(descriptor, options) {
+          const filename = descriptors.get(descriptor);
+          if (driftAtNextFstat && isOwnedBundleFile(filename)) {
+            ctimeOffset += 1n;
+            hashDrifts += 1;
+            driftAtNextFstat = false;
+          }
+          const stat = fs.fstatSync(descriptor, options);
+          return isOwnedBundleFile(filename) ? withCtimeOffset(stat) : stat;
+        },
+        lstatSync(filename, options) {
+          const stat = fs.lstatSync(filename, options);
+          return isOwnedBundleFile(filename) ? withCtimeOffset(stat) : stat;
+        },
+        readSync(descriptor, ...args) {
+          const filename = descriptors.get(descriptor);
+          const bytesRead = fs.readSync(descriptor, ...args);
+          if (driftPhase === 'during hash' && destinationCloses > 0
+            && isOwnedBundleFile(filename)) {
+            driftAtNextFstat = true;
+          }
+          return bytesRead;
+        },
+      };
+
+      assert.throws(() => withRenderMediaBundle({
+        ...bundleInput(fixture, []),
+        fileSystem: unstableFileProviderFs,
+      }, () => {
+        invoked = true;
+      }), driftPhase === 'during hash'
+        ? /ctime did not stabilize while hashing/
+        : /ctime did not stabilize before render/);
+      if (driftPhase === 'during hash') assert.equal(hashDrifts, 3);
+      else assert.equal(destinationCloses, 4);
+      assert.equal(invoked, false);
+      assert.equal(fs.existsSync(path.join(
+        fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+      )), false);
+    });
+  }
+});
+
+test('ctime re-pin rejects changed bytes even when every non-ctime field is projected unchanged', (t) => {
+  const fixture = makeFixture(t);
+  const descriptors = new Map();
+  let baselineIdentity = null;
+  let mutated = false;
+  const isOwnedBundleFile = (filename) => typeof filename === 'string'
+    && /[\\/]\.automontage[\\/].*[\\/]media-1\.mp4$/.test(filename);
+  const projectIdentity = (stat) => {
+    if (!mutated || !baselineIdentity) return stat;
+    const projected = Object.create(stat);
+    for (const key of ['dev', 'ino', 'size', 'mtimeNs', 'mode', 'nlink']) {
+      Object.defineProperty(projected, key, {
+        configurable: true, enumerable: true, value: baselineIdentity[key],
+      });
+    }
+    Object.defineProperty(projected, 'ctimeNs', {
+      configurable: true, enumerable: true, value: baselineIdentity.ctimeNs + 1n,
+    });
+    return projected;
+  };
+  const adversarialFs = {
+    ...fs,
+    openSync(filename, flags, mode) {
+      const descriptor = fs.openSync(filename, flags, mode);
+      descriptors.set(descriptor, filename);
+      return descriptor;
+    },
+    closeSync(descriptor) {
+      const filename = descriptors.get(descriptor);
+      const result = fs.closeSync(descriptor);
+      descriptors.delete(descriptor);
+      if (!mutated && isOwnedBundleFile(filename)) {
+        baselineIdentity = fs.lstatSync(filename, { bigint: true });
+        const bytes = fs.readFileSync(filename);
+        bytes[0] ^= 0xff;
+        fs.writeFileSync(filename, bytes);
+        mutated = true;
+      }
+      return result;
+    },
+    fstatSync(descriptor, options) {
+      const stat = fs.fstatSync(descriptor, options);
+      return isOwnedBundleFile(descriptors.get(descriptor)) ? projectIdentity(stat) : stat;
+    },
+    lstatSync(filename, options) {
+      const stat = fs.lstatSync(filename, options);
+      return isOwnedBundleFile(filename) ? projectIdentity(stat) : stat;
+    },
+  };
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle({
+    ...bundleInput(fixture, []),
+    fileSystem: adversarialFs,
+  }, () => {
+    invoked = true;
+  }), /bundle file hash changed before render/);
+  assert.equal(mutated, true);
+  assert.equal(invoked, false);
+});
+
+test('ctime re-pin rejects a same-size mutation after the verified bytes were read', (t) => {
+  const fixture = makeFixture(t);
+  const descriptors = new Map();
+  let baselineIdentity = null;
+  let destinationClosed = false;
+  let ctimeOffset = 0n;
+  let destinationReads = 0;
+  let hashReadFinished = false;
+  let mutated = false;
+  const isOwnedBundleFile = (filename) => typeof filename === 'string'
+    && /[\\/]\.automontage[\\/].*[\\/]media-1\.mp4$/.test(filename);
+  const projectIdentity = (stat) => {
+    if (!destinationClosed || !baselineIdentity) return stat;
+    const projected = Object.create(stat);
+    for (const key of ['dev', 'ino', 'size', 'mtimeNs', 'mode', 'nlink']) {
+      Object.defineProperty(projected, key, {
+        configurable: true, enumerable: true, value: baselineIdentity[key],
+      });
+    }
+    Object.defineProperty(projected, 'ctimeNs', {
+      configurable: true,
+      enumerable: true,
+      value: baselineIdentity.ctimeNs + ctimeOffset,
+    });
+    return projected;
+  };
+  const adversarialFs = {
+    ...fs,
+    openSync(filename, flags, mode) {
+      const descriptor = fs.openSync(filename, flags, mode);
+      descriptors.set(descriptor, filename);
+      return descriptor;
+    },
+    closeSync(descriptor) {
+      const filename = descriptors.get(descriptor);
+      const result = fs.closeSync(descriptor);
+      descriptors.delete(descriptor);
+      if (!destinationClosed && isOwnedBundleFile(filename)) {
+        baselineIdentity = fs.lstatSync(filename, { bigint: true });
+        destinationClosed = true;
+        ctimeOffset = 1n;
+      }
+      return result;
+    },
+    fstatSync(descriptor, options) {
+      const filename = descriptors.get(descriptor);
+      if (destinationClosed && hashReadFinished && !mutated && isOwnedBundleFile(filename)) {
+        const bytes = fs.readFileSync(filename);
+        bytes[0] ^= 0xff;
+        fs.writeFileSync(filename, bytes);
+        mutated = true;
+        ctimeOffset = 2n;
+      }
+      const stat = fs.fstatSync(descriptor, options);
+      return isOwnedBundleFile(filename) ? projectIdentity(stat) : stat;
+    },
+    lstatSync(filename, options) {
+      const stat = fs.lstatSync(filename, options);
+      return isOwnedBundleFile(filename) ? projectIdentity(stat) : stat;
+    },
+    readSync(descriptor, ...args) {
+      const filename = descriptors.get(descriptor);
+      const bytesRead = fs.readSync(descriptor, ...args);
+      if (isOwnedBundleFile(filename)) {
+        destinationReads += 1;
+        if (destinationClosed && destinationReads === 3) hashReadFinished = true;
+      }
+      return bytesRead;
+    },
+  };
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle({
+    ...bundleInput(fixture, []),
+    fileSystem: adversarialFs,
+  }, () => {
+    invoked = true;
+  }), /identity changed while hashing|hash changed before render/);
+  assert.equal(destinationClosed, true);
+  assert.equal(mutated, true);
+  assert.ok(destinationReads >= 2);
+  assert.equal(invoked, false);
+});
+
 test('same-inode destination mutation after fsync or lease return aborts before the render callback', async (t) => {
   for (const mutation of ['append', 'overwrite']) {
     for (const mutateAfterClose of [1, 2, 3]) {
