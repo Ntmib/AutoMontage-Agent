@@ -3,7 +3,7 @@ const path = require('path');
 const BROLL_MEDIA_KINDS = new Set(['image', 'video']);
 const BROLL_FITS = new Set(['contain', 'cover']);
 const BROLL_AUDIO_MODES = new Set(['mute', 'mix', 'replace']);
-const OPAQUE_ASSET_ID = /^asset-[1-9]\d*$/;
+const OPAQUE_ASSET_ID = /^asset-\d+$/;
 const URL_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 
 function isCanonicalBrollReference(value) {

@@ -247,6 +247,8 @@ test('persisted b-roll media permits only canonical relative references', () => 
     'assets/broll/../images/media.webp',
     '/media/assets/asset-1',
     'media/assets/asset-1',
+    'asset-0',
+    'asset-01',
     'asset-1',
   ]) {
     const result = validateLessonBrief(makeBrief({
