@@ -23,8 +23,8 @@ function writeFile(filename, bytes) {
   return filename;
 }
 
-function makeFixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-render-bundle-'));
+function makeFixture(t, tempRoot = os.tmpdir()) {
+  const directory = fs.mkdtempSync(path.join(tempRoot, 'automontage-render-bundle-'));
   const root = path.join(directory, 'repository');
   const workspace = { dir: path.join(directory, 'project') };
   fs.mkdirSync(path.join(root, 'public'), { recursive: true });
@@ -471,9 +471,232 @@ test('cleanup claim race refuses a pre-rename foreign swap without deleting eith
   assert.equal(fs.readFileSync(path.join(movedOwned, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
 });
 
+test('cleanup resumes after a transient post-rename identity read and reclaims its claimed bundle', (t) => {
+  const fixture = makeFixture(t);
+  const bundleDirectory = path.join(
+    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+  );
+  let claimedDirectory = null;
+  let failClaimRead = false;
+  const transientFs = {
+    ...fs,
+    renameSync(source, destination) {
+      const result = fs.renameSync(source, destination);
+      if (source === bundleDirectory && destination.includes('.cleanup-')) {
+        claimedDirectory = destination;
+        failClaimRead = true;
+      }
+      return result;
+    },
+    lstatSync(target, options) {
+      if (failClaimRead && target === claimedDirectory) {
+        failClaimRead = false;
+        const error = new Error('transient post-rename lstat failure');
+        error.code = 'EIO';
+        throw error;
+      }
+      return fs.lstatSync(target, options);
+    },
+  };
+  const lease = prepareRenderMediaBundle({
+    ...bundleInput(fixture, []),
+    fileSystem: transientFs,
+  });
+
+  assert.throws(() => lease.cleanup(), /transient post-rename/);
+  assert.equal(fs.readFileSync(path.join(claimedDirectory, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
+  assert.doesNotThrow(() => lease.cleanup());
+  assert.equal(fs.existsSync(claimedDirectory), false);
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(bundleDirectory)).filter((name) => name.includes('.cleanup-')),
+    [],
+  );
+});
+
+test('cleanup retry retains a foreign directory substituted after an unverified claim', (t) => {
+  const fixture = makeFixture(t);
+  const bundleDirectory = path.join(
+    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+  );
+  let claimedDirectory = null;
+  let failClaimRead = false;
+  const transientFs = {
+    ...fs,
+    renameSync(source, destination) {
+      const result = fs.renameSync(source, destination);
+      if (source === bundleDirectory && destination.includes('.cleanup-')) {
+        claimedDirectory = destination;
+        failClaimRead = true;
+      }
+      return result;
+    },
+    lstatSync(target, options) {
+      if (failClaimRead && target === claimedDirectory) {
+        failClaimRead = false;
+        const error = new Error('transient post-rename lstat failure');
+        error.code = 'EIO';
+        throw error;
+      }
+      return fs.lstatSync(target, options);
+    },
+  };
+  const lease = prepareRenderMediaBundle({
+    ...bundleInput(fixture, []),
+    fileSystem: transientFs,
+  });
+
+  assert.throws(() => lease.cleanup(), /transient post-rename/);
+  const movedOwned = `${claimedDirectory}.owned`;
+  fs.renameSync(claimedDirectory, movedOwned);
+  fs.mkdirSync(claimedDirectory);
+  fs.writeFileSync(path.join(claimedDirectory, 'foreign.txt'), 'foreign');
+
+  assert.throws(() => lease.cleanup(), /identity|claim|replaced/i);
+  assert.equal(fs.readFileSync(path.join(claimedDirectory, 'foreign.txt'), 'utf8'), 'foreign');
+  assert.equal(fs.readFileSync(path.join(movedOwned, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
+});
+
+test('cleanup retries partial unlink and tombstone rmdir failures without leaking owned paths', async (t) => {
+  await t.test('partial unlink', () => {
+    const fixture = makeFixture(t);
+    writeFile(path.join(fixture.workspace.dir, 'assets', 'broll', 'image.png'), 'image');
+    let unlinkCalls = 0;
+    let failed = false;
+    const transientFs = {
+      ...fs,
+      unlinkSync(target) {
+        unlinkCalls += 1;
+        if (!failed && unlinkCalls === 2) {
+          failed = true;
+          const error = new Error('transient unlink failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.unlinkSync(target);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, [{ scene: 'broll', brollSrc: 'assets/broll/image.png' }]),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient unlink/);
+    assert.doesNotThrow(() => lease.cleanup());
+    assert.equal(fs.existsSync(lease.directory), false);
+  });
+
+  await t.test('unlink completes before reporting a transient failure', () => {
+    const fixture = makeFixture(t);
+    let failed = false;
+    const transientFs = {
+      ...fs,
+      unlinkSync(target) {
+        const result = fs.unlinkSync(target);
+        if (!failed) {
+          failed = true;
+          const error = new Error('transient post-unlink failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return result;
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient post-unlink/);
+    assert.doesNotThrow(() => lease.cleanup());
+    assert.equal(fs.existsSync(lease.directory), false);
+  });
+
+  await t.test('bundle rmdir completes before reporting a transient failure', () => {
+    const fixture = makeFixture(t);
+    let failed = false;
+    const transientFs = {
+      ...fs,
+      rmdirSync(target) {
+        const result = fs.rmdirSync(target);
+        if (!failed && path.basename(target) === 'bundle') {
+          failed = true;
+          const error = new Error('transient post-bundle-rmdir failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return result;
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient post-bundle-rmdir/);
+    assert.doesNotThrow(() => lease.cleanup());
+    assert.equal(fs.existsSync(lease.directory), false);
+  });
+
+  await t.test('tombstone container rmdir', () => {
+    const fixture = makeFixture(t);
+    let failed = false;
+    let cleanupContainer = null;
+    const transientFs = {
+      ...fs,
+      rmdirSync(target) {
+        if (!failed && path.basename(target).includes('.cleanup-')) {
+          failed = true;
+          cleanupContainer = target;
+          const error = new Error('transient tombstone rmdir failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.rmdirSync(target);
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient tombstone/);
+    assert.equal(fs.existsSync(cleanupContainer), true);
+    assert.doesNotThrow(() => lease.cleanup());
+    assert.equal(fs.existsSync(cleanupContainer), false);
+  });
+
+  await t.test('tombstone rmdir completes before reporting a transient failure', () => {
+    const fixture = makeFixture(t);
+    let failed = false;
+    let cleanupContainer = null;
+    const transientFs = {
+      ...fs,
+      rmdirSync(target) {
+        const result = fs.rmdirSync(target);
+        if (!failed && path.basename(target).includes('.cleanup-')) {
+          failed = true;
+          cleanupContainer = target;
+          const error = new Error('transient post-tombstone-rmdir failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return result;
+      },
+    };
+    const lease = prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: transientFs,
+    });
+
+    assert.throws(() => lease.cleanup(), /transient post-tombstone-rmdir/);
+    assert.equal(fs.existsSync(cleanupContainer), false);
+    assert.doesNotThrow(() => lease.cleanup());
+  });
+});
+
 test('same-inode destination mutation after fsync or lease return aborts before the render callback', async (t) => {
   for (const mutation of ['append', 'overwrite']) {
-    for (const mutateAfterClose of [1, 2]) {
+    for (const mutateAfterClose of [1, 2, 3]) {
       await t.test(`${mutation} after destination close ${mutateAfterClose}`, () => {
         const fixture = makeFixture(t);
         const descriptors = new Map();
@@ -562,6 +785,41 @@ test('trusted roots reject symlink aliases above the immediate storage directory
     input.root = path.join(aliasParent, 'nested-repository');
 
     assert.throws(() => prepareRenderMediaBundle(input), /symbolic link|symlink/i);
+  });
+});
+
+test('trusted roots allow only the exact stable macOS first-level aliases', async (t) => {
+  await t.test('real root-owned /tmp alias', { skip: process.platform !== 'darwin' }, () => {
+    assert.equal(fs.lstatSync('/tmp').isSymbolicLink(), true);
+    assert.equal(fs.realpathSync('/tmp'), '/private/tmp');
+    const fixture = makeFixture(t, '/tmp');
+    const lease = prepareRenderMediaBundle(bundleInput(fixture, []));
+
+    assert.equal(fs.existsSync(path.join(lease.directory, 'media-1.mp4')), true);
+    lease.cleanup();
+  });
+
+  await t.test('writable non-root first-level alias', { skip: process.platform !== 'darwin' }, () => {
+    const fixture = makeFixture(t, '/tmp');
+    const untrustedFs = {
+      ...fs,
+      lstatSync(target, options) {
+        const stat = fs.lstatSync(target, options);
+        if (path.resolve(target) !== '/tmp' || !stat.isSymbolicLink()) return stat;
+        return new Proxy(stat, {
+          get(value, property, receiver) {
+            if (property === 'uid') return 501n;
+            if (property === 'mode') return value.mode | 0o022n;
+            return Reflect.get(value, property, receiver);
+          },
+        });
+      },
+    };
+
+    assert.throws(() => prepareRenderMediaBundle({
+      ...bundleInput(fixture, []),
+      fileSystem: untrustedFs,
+    }), /trusted|symbolic link|alias|owner|writable/i);
   });
 });
 
