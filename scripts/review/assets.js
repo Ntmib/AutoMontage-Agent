@@ -109,7 +109,6 @@ function legacyRecord({ kind, filePath, reference }) {
     const stat = fs.fstatSync(descriptor);
     const nanosecondStat = fs.fstatSync(descriptor, { bigint: true });
     if (!stat.isFile()) return null;
-    const bytes = fs.readFileSync(descriptor);
     const mediaKind = mediaKindForPath(filePath);
     const brollImage = mediaKind === 'image' && isRenderableBrollSource(filePath);
     return {
@@ -120,7 +119,7 @@ function legacyRecord({ kind, filePath, reference }) {
       previewPath: null,
       reference,
       ...(brollImage ? {
-        canonicalSha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+        canonicalSha256: crypto.createHash('sha256').update(fs.readFileSync(descriptor)).digest('hex'),
       } : {}),
       capabilities: { preview: true, brollImage, brollVideo: false },
       dev: stat.dev,

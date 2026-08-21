@@ -256,6 +256,22 @@ function sameSnapshotIdentity(left, right) {
     && (left.mtimeNs === undefined || right.mtimeNs === undefined || left.mtimeNs === right.mtimeNs);
 }
 
+function sameAssetIdentity(left, right) {
+  if (!sameSnapshotIdentity(left, right) || left.previewPath !== right.previewPath) return false;
+  if (!left.previewPath) return true;
+  return sameSnapshotIdentity({
+    dev: left.previewDev,
+    ino: left.previewIno,
+    size: left.previewSize,
+    mtimeNs: left.previewMtimeNs,
+  }, {
+    dev: right.previewDev,
+    ino: right.previewIno,
+    size: right.previewSize,
+    mtimeNs: right.previewMtimeNs,
+  });
+}
+
 function descriptorForAsset(id, asset) {
   return {
     id,
@@ -291,7 +307,7 @@ function refreshAssetFiles({ root, projectDir, runtime }) {
     const previous = previousByIdentity.get(assetIdentityKey(candidate));
     let id;
     if (previous) {
-      if (!sameSnapshotIdentity(previous.asset, candidate)) {
+      if (!sameAssetIdentity(previous.asset, candidate)) {
         rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
       }
       id = previous.id;
@@ -491,7 +507,7 @@ function assertOtherRegisteredAssetIdentities({ root, projectDir, assetFiles, ca
   for (const [id, registered] of assetFiles) {
     if (selectedIds.has(id)) continue;
     const current = currentByKey.get(assetIdentityKey(registered));
-    if (!sameSnapshotIdentity(registered, current)) {
+    if (!sameAssetIdentity(registered, current)) {
       rejectRequest(409, 'REVIEW_MEDIA_IDENTITY_CHANGED');
     }
   }

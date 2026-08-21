@@ -213,6 +213,81 @@ test('imported discovery skips invalid bundles and registry prefers valid master
   }
 });
 
+test('imported discovery refuses an assets/broll ancestor symlink', (t) => {
+  const projectDir = makeProject(t);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-imported-assets-outside-'));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  writeBundle(outside, { mediaKind: 'image' });
+  fs.mkdirSync(path.join(projectDir, 'assets'), { recursive: true });
+  fs.symlinkSync(path.join(outside, 'assets', 'broll'), path.join(projectDir, 'assets', 'broll'));
+
+  assert.deepEqual(listImportedAssetBundles({ projectDir }), []);
+});
+
+test('orphan cleanup refuses assets and previews whose parents are symlinks', (t) => {
+  const projectDir = makeProject(t);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-imported-assets-outside-'));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  const stage = path.join(outside, 'assets', 'broll', 'video', `.${UUID}.stage`);
+  const preview = path.join(outside, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(stage, { recursive: true });
+  fs.mkdirSync(path.dirname(preview), { recursive: true });
+  fs.writeFileSync(preview, 'outside preview');
+  fs.mkdirSync(path.join(projectDir, 'assets'), { recursive: true });
+  fs.symlinkSync(path.join(outside, 'assets', 'broll'), path.join(projectDir, 'assets', 'broll'));
+  fs.symlinkSync(path.join(outside, 'previews'), path.join(projectDir, 'previews'));
+
+  assert.deepEqual(cleanupOrphanImportedStages({ projectDir }), []);
+  assert.equal(fs.existsSync(stage), true);
+  assert.equal(fs.existsSync(preview), true);
+});
+
+test('refresh expires a normalized video when its valid proxy is replaced', async (t) => {
+  const fixture = makeReviewProject(t);
+  const bundle = writeBundle(fixture.projectDir);
+  const session = await startReviewServer({
+    root: fixture.root,
+    projectDir: fixture.projectDir,
+    open: false,
+    runToolImpl: () => { throw new Error('waveform is unrelated to the registry'); },
+  });
+  t.after(() => closeServer(session.server));
+  assert.equal((await requestState(session)).status, 200);
+
+  fs.writeFileSync(bundle.previewPath, 'new valid proxy bytes');
+  writeJson(path.join(bundle.mediaDirectory, 'asset.json'), {
+    ...bundle.assetMetadata,
+    previewSha256: SHA('new valid proxy bytes'),
+  });
+
+  assert.equal((await requestState(session)).status, 409);
+});
+
+test('generic preview-only video and audio do not invoke the image hash reader', (t) => {
+  const projectDir = makeProject(t);
+  fs.mkdirSync(path.join(projectDir, 'assets', 'broll'), { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'assets', 'broll', 'manual.mp4'), 'video bytes');
+  fs.writeFileSync(path.join(projectDir, 'assets', 'broll', 'voice.mp3'), 'audio bytes');
+  let calls = 0;
+  const readFileSync = fs.readFileSync;
+  fs.readFileSync = function trackedRead(target, ...args) {
+    if (typeof target === 'number') calls += 1;
+    return readFileSync.call(this, target, ...args);
+  };
+  let records;
+  try {
+    records = listReviewAssetRecords({ root: projectDir, projectDir });
+  } finally {
+    fs.readFileSync = readFileSync;
+  }
+
+  assert.equal(calls, 0);
+  assert.deepEqual(records.map(({ label, capabilities }) => ({ label, capabilities })), [
+    { label: 'manual.mp4', capabilities: { preview: true, brollImage: false, brollVideo: false } },
+    { label: 'voice.mp3', capabilities: { preview: true, brollImage: false, brollVideo: false } },
+  ]);
+});
+
 test('review state exposes imported media through opaque URLs without server-only hashes or references', async (t) => {
   const fixture = makeReviewProject(t);
   writeBundle(fixture.projectDir);

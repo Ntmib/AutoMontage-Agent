@@ -259,7 +259,7 @@ function createEditor(initialState, token) {
   function renderBrollControls() {
     controls.broll.replaceChildren();
     const assets = state.assets.filter((asset) => (
-      /^asset-[1-9]\d*$/.test(asset.id) && asset.capabilities?.broll === true
+      /^asset-[1-9]\d*$/.test(asset.id) && asset.capabilities?.brollImage === true
     ));
     const eligible = state.brief.scenes
       .map((scene, index) => ({ scene, index }))

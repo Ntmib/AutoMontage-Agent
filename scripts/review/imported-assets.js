@@ -11,13 +11,34 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const SHA256 = /^[a-f0-9]{64}$/;
 const CONTROL = /[\p{Cc}]/u;
 
-function isRegularDirectory(fileSystem, directory) {
+function isInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`)
+    && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function ownedDirectory(fileSystem, projectDir, segments) {
+  const resolvedProject = path.resolve(projectDir);
+  let projectReal;
   try {
-    const stat = fileSystem.lstatSync(directory);
-    return stat.isDirectory() && !stat.isSymbolicLink();
+    const projectStat = fileSystem.lstatSync(resolvedProject);
+    if (!projectStat.isDirectory() || projectStat.isSymbolicLink()) return null;
+    projectReal = fileSystem.realpathSync(resolvedProject);
   } catch (_) {
-    return false;
+    return null;
   }
+  let directory = resolvedProject;
+  for (const segment of segments) {
+    directory = path.join(directory, segment);
+    try {
+      const stat = fileSystem.lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()
+        || !isInside(projectReal, fileSystem.realpathSync(directory))) return null;
+    } catch (_) {
+      return null;
+    }
+  }
+  return directory;
 }
 
 function sameOwnedIdentity(left, right) {
@@ -98,8 +119,11 @@ function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = f
   const id = path.basename(resolvedDirectory);
   const mediaType = path.basename(path.dirname(resolvedDirectory));
   const expectedParent = path.join(resolvedProject, 'assets', 'broll', mediaType);
+  const ownedAssetDirectory = ownedDirectory(fileSystem, resolvedProject, [
+    'assets', 'broll', mediaType, id,
+  ]);
   if (!UUID.test(id) || !['images', 'video'].includes(mediaType)
-    || path.dirname(resolvedDirectory) !== expectedParent || !isRegularDirectory(fileSystem, resolvedDirectory)) {
+    || path.dirname(resolvedDirectory) !== expectedParent || ownedAssetDirectory !== resolvedDirectory) {
     return null;
   }
   const metadataFile = readOpenedFile(fileSystem, path.join(resolvedDirectory, 'asset.json'));
@@ -120,7 +144,9 @@ function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = f
   let previewPath = null;
   let preview = null;
   if (metadata.mediaKind === 'video') {
-    previewPath = path.join(resolvedProject, 'previews', 'broll', `${id}.webm`);
+    const previewDirectory = ownedDirectory(fileSystem, resolvedProject, ['previews', 'broll']);
+    if (!previewDirectory) return null;
+    previewPath = path.join(previewDirectory, `${id}.webm`);
     preview = readOpenedFile(fileSystem, previewPath);
     if (!preview || crypto.createHash('sha256').update(preview.bytes).digest('hex') !== metadata.previewSha256) {
       return null;
@@ -162,8 +188,8 @@ function listImportedAssetBundles({ projectDir, fileSystem = fs } = {}) {
   if (typeof projectDir !== 'string') return [];
   const bundles = [];
   for (const mediaType of ['images', 'video']) {
-    const parent = path.join(path.resolve(projectDir), 'assets', 'broll', mediaType);
-    if (!isRegularDirectory(fileSystem, parent)) continue;
+    const parent = ownedDirectory(fileSystem, projectDir, ['assets', 'broll', mediaType]);
+    if (!parent) continue;
     let entries;
     try {
       entries = fileSystem.readdirSync(parent, { withFileTypes: true });
@@ -189,11 +215,10 @@ function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
   const removed = [];
   const published = new Set();
   const stageParents = [
-    path.join(resolvedProject, 'assets', 'broll', 'images'),
-    path.join(resolvedProject, 'assets', 'broll', 'video'),
-  ];
+    ownedDirectory(fileSystem, resolvedProject, ['assets', 'broll', 'images']),
+    ownedDirectory(fileSystem, resolvedProject, ['assets', 'broll', 'video']),
+  ].filter(Boolean);
   for (const parent of stageParents) {
-    if (!isRegularDirectory(fileSystem, parent)) continue;
     let entries;
     try {
       entries = fileSystem.readdirSync(parent, { withFileTypes: true });
@@ -207,7 +232,6 @@ function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
     }
   }
   for (const parent of stageParents) {
-    if (!isRegularDirectory(fileSystem, parent)) continue;
     let entries;
     try {
       entries = fileSystem.readdirSync(parent, { withFileTypes: true });
@@ -230,8 +254,8 @@ function cleanupOrphanImportedStages({ projectDir, fileSystem = fs } = {}) {
       }
     }
   }
-  const previewParent = path.join(resolvedProject, 'previews', 'broll');
-  if (isRegularDirectory(fileSystem, previewParent)) {
+  const previewParent = ownedDirectory(fileSystem, resolvedProject, ['previews', 'broll']);
+  if (previewParent) {
     let entries;
     try {
       entries = fileSystem.readdirSync(previewParent, { withFileTypes: true });
