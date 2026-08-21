@@ -27,6 +27,8 @@ function runTool(command, args, cwd) {
 function makeMediaFixtures(directory) {
   fs.mkdirSync(directory, { recursive: true });
   const files = {
+    avif: path.join(directory, 'tiny.avif'),
+    renamedAv1Avif: path.join(directory, 'renamed-av1-video.avif'),
     jpeg: path.join(directory, 'tiny.jpg'),
     transparentPng: path.join(directory, 'transparent.png'),
     animatedGif: path.join(directory, 'animated.gif'),
@@ -35,6 +37,18 @@ function makeMediaFixtures(directory) {
     rotatedVfr: path.join(directory, 'rotated-vfr.mov'),
   };
   runTool('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=32x24', '-frames:v', '1', files.jpeg], directory);
+  if (ffmpegEncoderAvailable('libaom-av1')) {
+    runTool('ffmpeg', [
+      '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=32x24:d=0.04',
+      '-frames:v', '1', '-c:v', 'libaom-av1', '-still-picture', '1', files.avif,
+    ], directory);
+    const av1Video = path.join(directory, 'av1-video.mp4');
+    runTool('ffmpeg', [
+      '-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=32x24:r=25:d=0.4',
+      '-c:v', 'libaom-av1', '-pix_fmt', 'yuv420p', '-an', av1Video,
+    ], directory);
+    fs.copyFileSync(av1Video, files.renamedAv1Avif);
+  }
   runTool('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red@0.0:s=32x24,format=rgba', '-frames:v', '1', '-threads', '1', files.transparentPng], directory);
   runTool('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=32x24:d=0.1', '-f', 'lavfi', '-i', 'color=c=blue:s=32x24:d=0.1', '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0,fps=10', '-frames:v', '2', files.animatedGif], directory);
   runTool('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=15:d=0.6', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', files.silentLandscape], directory);

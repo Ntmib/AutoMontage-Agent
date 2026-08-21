@@ -103,6 +103,42 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
   });
 });
 
+test('media probe recognizes AVIF brand but keeps renamed AV1 video as video', () => {
+  const av1Stream = {
+    codec_type: 'video', codec_name: 'av1', width: 64, height: 48,
+    avg_frame_rate: '1/1', r_frame_rate: '1/1', pix_fmt: 'yuv420p',
+  };
+  const still = parseMediaProbeJson(JSON.stringify({
+    streams: [av1Stream],
+    format: {
+      format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
+      tags: { major_brand: 'avif', compatible_brands: 'avifmif1miafMA1B' },
+    },
+  }));
+  assert.equal(still.mediaKind, 'image');
+  assert.deepEqual([still.fps, still.durationSec, still.hasAudio], [0, 0, false]);
+
+  const renamedVideo = parseMediaProbeJson(JSON.stringify({
+    streams: [{ ...av1Stream, avg_frame_rate: '25/1', r_frame_rate: '25/1' }],
+    format: {
+      format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
+      duration: '1',
+      tags: { major_brand: 'isom', compatible_brands: 'isomav01iso2mp41' },
+    },
+  }));
+  assert.equal(renamedVideo.mediaKind, 'video');
+
+  const crossBoundaryLookalike = parseMediaProbeJson(JSON.stringify({
+    streams: [{ ...av1Stream, avg_frame_rate: '25/1', r_frame_rate: '25/1' }],
+    format: {
+      format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
+      duration: '1',
+      tags: { major_brand: 'isom', compatible_brands: 'zzaviszz' },
+    },
+  }));
+  assert.equal(crossBoundaryLookalike.mediaKind, 'video');
+});
+
 test('media probe rejects malformed JSON, attached-picture-only media, and invalid geometry', () => {
   for (const input of [
     '',

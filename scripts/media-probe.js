@@ -73,11 +73,24 @@ function parseMediaProbeJson(raw) {
     'avif', 'gif', 'image2', 'image2pipe', 'jpeg_pipe', 'mjpeg',
     'png_pipe', 'webp_pipe',
   ]);
-  const mediaKind = formatNames.some((name) => imageFormats.has(name)) ? 'image' : 'video';
+  const audio = streams.find((stream) => stream && stream.codec_type === 'audio') || null;
+  const majorBrand = String(data.format?.tags?.major_brand || '');
+  const compatibleBrands = String(data.format?.tags?.compatible_brands || '');
+  const compatibleBrandChunks = compatibleBrands
+    .split(/[\s,]+/)
+    .flatMap((group) => Array.from(
+      { length: Math.floor(group.length / 4) },
+      (_, index) => group.slice(index * 4, index * 4 + 4),
+    ));
+  const avifBrand = majorBrand === 'avif' || majorBrand === 'avis'
+    || compatibleBrandChunks.includes('avif') || compatibleBrandChunks.includes('avis');
+  const avifImage = video.codec_name === 'av1' && avifBrand && audio === null;
+  const mediaKind = formatNames.some((name) => imageFormats.has(name)) || avifImage
+    ? 'image'
+    : 'video';
   let fps = 0;
   let durationSec = 0;
   let hasAudio = false;
-  const audio = streams.find((stream) => stream && stream.codec_type === 'audio') || null;
   if (mediaKind === 'video') {
     fps = parseRate(video.avg_frame_rate || video.r_frame_rate, stage);
     durationSec = Number(data.format?.duration ?? video.duration);
@@ -96,7 +109,11 @@ function parseMediaProbeJson(raw) {
   const container = String(data.format?.format_name || '');
   const videoCodec = typeof video.codec_name === 'string' ? video.codec_name : '';
   const pixelFormat = typeof video.pix_fmt === 'string' ? video.pix_fmt : '';
-  const hasAlpha = /(?:^yuva|rgba|argb|bgra|abgr|gbrap|ya8|ya16)/.test(pixelFormat);
+  // FFmpeg decodes even fully opaque GIF frames as BGRA. That pixel format alone therefore
+  // cannot prove semantic transparency; the forced RGBA → WebP encode still preserves any
+  // transparency that is actually present in the decoded first frame.
+  const hasAlpha = videoCodec !== 'gif'
+    && /(?:^yuva|rgba|argb|bgra|abgr|gbrap|ya8|ya16)/.test(pixelFormat);
   const sampleRate = Number(audio?.sample_rate);
   const channels = Number(audio?.channels);
 

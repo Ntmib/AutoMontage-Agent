@@ -36,10 +36,15 @@ npm test
   read-only `405`, traversal/symlink, oversized body, unknown command, свежий disk state,
   source/asset identity expiry, secure `0600` handoff без token в CLI-логе и его cleanup при
   `SIGINT`/`SIGTERM` с восстановлением process listeners;
-- Review edit contract: только adjacent boundary и allowlisted b-roll, отсутствие global ripple,
-  image-only renderer capability, frame/word timing reasons, межпроцессный revision reservation,
-  in-memory undo/redo, новая draft-пара на Save, manifest-last visibility для отдельного reader
-  process и byte-identical approved;
+- Review edit contract: только adjacent boundary и allowlisted image/video b-roll, отсутствие
+  global ripple, opaque asset handles, fit/start/audio commands, покадровый clip overrun,
+  frame/word timing reasons, межпроцессный revision reservation, in-memory undo/redo, новая
+  draft-пара на Save, manifest-last visibility и byte-identical approved;
+- media import: exact-length streaming в owned quarantine, type/size/geometry/duration/disk
+  limits, abort/semaphore, real ffprobe/decode, WebP/H.264 master + WebM proxy, UUID publication,
+  отсутствие auto-select, browser path/hash privacy и immutable cleanup boundaries;
+- approval/render media: descriptor probe/hash, normalized metadata/proxy, silent/audio rules,
+  repeated asset dedup, одноразовый render bundle и `Img`/`OffthreadVideo` audio envelopes;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;
@@ -61,11 +66,11 @@ npm run test:review-ui
 ```
 
 Chromium suite поднимает настоящий loopback-сервер и проверяет read-only/edit DOM, token/origin,
-waveform fallback, word-snap drag, накопительное frame-only Arrow movement, b-roll capability,
-undo/redo, save confirmation, внешний `409` с настоящей перезагрузкой, блокировкой мутаций,
-немедленной quarantine для validate/save, сохранением блокировки при ошибке reload, fresh-ready
-gate перед явным discard и отсутствием дорефрешных команд в следующем validate, а также
-неизменность approved.
+waveform fallback, word-snap drag, накопительное frame-only Arrow movement, реальные
+JPEG/MP4/MOV/WebM uploads, authenticated proxy playback, отсутствие auto-select, русские
+fit/start/audio controls, silent-video ограничения, undo/redo, save confirmation, внешний `409`
+с настоящей перезагрузкой/блокировкой мутаций и неизменность approved. Browser DOM дополнительно
+проверяется на отсутствие project path, canonical media reference и SHA-256.
 Она не заменяет `npm test`: browser и Node suites обязательны отдельно.
 
 Для золотого пути свежего клона отдельно проверь:
@@ -113,8 +118,18 @@ Manifest разрешает reuse только при совпадении range
 npm run doctor
 ```
 
-Команда проверяет Node.js 20+, Python 3, ffmpeg и установленные зависимости. Chromium
-нужен только для пересборки PNG через Playwright, не для обычного рендера.
+Команда проверяет Node.js 20+, Python 3, ffmpeg и установленные зависимости. Для Review import
+она отдельно ищет `libwebp`, `libx264`, `libvpx`, `libopus` и AAC. Если системная сборка не
+содержит нужный encoder, базовые поддерживаемые операции остаются доступны, но полный acceptance
+запускать нельзя. На macOS полную сборку можно выбрать без удаления системной:
+
+```bash
+brew install ffmpeg-full
+AUTOMONTAGE_FFMPEG_DIR="$(brew --prefix ffmpeg-full)/bin" npm run doctor
+```
+
+Chromium нужен только для browser tests и пересборки PNG через Playwright, не для обычного
+рендера.
 
 ## 3. Воспроизводимый демо-рендер
 
@@ -154,8 +169,10 @@ node scripts/dynamic-gate.js path/to/scenario.json path/to/transcript.json
 
 Для реальной проверки Review используй только копию fixture/project workspace. До запуска сними
 SHA-256 `project.json`, всех brief и approved-файлов. Read-only сессию закрой и подтверди те же
-bytes. В `--edit` перенеси одну общую границу, сделай Undo, перенеси снова и Save; должны появиться
-одна новая draft Markdown/JSON-пара и одна manifest entry, а approved hash остаться прежним.
+bytes. В `--edit` перенеси одну общую границу, загрузи image, silent video и audio video, проверь,
+что upload ничего не выбрал сам, назначь четыре b-roll сцены (`image`, `mute`, `mix`, повторный
+`replace`) и Save; должны появиться одна новая draft Markdown/JSON-пара и одна manifest entry,
+а approved hash остаться прежним.
 Утверждай новую draft только существующим `approve-brief.js`, затем рендери `--brief` и выполни
 полный decode, ffprobe и визуальную проверку контрольных кадров. Review сам approval/render не делает.
 7. Убедиться, что повторный рендер создаёт новый `renders/vNN-<label>/`, не стирая прошлый.
@@ -164,6 +181,35 @@ bytes. В `--edit` перенеси одну общую границу, сдел
    `latestRender` и canonical final.
 
 Полные команды – в `docs/TEMPLATES.md`.
+
+### Фокусная матрица video b-roll
+
+```bash
+node --test \
+  tests/review-media-import.test.js \
+  tests/review-media-process.test.js \
+  tests/review-commands.test.js \
+  tests/review-draft-save.test.js \
+  tests/lesson-brief.test.js \
+  tests/render-media-bundle.test.js \
+  tests/scene-broll-media.test.js \
+  tests/scene-media-sync.test.js
+
+npm run test:review-ui -- --grep "media import|video b-roll"
+node --test tests/video-broll-e2e.test.js
+```
+
+Последняя команда — обязательный локальный acceptance без mock ffmpeg, Remotion, Review server,
+Save, approval или render bundle. Она сама создаёт маленькие JPEG/silent/audio fixtures и
+временный project под `tmp/video-broll-acceptance/`, проходит настоящий браузерный upload,
+Save → Approve → Render, полностью декодирует итог, делает ffprobe, измеряет тоны до/внутри/после
+`replace`, сверяет старые bytes/manifest entries и пишет `evidence/contact-sheet.png` +
+`evidence/result.json`. Успешный dedicated run обязан показать `1 pass, 0 fail, 0 skip`; отсутствие
+`libwebp` является ошибкой окружения, а не основанием пропустить acceptance.
+
+Тяжёлый E2E-файл намеренно отмечается skipped только внутри общего `npm test`, чтобы обычный
+Node CI не требовал Chromium/Remotion render и Homebrew-сборку ffmpeg. Это не completion gate:
+перед завершением feature его всегда запускают отдельной командой выше.
 
 ## 6. Визуальная и медиапроверка финала
 
@@ -205,6 +251,7 @@ project-папке. Старые артефакты в `out/` при мигра�
 ```bash
 npm run check:release
 npm run check:release -- --tree HEAD --base origin/main
+npm run check:release -- --release
 npm run smoke:release
 ```
 
@@ -213,10 +260,13 @@ npm run smoke:release
 ```bash
 CANDIDATE_TREE="$(git write-tree)"
 node scripts/check-release.js --tree "$CANDIDATE_TREE" --base <release-base>
+# Для публикации добавь --release и заранее опустоши [Unreleased].
 ```
 
 `check:release` читает файлы через `git ls-tree`/`git show`, поэтому проверяет точный
-Git-объект и игнорирует незакоммиченные пользовательские файлы. Current-tree правила
+Git-объект и игнорирует незакоммиченные пользовательские файлы. Обычный development-check
+разрешает pending notes в `[Unreleased]`; флаг `--release` включает строгую проверку кандидата.
+Current-tree правила
 сверяют версию, Node engines, env-декларации, локальные Markdown-ссылки, приватные id,
 версионные release notes, security exception и полный бинарный инвентарь `ASSETS.md`. Для release candidate
 `CHANGELOG.md` обязан содержать ровно одну dated-секцию текущей версии вида

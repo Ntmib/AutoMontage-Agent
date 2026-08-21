@@ -213,3 +213,37 @@ Bearer URL не выводится в обычный stdout. Если автом
 только путь. Это сохраняет ручной запуск, не расширяя token exposure за browser-launch contract.
 Обычные `SIGINT`/`SIGTERM` закрывают сервер штатно, чтобы его close-listener удалил owned handoff;
 неперехватываемый `SIGKILL` вне этого обещания.
+
+## D-014 – Video b-roll импортируется как immutable normalized asset
+
+**Дата:** 2026-08-21
+**Статус:** принято
+
+Ограничение D-013 «renderer принимает только изображения» заменено: изоляция Review, внешний
+approval и канонический lesson renderer остаются, но `broll` теперь принимает нормализованные
+image/video assets. Рассматривались прямой рендер пользовательского файла, browser proxy как
+master и заранее нормализованный master плюс отдельный proxy. Выбран третий вариант.
+
+Произвольный AVIF/GIF/JPEG/PNG/WebP превращается в WebP master. MP4/MOV/M4V/WebM превращается
+в H.264/yuv420p master с нормализованной геометрией/FPS и AAC 48 kHz stereo при наличии звука;
+отдельный VP8/Opus WebM нужен только для предсказуемого браузерного preview. Это удваивает часть
+работы и расход диска, зато approval/Remotion получают один проверяемый контракт независимо от
+входного codec/container, а браузер никогда не становится источником render bytes.
+
+Каждый import создаёт новый UUID bundle. Bundle, metadata и proxy после публикации неизменяемы;
+удаление, overwrite и reuse id в V1 отклонены, потому что они ломают persisted SHA-256,
+approval identity и воспроизводимость старых brief. Для замены пользователь загружает новый
+файл. Один semaphore допускает только одну нормализацию на project-сессию: параллельные
+транскоды резко повышают CPU/disk pressure и усложняют abort/cleanup без пользовательской пользы.
+
+Review показывает opaque `asset-N`, а Save материализует server-side reference и hash только
+после повторного descriptor probe. Approval ещё раз сверяет master/metadata/proxy и clip/audio,
+после чего lesson build копирует source и все approved b-roll в один одноразовый immutable
+render bundle. Так рендер не читает живой project path и repeated asset копируется один раз.
+
+Для V1 выбран Remotion `OffthreadVideo`, а не собственный browser renderer, OpenCut runtime или
+ручная покадровая декомпозиция. Родительская `Sequence` ограничивает сцену, `trimBefore` задаёт
+старт. `mute` оставляет source voice, `mix` добавляет clip на фиксированных −18 dB, `replace`
+делает клип основным и приглушает source только в интервале сцены. Отдельный per-asset loudness
+pass отклонён: он увеличил бы импорт и мог бы неожиданно менять авторский скринкаст; громкость
+входного клипа в V1 является ответственностью подготовки медиа.

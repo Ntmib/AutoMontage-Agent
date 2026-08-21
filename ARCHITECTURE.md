@@ -1,6 +1,6 @@
 # Архитектура AutoMontage-Agent
 
-Актуально на 2026-08-20. Документ описывает существующий код, а не будущую дорожную карту.
+Актуально на 2026-08-21. Документ описывает существующий код, а не будущую дорожную карту.
 
 ## 1. Назначение и границы
 
@@ -121,6 +121,24 @@ Brief замораживает исходник, тему, аспект, раз�
 
 ### 3.3 Review Workbench — локальная проверка до рендера
 
+Путь нового b-roll проходит через несколько границ; браузер никогда не получает project path
+или SHA-256:
+
+```mermaid
+flowchart LR
+  A["Файл в браузере"] --> B["POST /api/assets/import"]
+  B --> C["owned quarantine 0700"]
+  C --> D["ffprobe + полный decode + лимиты"]
+  D --> E["WebP или H.264/AAC master + WebM proxy"]
+  E --> F["immutable UUID bundle + asset.json"]
+  F --> G["opaque asset-N в Review"]
+  G --> H["allowlist command + /api/validate"]
+  H --> I["Save: brollMedia + SHA-256 в новом draft"]
+  I --> J["approve: повторный probe/hash/identity"]
+  J --> K["одноразовый render media bundle"]
+  K --> L["Remotion Img / OffthreadVideo"]
+```
+
 `scripts/review/server.js` поднимает loopback-сервер с непредсказуемым session token и отдаёт
 browser-safe модель: исходник, сцены, слова, разрешённые медиа и аудит таймингов. Реальные пути
 остаются на сервере; `/api/*` и `/media/*` требуют токен, а файловые ответы привязаны к snapshot
@@ -133,7 +151,8 @@ asset id сохраняется, пока совпадают server-side referen
 asset preview даёт `404`, а validate/save — `422`.
 
 По умолчанию сессия read-only и не имеет POST-маршрутов или edit controls. Флаг `--edit`
-открывает только `POST /api/validate` и `POST /api/save`. Для protected edit-запроса token и Origin
+открывает `POST /api/validate`, `POST /api/save` и отдельный потоковый
+`POST /api/assets/import`. Для protected edit-запроса token и Origin
 своей loopback-сессии проверяются до чтения body. Сам body сервер вычитывает с жёстким лимитом;
 лишь затем сверяет method, route, edit permission и точный content type. Только допущенный body
 разбирается как JSON. Validate заново читает
@@ -148,14 +167,36 @@ Markdown, затем канонический JSON, повторно сверя�
 публикует новый manifest. Поэтому `/api/state` продолжает видеть старую согласованную ревизию,
 пока оба файла новой пары не стали видимы; ошибки проходят через прежний identity-safe rollback.
 
-Редактор принимает только `move-boundary` для общей границы двух соседних сцен и
-`replace-broll` с непрозрачным `asset-N` из текущего allowlist. Первая команда меняет только
-`left.end` и `right.start`: это adjacent edit, а не global ripple. Все времена brief остаются
-абсолютными временами исходника; поздние сцены не сдвигаются, а Remotion затем использует их как
-глобальный `trimBefore`. Поэтому проверяемая картинка не начинает исходник заново на каждой сцене.
-Undo/redo хранит только команды в памяти браузера; серверный validate остаётся источником
-геометрии, diff и timing audit. Текст, scene type, effects, keyframes, masks и прочие поля
-fail closed как unsupported diff.
+Редактор принимает только `move-boundary`, `replace-broll`, `set-broll-fit`,
+`set-broll-video-start` и `set-broll-audio-mode` с непрозрачным `asset-N` из текущего allowlist.
+Первая команда меняет только `left.end` и `right.start`: это adjacent edit, а не global ripple.
+Остальные выбирают image/video, `contain|cover`, покадрово округлённый старт и
+`mute|mix|replace`; video default равен `contain`, frame 0, `mute`, image default — `cover`.
+Видео без аудиопотока допускает только `mute`. Все времена brief остаются абсолютными временами
+исходника; поздние сцены не сдвигаются. Undo/redo хранит команды только в памяти браузера;
+серверный validate заново строит registry, пробует/хэширует тот же открытый descriptor и остаётся
+источником геометрии, diff и timing audit. Текст, scene type, effects, keyframes, masks и прочие
+поля fail closed как unsupported diff.
+
+`POST /api/assets/import` доступен только в edit-сессии и принимает один raw body за раз.
+Заявленный размер, MIME и безопасное имя проверяются до обработки; поток пишется в отдельный
+owner-only quarantine с точным `Content-Length`, abort signal и фиксированным запасом диска.
+Затем ffprobe и полный decode подтверждают реальный контейнер, codec, геометрию, длительность и
+аудио. Изображение нормализуется в WebP; видео — в H.264/yuv420p master с AAC 48 kHz stereo при
+наличии звука и отдельный VP8/Opus WebM proxy для браузера. Metadata удаляется. Публикация
+атомарно переносит один immutable UUID bundle в `assets/broll/images|video/` и proxy в
+`previews/broll/`; `asset.json` содержит параметры и hashes без путей, а фиксированные
+относительные ссылки сервер выводит из UUID и типа медиа.
+Импорт не отправляет `replace-broll`: после refresh новая карточка появляется в media lane, но
+пользователь обязан отдельно назначить её сцене.
+
+Save не доверяет browser descriptor. Он повторно сканирует immutable bundle, открывает master
+без следования symlink, передаёт тот же descriptor в bounded ffprobe, хэширует те же байты и
+только после повторной identity-проверки материализует канонический `brollMedia` в новый draft.
+Approval повторяет containment, probe, metadata/proxy/hash и clip-duration проверки, удерживает
+descriptors до commit boundary и публикует approved только если все identities сохранились.
+Один и тот же UUID можно использовать в нескольких сценах с разными start/fit/audio; удалить
+или заменить опубликованный asset на месте в V1 нельзя.
 
 Внешний `409` синхронно переводит браузер в отдельное конфликтное состояние ещё до асинхронной
 перезагрузки: active/redo stacks очищаются, проверенный diff сбрасывается, а timeline, b-roll,
@@ -165,9 +206,10 @@ undo/redo и Save блокируются. Ошибка `GET /api/state` сохр
 команда валидируется отдельно от свежей базы, поэтому дорефрешные команды не могут попасть в
 новый replay. Тот же порядок действует для `409` от validate и save.
 
-Asset registry остаётся широким для preview, но публикует capabilities: текущий b-roll renderer
-принимает только AVIF/GIF/JPEG/PNG/WebP. Аудио/видео нельзя провести через UI, API, approval или
-render validation. Drag может притянуть границу к слову, Arrow — только к следующему кадру;
+Asset registry публикует только browser-safe descriptors и capabilities. Изображения и
+нормализованные видео можно назначать b-roll; audio-only остаётся только preview-активом и не
+проходит командный/approval/render contract. Канонические ссылки, UUID, hashes и абсолютные пути
+остаются server-side. Drag может притянуть границу к слову, Arrow — только к следующему кадру;
 timing audit использует нормализованные word timestamps и объясняет `reason: frame|word`.
 
 Token обычно передаётся только существующему browser-launch process. Для `--no-open` или ошибки
@@ -191,7 +233,10 @@ realpath, device и inode после процесса и непосредств�
 Workbench изолирован от OpenCut runtime/project format и Remotion Studio. Он не экспортирует
 видео в браузере, не меняет текст, не делает global ripple и не реализует effects registry,
 keyframes или masks. Канонический путь остаётся прежним: draft -> внешнее approval -> approved
-brief -> `scripts/build.js --brief` -> Remotion.
+brief -> `scripts/build.js --brief` -> Remotion. Перед вызовом Remotion lesson build копирует
+source и все локальные legacy/structured b-roll в один immutable одноразовый каталог
+`public/.automontage/`, переписывает только clone props на безопасные basenames, ещё раз сверяет
+identity/hash и удаляет owned bundle после success/error. Approved JSON не меняется.
 
 ## 4. Remotion-слой
 
@@ -204,6 +249,15 @@ brief -> `scripts/build.js --brief` -> Remotion.
 
 `SceneDirector.jsx` раскладывает сцены по глобальным таймкодам. Видео внутри каждой сцены
 получает `trimBefore`, равный глобальному стартовому кадру; единая аудиодорожка не сбрасывается.
+Сцены соединяются непрозрачным hard cut: fade-in без перекрытия запрещён, потому что он создавал
+пустой кадр на каждом стыке.
+
+`src/scenes/BrollMedia.jsx` сохраняет legacy image через `Img`, а structured video выводит через
+Remotion `OffthreadVideo`. `trimBefore = round(trimStartSec × fps)`, а длину ограничивает
+родительская scene `Sequence`. `mute` выключает только клип; `mix` оставляет исходный голос и
+подаёт клип с постоянным коэффициентом −18 dB; `replace` плавно меняет source/clip gain на
+границах сцены. Музыка остаётся отдельной root-level дорожкой. Отдельный loudness pass для
+каждого b-roll asset в V1 намеренно не выполняется.
 
 Официальные lesson-сцены находятся в `src/scenes/scenes.jsx`:
 
@@ -254,6 +308,9 @@ symlink; symlink прерывает построение cache key.
   `project.json`, один исходник, транскрипт, ревизии brief, активы, превью, версии рендера и финал.
 - `project.json` – журнал относительных project-путей, статусов brief и рендеров. Только
   `source.originalPath` хранит исторический абсолютный путь исходника.
+- `assets/broll/images|video/<uuid>/` – immutable normalized master и bounded `asset.json`;
+  `previews/broll/<uuid>.webm` – браузерный video proxy. Review показывает их только через
+  token-protected opaque routes.
 - `out/<id>.transcript.json` и `out/<id>.captions.js` – generated data legacy-режима;
   отслеживаемые `src/data/` остаются только историческими fixtures и не перезаписываются.
 - `props/` – входные props и сценарии для воспроизводимых рендеров.
@@ -283,6 +340,7 @@ Node не предоставляет portable descriptor-relative `unlinkat`/`op
 | `ANTHROPIC_API_KEY` | одна из двух для создания lesson draft | LLM-проруф и раскладка сцен |
 | `OPENAI_API_KEY` | альтернатива Anthropic | LLM-проруф, lesson brief и слайды |
 | `THEMES_EXT` | опционально | корневая папка внешних тем `<id>/theme.json` |
+| `AUTOMONTAGE_FFMPEG_DIR` | опционально | каталог отдельной `ffmpeg` + `ffprobe`; CLI ставит его первым в дочерний `PATH` |
 
 Основной Dynamic-рендер и `automontage demo` работают без API-ключей.
 
@@ -290,8 +348,11 @@ Node не предоставляет portable descriptor-relative `unlinkat`/`op
 
 - Node.js 20+ и npm – CLI, тесты, Remotion.
 - Python 3 + пакеты из `requirements.txt` – Whisper/OpenCV-сценарии.
-- ffmpeg/ffprobe – анализ, аудио, сборка и контроль результата.
-- Chromium для Playwright – только если пересобирать PNG-моки скриптами `shot-*`.
+- ffmpeg/ffprobe – анализ, аудио, нормализация импорта, сборка и контроль результата. Для фото
+  в Review обязателен encoder `libwebp`; video import также использует `libx264`, `libvpx`,
+  `libopus` и AAC. `automontage doctor` проверяет WebP и объясняет выбор отдельной полной сборки.
+- Chromium для Playwright – browser regression tests и пересборка PNG-моков скриптами
+  `shot-*`; обычный Review открывается в установленном системном браузере.
 
 ## 9. Инварианты безопасности и качества
 

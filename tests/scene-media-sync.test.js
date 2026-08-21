@@ -165,7 +165,7 @@ test('director premounts scenes without changing visible timing or global face t
   assert.doesNotMatch(after, /data-scene-mounted/);
 });
 
-test('bundled FadeIn renders finite monotonic opacity for short and normal scenes', () => {
+test('bundled scene layer stays fully opaque for short and normal scenes', () => {
   const fps = 25;
   let currentFrame = 0;
   const remotion = {
@@ -209,15 +209,40 @@ test('bundled FadeIn renders finite monotonic opacity for short and normal scene
       assert.ok(opacity >= 0 && opacity <= 1);
       opacities.push(opacity);
     }
-    for (let index = 1; index < opacities.length; index += 1) {
-      assert.ok(opacities[index] >= opacities[index - 1]);
-    }
-    assert.equal(opacities.at(-1), 1);
-    if (durationInFrames === 1) assert.deepEqual(opacities, [1]);
-    if (durationInFrames >= 15) {
-      assert.equal(opacities[0], 0);
-      assert.equal(opacities[4], 0.5);
-      assert.equal(opacities[8], 1);
-    }
+    assert.deepEqual(opacities, Array(durationInFrames).fill(1));
   }
+});
+
+test('director keeps the first visible frame opaque at a hard scene cut', () => {
+  const fps = 25;
+  let currentFrame = 0;
+  const remotion = {
+    AbsoluteFill: 'div',
+    Sequence: 'Sequence',
+    Audio: 'Audio',
+    OffthreadVideo: 'OffthreadVideo',
+    Img: 'Img',
+    staticFile: (src) => `static://${src}`,
+    useCurrentFrame: () => currentFrame,
+    useVideoConfig: () => ({ fps, durationInFrames: 600 }),
+    interpolate: installedInterpolate,
+  };
+  const { SceneDirector } = loadJsxModule('src/SceneDirector.jsx', remotion);
+  const director = SceneDirector({
+    scenes: [{
+      scene: 'text-only',
+      start: 1,
+      end: 2,
+      quoteCream: 'no',
+      quoteOrange: 'flash',
+    }],
+  });
+  const sequence = director.props.children.props.children.flat(Infinity).filter(Boolean)
+    .find((child) => child.type === 'Sequence');
+  const transition = sequence.props.children;
+
+  currentFrame = 0;
+  const firstVisibleFrame = transition.type(transition.props);
+
+  assert.equal(firstVisibleFrame.props.style.opacity, 1);
 });

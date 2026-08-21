@@ -570,7 +570,8 @@ Prove:
 - persisted `src` and hash map to an opaque UI object only when current registered reference and hash both match;
 - selecting a legacy public/project image, saving it as new `brollMedia`, restarting the real server, and reloading state resolves the same safe selection because the generic image hash is reconstructed and cached server-side;
 - unresolved media returns a safe diagnostic and locks that scene without exposing the original values;
-- browser-safe state JSON contains no `/Users/`, `assets/broll/...`, or 64-character hash;
+- browser-safe state JSON contains no host-specific absolute path, `assets/broll/...`, or
+  64-character hash;
 - materialization replaces `assetId` with trusted `src` and hash, never a browser-provided value;
 - a boundary-only edit keeps an untouched legacy `brollSrc` byte-for-byte and does not silently migrate it to `brollMedia`;
 - validate/save rechecks current identities, duration, audio eligibility, and SHA before allocating a revision;

@@ -5,9 +5,40 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  configureMediaToolPath,
+  ffmpegEncoderAvailable,
   pythonCandidates,
   resolveRemotionCommand,
 } = require('../scripts/env');
+
+test('ffmpeg encoder detection requires the exact encoder name', () => {
+  const encoders = [
+    'Encoders:',
+    ' V....D libwebp              libwebp WebP image',
+    ' V....D libwebp_anim         libwebp WebP animation',
+  ].join('\n');
+
+  assert.equal(ffmpegEncoderAvailable(encoders, 'libwebp'), true);
+  assert.equal(ffmpegEncoderAvailable(encoders, 'libwebp_anim'), true);
+  assert.equal(ffmpegEncoderAvailable(encoders, 'webp'), false);
+  assert.equal(ffmpegEncoderAvailable(' V....D libwebp_anim animated', 'libwebp'), false);
+});
+
+test('configured ffmpeg directory becomes the first production PATH entry', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-ffmpeg-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  for (const command of ['ffmpeg', 'ffprobe']) {
+    const executable = path.join(directory, command);
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(executable, 0o755);
+  }
+  const env = { AUTOMONTAGE_FFMPEG_DIR: directory, PATH: '/usr/bin' };
+
+  assert.equal(configureMediaToolPath(env, 'darwin'), directory);
+  assert.deepEqual(env.PATH.split(path.delimiter), [directory, '/usr/bin']);
+  assert.equal(configureMediaToolPath(env, 'darwin'), directory);
+  assert.deepEqual(env.PATH.split(path.delimiter), [directory, '/usr/bin']);
+});
 
 test('Python candidates prefer the project virtual environment', () => {
   assert.deepEqual(

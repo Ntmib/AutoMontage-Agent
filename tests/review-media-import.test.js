@@ -354,7 +354,7 @@ test('video process argv is exact and metadata is the asset-last publication mar
     '-c:a', 'libopus', '-ar', '48000', '-ac', '2', '-b:a', '96k',
     proxy.args.at(-1),
   ]);
-  const probeEntry = 'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels:stream_tags=rotate:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration';
+  const probeEntry = 'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels:stream_tags=rotate:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration:format_tags=major_brand,compatible_brands';
   for (const call of calls.filter((entry) => entry.command === 'ffprobe')) {
     assert.deepEqual(call.args, ['-v', 'error', '-show_entries', probeEntry, '-of', 'json', call.args.at(-1)]);
   }
@@ -772,7 +772,9 @@ test('real tiny images and videos normalize, decode, preserve alpha/first GIF fr
   const fixtureDir = tempProject(t);
   const files = makeMediaFixtures(fixtureDir);
   const hasWebpEncoder = ffmpegEncoderAvailable('libwebp');
+  const hasAv1Encoder = ffmpegEncoderAvailable('libaom-av1');
   const cases = [
+    ['tiny.avif', files.avif, 'image/avif', 'image', 'av1'],
     ['tiny.jpg', files.jpeg, 'image/jpeg', 'image'],
     ['animated.gif', files.animatedGif, 'image/gif', 'image'],
     ['transparent.png', files.transparentPng, 'image/png', 'image'],
@@ -780,8 +782,12 @@ test('real tiny images and videos normalize, decode, preserve alpha/first GIF fr
     ['audio.mp4', files.audioPortrait, 'video/mp4', 'video'],
     ['rotated-vfr.mov', files.rotatedVfr, 'video/quicktime', 'video'],
   ];
-  for (const [filename, sourcePath, mime, kind] of cases) {
+  for (const [filename, sourcePath, mime, kind, requirement] of cases) {
     await t.test(filename, async (subtest) => {
+      if (requirement === 'av1' && !hasAv1Encoder) {
+        subtest.skip('ffmpeg libaom-av1 encoder is unavailable; real AVIF fixture cannot be generated');
+        return;
+      }
       if (kind === 'image' && !hasWebpEncoder) {
         subtest.skip('ffmpeg libwebp encoder is unavailable; real image normalization requires that local encoder');
         return;
@@ -839,4 +845,18 @@ test('real tiny images and videos normalize, decode, preserve alpha/first GIF fr
       }
     });
   }
+  await t.test('renamed-av1-video.avif', async (subtest) => {
+    if (!hasAv1Encoder) {
+      subtest.skip('ffmpeg libaom-av1 encoder is unavailable; renamed AV1 fixture cannot be generated');
+      return;
+    }
+    const projectDir = tempProject(t);
+    const bytes = fs.statSync(files.renamedAv1Avif).size;
+    await assert.rejects(importReviewMedia({
+      request: fs.createReadStream(files.renamedAv1Avif), projectDir, outputFps: 25,
+      headers: rawHeaders('renamed-av1-video.avif', 'image/avif', bytes),
+      controller: createImportController(), randomId: () => crypto.randomUUID(),
+      runMediaProcessImpl: runMediaProcess,
+    }), (error) => error.status === 422 && error.code === 'MEDIA_IMPORT_CONTENT_MISMATCH');
+  });
 });

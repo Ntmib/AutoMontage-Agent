@@ -1,4 +1,4 @@
-import { AbsoluteFill, Sequence, Audio, staticFile, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
+import { AbsoluteFill, Sequence, Audio, staticFile, useVideoConfig } from 'remotion';
 import { FontStyle } from './fonts';
 import { ThemeContext, getTheme } from './theme';
 import { SCENES } from './scenes/scenes';
@@ -37,15 +37,8 @@ export const getMusicPlaybackProps = ({ trimBeforeFrames = 0, playbackRate = 1 }
   playbackRate,
 });
 
-// Мягкое появление сцены (кроссфейд-cut)
-const FadeIn = ({ children, dur }) => {
-  const frame = useCurrentFrame();
-  const fadeEnd = Math.min(8, Math.max(1, dur - 1));
-  const op = dur === 1
-    ? 1
-    : interpolate(frame, [0, fadeEnd], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-  return <AbsoluteFill style={{ opacity: op }}>{children}</AbsoluteFill>;
-};
+// Сцены идут жёстким склеенным cut: fade без перекрытия оставлял пустой кадр на каждом стыке.
+const SceneLayer = ({ children }) => <AbsoluteFill style={{ opacity: 1 }}>{children}</AbsoluteFill>;
 
 // Отладочная рамка сейф-зоны (тексты должны быть внутри)
 const SafeGuide = () => {
@@ -88,9 +81,9 @@ export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc =
           const Comp = SCENES[sc.scene] || SCENES.fullscreen;
           return (
             <Sequence key={i} from={from} durationInFrames={sceneDuration} premountFor={Math.round(fps)}>
-              <FadeIn dur={sceneDuration}>
+              <SceneLayer>
                 <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} sourceStartFrame={sourceStartFrame} durationInFrames={sceneDuration} videoTitle={sc.videoTitle || videoTitle} />
-              </FadeIn>
+              </SceneLayer>
             </Sequence>
           );
         })}

@@ -5,6 +5,39 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- Review Workbench загружает AVIF/GIF/JPEG/PNG/WebP и MP4/MOV/M4V/WebM прямо в текущую
+  project-папку, показывает authenticated image/video preview и не назначает новый asset сцене
+  без отдельного выбора пользователя.
+- Video b-roll поддерживает `contain`/`cover`, покадровый старт и режимы `mute`, `mix` и
+  `replace`; один immutable ролик можно повторять в нескольких сценах с разными настройками.
+- Browser import нормализует image/video master и отдельный video proxy, а approval и lesson
+  render повторно проверяют hashes/identity и собирают один одноразовый media bundle перед
+  Remotion `Img`/`OffthreadVideo`.
+- `automontage doctor` проверяет `libwebp`; отдельную полную сборку ffmpeg можно безопасно
+  выбрать через `AUTOMONTAGE_FFMPEG_DIR`, не заменяя системные инструменты.
+- Реальный локальный acceptance проходит browser upload → Save → Approve → Render, полный
+  decode/ffprobe, контрольные кадры, аудиозамеры и проверку неизменности прежних brief/renders.
+- `check:release` разделяет обычную проверку development-дерева с pending `[Unreleased]` и
+  строгий режим публикации `--release`, где этот раздел обязан быть пустым.
+
+### Безопасность
+
+- Импорт потоково пишет только в owner-only quarantine, проверяет размер, тип, decode,
+  геометрию, длительность, свободное место и symlink/file identity; браузер получает только
+  opaque id и token-protected routes без project path или media SHA-256.
+
+### Исправлено
+
+- AVIF с ISO-BMFF brand теперь распознаётся как изображение, а обычное AV1-видео, лишь
+  переименованное в `.avif`, по-прежнему отклоняется; непрозрачный GIF больше не считается
+  обязанным сохранить отсутствующий alpha-канал.
+- Acceptance проверяет вложенные поля server log на произвольные host paths и неожиданные
+  media/proxy SHA-256 и проходит реальный безопасно санитизированный ответ `500`.
+- Убрана прозрачность 0 на первом кадре сцены: прежний fade-in без перекрытия создавал пустой
+  тёмный кадр на каждом cut между b-roll-сценами.
+
 ## [1.3.0] - 2026-08-20
 
 ### Добавлено

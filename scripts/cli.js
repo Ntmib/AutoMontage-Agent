@@ -9,6 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 const { buildDemoArgs, ensureOutputDestination } = require('./project/cli-options');
+const { configureMediaToolPath } = require('./env');
 
 const ROOT = path.join(__dirname, '..');
 const argv = process.argv.slice(2);
@@ -49,10 +50,17 @@ function help() {
 Внешние темы подключаются по id через каталог THEMES_EXT.
 
 Сначала проверь окружение: automontage doctor
-Требуется: Node.js (>=20), Python 3, ffmpeg (Chromium только для пересборки картинок).`);
+Требуется: Node.js (>=20), Python 3, ffmpeg (libwebp нужен для загрузки фото в Review).`);
 }
 
 if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { help(); process.exit(0); }
+
+try {
+  configureMediaToolPath();
+} catch (error) {
+  console.error(`❌ ${error.message}`);
+  process.exit(1);
+}
 
 // проверка окружения: automontage doctor
 if (argv[0] === 'doctor') {

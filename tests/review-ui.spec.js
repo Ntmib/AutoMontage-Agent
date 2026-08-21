@@ -1191,7 +1191,10 @@ test('real MP4 MOV and VP8 WebM media import use only playable authenticated pro
     }
     await expect(page.locator('[data-assets]')).toContainText('со звуком');
     await expect(page.locator('[data-assets]')).toContainText('без звука');
-    expect(await page.locator('[data-assets]').innerHTML()).not.toContain('assets/broll/video');
+    const browserSurface = await page.locator('body').innerHTML();
+    expect(browserSurface).not.toContain('assets/broll/video');
+    expect(browserSurface).not.toMatch(/[a-f0-9]{64}/);
+    expect(browserSurface).not.toMatch(/(?:\/Users\/|[A-Za-z]:\\)/);
   });
 });
 
@@ -1220,6 +1223,11 @@ test('video b-roll defaults and fit start audio commands round-trip through vali
     await expect(sceneControls.locator('[data-broll-fit]')).toHaveValue('contain');
     await expect(sceneControls.locator('[data-broll-start]')).toHaveText(/00:00\.000/);
     await expect(sceneControls.locator('[data-broll-audio]')).toHaveValue('mute');
+    await expect(sceneControls.locator('[data-broll-audio] option')).toHaveText([
+      'Без звука',
+      'Тихо поверх голоса',
+      'Вместо голоса',
+    ]);
     await expect(page.locator('[data-server-diff]')).toContainText(/вписать целиком/i);
 
     await preview.evaluate((video) => { video.currentTime = 0.419; });

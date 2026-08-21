@@ -9,7 +9,12 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { ROOT, python } = require('./env');
+const {
+  ROOT,
+  configureMediaToolPath,
+  ffmpegEncoderAvailable,
+  python,
+} = require('./env');
 
 let fails = 0, warns = 0;
 const ok   = (m) => console.log(`  \x1b[32mOK\x1b[0m   ${m}`);
@@ -26,6 +31,13 @@ function tryRun(cmd, args) {
 }
 
 console.log('\nAutoMontage-Agent :: проверка окружения\n');
+
+try {
+  const configured = configureMediaToolPath();
+  if (configured) ok(`ffmpeg/ffprobe выбраны из AUTOMONTAGE_FFMPEG_DIR: ${configured}`);
+} catch (error) {
+  fail(error.message);
+}
 
 // 1. Node
 const nodeMajor = parseInt(process.versions.node.split('.')[0], 10);
@@ -44,7 +56,26 @@ try {
 
 // 3. ffmpeg + ffprobe
 const ff = tryRun('ffmpeg', ['-version']);
-if (ff) ok(ff); else fail('ffmpeg не найден. Установи ffmpeg (обязателен: извлечение аудио, финальная сборка)');
+if (ff) {
+  ok(ff);
+  const encoders = spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' });
+  const output = `${encoders.stdout || ''}${encoders.stderr || ''}`;
+  const requiredReviewEncoders = ['libwebp', 'libx264', 'libvpx', 'libopus', 'aac'];
+  const missingReviewEncoders = encoders.status === 0
+    ? requiredReviewEncoders.filter((encoder) => !ffmpegEncoderAvailable(output, encoder))
+    : requiredReviewEncoders;
+  if (missingReviewEncoders.length === 0) {
+    ok('ffmpeg содержит WebP/H.264/VP8/Opus/AAC для импорта фото и видео в Review');
+  } else {
+    const unavailable = [];
+    if (missingReviewEncoders.includes('libwebp')) unavailable.push('фото');
+    if (missingReviewEncoders.some((encoder) => encoder !== 'libwebp')) unavailable.push('видео');
+    warn(`В этой сборке ffmpeg не хватает: ${missingReviewEncoders.join(', ')}. `
+      + `Импорт ${unavailable.join(' и ')} через Review работать не будет. `
+      + 'macOS/Homebrew: `brew install ffmpeg-full`, затем '
+      + '`AUTOMONTAGE_FFMPEG_DIR="$(brew --prefix ffmpeg-full)/bin" automontage review ...`');
+  }
+} else fail('ffmpeg не найден. Установи ffmpeg (обязателен: извлечение аудио, финальная сборка)');
 const fp = tryRun('ffprobe', ['-version']);
 if (fp) ok(fp); else fail('ffprobe не найден (обычно ставится вместе с ffmpeg)');
 
