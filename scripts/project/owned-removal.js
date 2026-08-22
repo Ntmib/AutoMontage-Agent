@@ -5,7 +5,7 @@ const { setPrivatePathMode } = require('../filesystem-capabilities');
 
 const SAFE_TOKEN = /^[A-Za-z0-9_-]+$/;
 const WIN32_TOMBSTONE_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
-const TOMBSTONE_RETRY_DELAYS_MS = [10, 20];
+const TOMBSTONE_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 250, 250];
 const TOMBSTONE_RETRY_WAIT = new Int32Array(new SharedArrayBuffer(4));
 const UNPROVEN_RETAINED_CLAIM = Symbol('unproven-retained-claim');
 
@@ -60,7 +60,7 @@ function removeOwnedEmptyTombstone(
   expected,
   platform,
 ) {
-  const attempts = platform === 'win32' ? 3 : 1;
+  const attempts = platform === 'win32' ? TOMBSTONE_RETRY_DELAYS_MS.length + 1 : 1;
   let removalUncertain = false;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     let stat;

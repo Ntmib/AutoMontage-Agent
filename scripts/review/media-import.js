@@ -406,11 +406,11 @@ function setupFileIdentity(fileSystem, target) {
 }
 
 const WIN32_SETUP_ROOT_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
-const SETUP_ROOT_RETRY_DELAYS_MS = [10, 20];
+const SETUP_ROOT_RETRY_DELAYS_MS = [10, 20, 40, 80, 160];
 const SETUP_ROOT_RETRY_WAIT = new Int32Array(new SharedArrayBuffer(4));
 
 function removeOwnedEmptySetupRoot(fileSystem, target, expected, platform) {
-  const attempts = platform === 'win32' ? 3 : 1;
+  const attempts = platform === 'win32' ? SETUP_ROOT_RETRY_DELAYS_MS.length + 1 : 1;
   let removalUncertain = false;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     let stat;

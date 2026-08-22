@@ -393,6 +393,45 @@ test('simulated Windows setup cleanup retries transient owner tombstone removal 
   }
 });
 
+test('clean setup failure removes quarantine when a Windows child tombstone unlocks after five errors', async (t) => {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const fileSystem = Object.create(fs);
+  Object.defineProperty(fileSystem, 'platform', { value: 'win32' });
+  fileSystem.linkSync = (source, target) => {
+    if (target === path.join(quarantinePath, 'owner.anchor')) {
+      const error = new Error('injected owner anchor failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.linkSync(source, target);
+  };
+  let transientFailures = 5;
+  let childTombstoneAttempts = 0;
+  fileSystem.rmdirSync = (target) => {
+    if (path.basename(target).startsWith('.owner.jsonl.remove-')) {
+      childTombstoneAttempts += 1;
+      if (transientFailures > 0) {
+        transientFailures -= 1;
+        const error = new Error('injected delayed Windows handle release');
+        error.code = 'EBUSY';
+        throw error;
+      }
+    }
+    return fs.rmdirSync(target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, {
+    fileSystem,
+    platform: 'win32',
+  }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+  assert.equal(transientFailures, 0);
+  assert.equal(childTombstoneAttempts, 6);
+  assert.equal(fs.existsSync(quarantinePath), false);
+  assert.deepEqual(fs.readdirSync(path.dirname(quarantinePath)), []);
+  await importImage(projectDir, SECOND_ID);
+});
+
 test('setup cleanup retains a child that replaced an owned placeholder', async (t) => {
   const projectDir = tempProject(t);
   const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
@@ -608,7 +647,7 @@ test('exhausted Windows tombstone retries stay fail-closed on the next absent-ta
   const targetStat = fs.lstatSync(target, { bigint: true });
   const expected = { dev: targetStat.dev, ino: targetStat.ino };
   const fileSystem = Object.create(fs);
-  let transientFailures = 3;
+  let transientFailures = 8;
   fileSystem.rmdirSync = (candidate) => {
     if (candidate === tombstone && transientFailures > 0) {
       transientFailures -= 1;
