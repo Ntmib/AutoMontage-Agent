@@ -514,6 +514,252 @@ test('clean setup failure removes a Windows upload tombstone after delayed empty
   await importImage(projectDir, SECOND_ID);
 });
 
+test('clean setup failure removes Windows owner with exact zero bytes after mtime drift', async (t) => {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const fileSystem = Object.create(fs);
+  Object.defineProperty(fileSystem, 'platform', { value: 'win32' });
+  fileSystem.linkSync = (source, target) => {
+    if (target === path.join(quarantinePath, 'owner.anchor')) {
+      const error = new Error('injected owner anchor failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.linkSync(source, target);
+  };
+  let ownerClaimChecks = 0;
+  let ownerClaimUnlinks = 0;
+  fileSystem.lstatSync = (target, options) => {
+    const stat = fs.lstatSync(target, options);
+    if (options?.bigint === true && path.basename(target) === 'claimed'
+      && path.basename(path.dirname(target)).startsWith('.owner.jsonl.remove-')) {
+      ownerClaimChecks += 1;
+      const drifted = Object.create(stat);
+      Object.defineProperty(drifted, 'mtimeNs', { value: stat.mtimeNs + 1n });
+      return drifted;
+    }
+    return stat;
+  };
+  fileSystem.unlinkSync = (target) => {
+    if (path.basename(target) === 'claimed'
+      && path.basename(path.dirname(target)).startsWith('.owner.jsonl.remove-')) {
+      ownerClaimUnlinks += 1;
+    }
+    return fs.unlinkSync(target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, {
+    fileSystem,
+    platform: 'win32',
+  }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+  const remnants = fs.existsSync(quarantinePath)
+    ? fs.readdirSync(quarantinePath).map((name) => name.replace(/remove-.+$/, 'remove-*')).sort()
+    : [];
+  assert.ok(ownerClaimChecks > 0);
+  assert.deepEqual({ ownerClaimUnlinks, remnants }, {
+    ownerClaimUnlinks: 1,
+    remnants: [],
+  });
+  await importImage(projectDir, SECOND_ID);
+});
+
+test('exact file mtime drift still rejects same-size different bytes', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  const claimed = path.join(tombstone, 'claimed');
+  fs.writeFileSync(target, 'owned');
+  const expected = exactFileExpected(target);
+  fs.writeFileSync(target, 'other');
+  const fileSystem = Object.create(fs);
+  let unlinkAttempts = 0;
+  fileSystem.lstatSync = (candidate, options) => {
+    const stat = fs.lstatSync(candidate, options);
+    if (candidate === claimed && options?.bigint === true) {
+      const drifted = Object.create(stat);
+      Object.defineProperty(drifted, 'mtimeNs', { value: expected.mtimeNs + 1n });
+      return drifted;
+    }
+    return stat;
+  };
+  fileSystem.unlinkSync = (candidate) => {
+    if (candidate === claimed) unlinkAttempts += 1;
+    return fs.unlinkSync(candidate);
+  };
+
+  assert.equal(claimAndRemoveOwnedPath({
+    target,
+    expected,
+    kind: 'file',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'win32',
+  }), false);
+  assert.equal(unlinkAttempts, 0);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.readFileSync(claimed, 'utf8'), 'other');
+});
+
+test('clean setup failure removes Windows bundle after claimed release and delayed absence', async (t) => {
+  for (const code of ['EPERM', 'EBUSY', 'ENOTEMPTY']) {
+    await t.test(code, async (subtest) => {
+      const projectDir = tempProject(subtest);
+      const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+      const fileSystem = Object.create(fs);
+      Object.defineProperty(fileSystem, 'platform', { value: 'win32' });
+      fileSystem.linkSync = (source, target) => {
+        if (target === path.join(quarantinePath, 'owner.anchor')) {
+          const error = new Error('injected owner anchor failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.linkSync(source, target);
+      };
+      let bundleTombstone = null;
+      let bundleClaimRemoved = false;
+      let bundleClaimChecks = 0;
+      let bundleClaimAttempts = 0;
+      let transientFailures = 5;
+      fileSystem.lstatSync = (target, options) => {
+        if (options?.bigint === true && path.basename(target) === 'claimed'
+          && path.basename(path.dirname(target)).startsWith('.bundle.remove-')) {
+          bundleClaimChecks += 1;
+        }
+        return fs.lstatSync(target, options);
+      };
+      fileSystem.rmdirSync = (target) => {
+        const tombstone = path.dirname(target);
+        if (path.basename(target) === 'claimed'
+          && path.basename(tombstone).startsWith('.bundle.remove-')) {
+          bundleTombstone = tombstone;
+          bundleClaimAttempts += 1;
+          if (transientFailures > 0) {
+            transientFailures -= 1;
+            const error = new Error(`injected bundle release ${code}`);
+            error.code = code;
+            throw error;
+          }
+          fs.rmdirSync(target);
+          bundleClaimRemoved = true;
+          return;
+        }
+        return fs.rmdirSync(target);
+      };
+      let delayedClaimObservations = 3;
+      fileSystem.readdirSync = (target, ...args) => {
+        if (bundleClaimRemoved && target === bundleTombstone
+          && delayedClaimObservations > 0) {
+          delayedClaimObservations -= 1;
+          return ['claimed'];
+        }
+        return fs.readdirSync(target, ...args);
+      };
+
+      await assert.rejects(importImage(projectDir, FIRST_ID, {
+        fileSystem,
+        platform: 'win32',
+      }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+      const remnants = fs.existsSync(quarantinePath)
+        ? fs.readdirSync(quarantinePath).map((name) => name.replace(/remove-.+$/, 'remove-*')).sort()
+        : [];
+      assert.deepEqual({
+        transientFailures,
+        bundleClaimAttempts,
+        identityRechecked: bundleClaimChecks >= bundleClaimAttempts,
+        delayedClaimObservations,
+        remnants,
+      }, {
+        transientFailures: 0,
+        bundleClaimAttempts: 6,
+        identityRechecked: true,
+        delayedClaimObservations: 0,
+        remnants: [],
+      });
+      await importImage(projectDir, SECOND_ID);
+    });
+  }
+});
+
+test('Windows claimed directory retry preserves a foreign replacement in fresh and resume paths', async (t) => {
+  for (const mode of ['fresh', 'resume']) {
+    await t.test(mode, (subtest) => {
+      const projectDir = tempProject(subtest);
+      const target = path.join(projectDir, 'target');
+      const tombstone = path.join(projectDir, '.target.remove-owned');
+      const claimed = path.join(tombstone, 'claimed');
+      const ownedBackup = path.join(projectDir, 'owned-backup');
+      const foreignMarker = path.join(claimed, 'foreign');
+      fs.mkdirSync(target);
+      const targetStat = fs.lstatSync(target, { bigint: true });
+      const expected = { dev: targetStat.dev, ino: targetStat.ino };
+      if (mode === 'resume') {
+        fs.mkdirSync(tombstone);
+        fs.renameSync(target, claimed);
+      }
+      const fileSystem = Object.create(fs);
+      let attempts = 0;
+      fileSystem.rmdirSync = (candidate) => {
+        if (candidate === claimed) {
+          attempts += 1;
+          if (attempts === 1) {
+            fs.renameSync(claimed, ownedBackup);
+            fs.mkdirSync(claimed);
+            fs.writeFileSync(foreignMarker, 'foreign bytes');
+            const error = new Error('injected claimed replacement EBUSY');
+            error.code = 'EBUSY';
+            throw error;
+          }
+        }
+        return fs.rmdirSync(candidate);
+      };
+
+      assert.equal(claimAndRemoveOwnedPath({
+        target,
+        expected,
+        kind: 'directory',
+        fileSystem,
+        temporaryId: () => 'owned',
+        platform: 'win32',
+      }), false);
+      assert.equal(attempts, 1);
+      assert.equal(fs.readFileSync(foreignMarker, 'utf8'), 'foreign bytes');
+      assert.equal(fs.existsSync(ownedBackup), true);
+    });
+  }
+});
+
+test('Windows claimed directory unknown error is one-shot and retained', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  const claimed = path.join(tombstone, 'claimed');
+  fs.mkdirSync(target);
+  const targetStat = fs.lstatSync(target, { bigint: true });
+  const fileSystem = Object.create(fs);
+  let attempts = 0;
+  fileSystem.rmdirSync = (candidate) => {
+    if (candidate === claimed) {
+      attempts += 1;
+      const error = new Error('injected unknown directory EIO');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.rmdirSync(candidate);
+  };
+
+  assert.throws(() => claimAndRemoveOwnedPath({
+    target,
+    expected: { dev: targetStat.dev, ino: targetStat.ino },
+    kind: 'directory',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'win32',
+  }), (error) => error?.code === 'EIO');
+  assert.equal(attempts, 1);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(claimed), true);
+});
+
 test('setup cleanup retains a child that replaced an owned placeholder', async (t) => {
   const projectDir = tempProject(t);
   const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
@@ -658,7 +904,7 @@ importReviewMedia({
   assert.equal(fs.existsSync(path.dirname(uploadPath)), false);
 });
 
-test('orphan recovery restores and retries an exact quarantine after rmdir fails once', async (t) => {
+test('orphan recovery retries an exact quarantine after a Windows rmdir fails once', async (t) => {
   const projectDir = tempProject(t);
   const workerPath = path.join(projectDir, 'crash-before-rmdir-worker.js');
   fs.writeFileSync(workerPath, String.raw`
@@ -683,13 +929,14 @@ importReviewMedia({
 
   const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
   const failingFileSystem = Object.create(fs);
+  Object.defineProperty(failingFileSystem, 'platform', { value: 'win32' });
   let injected = false;
   failingFileSystem.rmdirSync = (target) => {
     if (!injected && path.basename(target) === 'claimed'
       && path.basename(path.dirname(target)).startsWith(`.${FIRST_ID}.remove-`)) {
       injected = true;
-      const error = new Error('injected rmdir failure');
-      error.code = 'EIO';
+      const error = new Error('injected transient Windows rmdir failure');
+      error.code = 'EPERM';
       throw error;
     }
     return fs.rmdirSync(target);

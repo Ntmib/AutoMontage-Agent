@@ -20,7 +20,7 @@ function absent(fileSystem, target) {
   }
 }
 
-function matchesIdentity(stat, expected, kind) {
+function matchesClaimedPath(fileSystem, claimedPath, stat, expected, kind) {
   if (!expected || stat.isSymbolicLink()) return false;
   if (kind === 'directory') {
     return stat.isDirectory()
@@ -31,12 +31,10 @@ function matchesIdentity(stat, expected, kind) {
     || String(stat.dev) !== String(expected.dev)
     || String(stat.ino) !== String(expected.ino)) return false;
   if (kind === 'mutable-file') return true;
-  return String(stat.size) === String(expected.size)
-    && String(stat.mtimeNs) === String(expected.mtimeNs);
-}
-
-function matchesBytes(fileSystem, claimedPath, expected, kind) {
-  if (kind !== 'file' || expected.bytes === undefined) return true;
+  if (String(stat.size) !== String(expected.size)) return false;
+  if (String(stat.mtimeNs) !== String(expected.mtimeNs)
+    && expected.bytes === undefined) return false;
+  if (expected.bytes === undefined) return true;
   try {
     return Buffer.from(expected.bytes).equals(fileSystem.readFileSync(claimedPath));
   } catch (_) {
@@ -119,8 +117,7 @@ function removeOwnedClaimedFile(fileSystem, claimedPath, expected, kind, platfor
       if (error?.code === 'ENOENT' && removalUncertain) return true;
       return false;
     }
-    if (!matchesIdentity(claimed, expected, kind)
-      || !matchesBytes(fileSystem, claimedPath, expected, kind)) return false;
+    if (!matchesClaimedPath(fileSystem, claimedPath, claimed, expected, kind)) return false;
     try {
       fileSystem.unlinkSync(claimedPath);
       return true;
@@ -137,14 +134,19 @@ function removeOwnedClaimedFile(fileSystem, claimedPath, expected, kind, platfor
           if (reconcileError?.code === 'ENOENT') return true;
           return false;
         }
-        if (!matchesIdentity(reconciled, expected, kind)
-          || !matchesBytes(fileSystem, claimedPath, expected, kind)) return false;
+        if (!matchesClaimedPath(
+          fileSystem, claimedPath, reconciled, expected, kind,
+        )) return false;
         throw error;
       }
       Atomics.wait(TOMBSTONE_RETRY_WAIT, 0, 0, TOMBSTONE_RETRY_DELAYS_MS[attempt]);
     }
   }
   return false;
+}
+
+function removeOwnedClaimedDirectory(fileSystem, claimedPath, expected, platform) {
+  return removeOwnedEmptyTombstone(fileSystem, claimedPath, expected, platform);
 }
 
 function resumeRetainedClaim(fileSystem, target, expected, kind, platform) {
@@ -171,14 +173,14 @@ function resumeRetainedClaim(fileSystem, target, expected, kind, platform) {
       }
       return false;
     }
-    if (!matchesIdentity(claimed, expected, kind)
-      || !matchesBytes(fileSystem, claimedPath, expected, kind)) {
+    if (!matchesClaimedPath(fileSystem, claimedPath, claimed, expected, kind)) {
       continue;
     }
     const tombstoneIdentity = captureTombstoneIdentity(fileSystem, tombstoneDirectory);
     if (!tombstoneIdentity) return false;
-    if (kind === 'directory') fileSystem.rmdirSync(claimedPath);
-    else if (!removeOwnedClaimedFile(fileSystem, claimedPath, expected, kind, platform)) {
+    if (kind === 'directory') {
+      if (!removeOwnedClaimedDirectory(fileSystem, claimedPath, expected, platform)) return false;
+    } else if (!removeOwnedClaimedFile(fileSystem, claimedPath, expected, kind, platform)) {
       return false;
     }
     return removeOwnedEmptyTombstone(
@@ -237,16 +239,11 @@ function claimAndRemoveOwnedPath({
   } catch (_) {
     return false;
   }
-  if (!matchesIdentity(claimed, expected, kind)
-    || !matchesBytes(fileSystem, claimedPath, expected, kind)) return false;
+  if (!matchesClaimedPath(fileSystem, claimedPath, claimed, expected, kind)) return false;
   let removalError = null;
-  const removalAttempts = 3;
-  for (let attempt = 0; kind === 'directory' && attempt < removalAttempts; attempt += 1) {
+  if (kind === 'directory') {
     try {
-      if (kind === 'directory') fileSystem.rmdirSync(claimedPath);
-      else fileSystem.unlinkSync(claimedPath);
-      removalError = null;
-      break;
+      if (!removeOwnedClaimedDirectory(fileSystem, claimedPath, expected, platform)) return false;
     } catch (error) {
       removalError = error;
     }
