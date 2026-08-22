@@ -32,6 +32,87 @@ function exactFileExpected(target) {
   };
 }
 
+function spoofIdentity(stat, options, inode, device = 7n) {
+  const bigint = options?.bigint === true;
+  const spoofed = Object.create(stat);
+  Object.defineProperties(spoofed, {
+    dev: { value: bigint ? device : Number(device) },
+    ino: { value: bigint ? inode : Number(inode) },
+  });
+  return spoofed;
+}
+
+async function runPreciseSetupFailure(t, entry, replaceAfterCapture) {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const config = {
+    upload: { target: path.join(quarantinePath, 'upload.bin'), prefix: '.upload.bin.remove-' },
+    owner: { target: path.join(quarantinePath, 'owner.jsonl'), prefix: '.owner.jsonl.remove-' },
+    bundle: { target: path.join(quarantinePath, 'bundle'), prefix: '.bundle.remove-' },
+  }[entry];
+  const fileSystem = Object.create(fs);
+  Object.defineProperty(fileSystem, 'platform', { value: 'win32' });
+  const capturedInode = 9007199254740993n;
+  const replacementInode = 9007199254740992n;
+  let descriptor = null;
+  let identityChanged = false;
+  let claimedRemovalAttempts = 0;
+  fileSystem.openSync = (target, ...args) => {
+    const opened = fs.openSync(target, ...args);
+    if (target === config.target) descriptor = opened;
+    return opened;
+  };
+  fileSystem.fstatSync = (opened, options) => {
+    const stat = fs.fstatSync(opened, options);
+    return opened === descriptor ? spoofIdentity(stat, options, capturedInode) : stat;
+  };
+  fileSystem.lstatSync = (target, options) => {
+    const stat = fs.lstatSync(target, options);
+    const claimed = path.basename(target) === 'claimed'
+      && path.basename(path.dirname(target)).startsWith(config.prefix);
+    if (target !== config.target && !claimed) return stat;
+    return spoofIdentity(
+      stat, options, identityChanged ? replacementInode : capturedInode,
+    );
+  };
+  const observeRemoval = (target, remove) => {
+    if (path.basename(target) === 'claimed'
+      && path.basename(path.dirname(target)).startsWith(config.prefix)) {
+      claimedRemovalAttempts += 1;
+    }
+    return remove(target);
+  };
+  fileSystem.unlinkSync = (target) => observeRemoval(target, fs.unlinkSync);
+  fileSystem.rmdirSync = (target) => observeRemoval(target, fs.rmdirSync);
+  fileSystem.linkSync = (source, target) => {
+    if (target === path.join(quarantinePath, 'owner.anchor')) {
+      identityChanged = replaceAfterCapture;
+      const error = new Error(`injected setup failure after ${entry} identity capture`);
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.linkSync(source, target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, {
+    fileSystem,
+    platform: 'win32',
+  }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+  const quarantineExists = fs.existsSync(quarantinePath);
+  const remnants = quarantineExists ? fs.readdirSync(quarantinePath).sort() : [];
+  const tombstone = remnants.find((candidate) => candidate.startsWith(config.prefix));
+  return {
+    projectDir,
+    quarantineExists,
+    claimedRemovalAttempts,
+    claimedEntries: tombstone
+      ? fs.readdirSync(path.join(quarantinePath, tombstone)).sort()
+      : [],
+    capturedInode,
+    replacementInode,
+  };
+}
+
 function headers() {
   return {
     'content-length': '1',
@@ -465,6 +546,218 @@ test('clean setup failure removes quarantine when Windows upload claimed unlink 
       await importImage(projectDir, SECOND_ID);
     });
   }
+});
+
+test('clean setup failure removes a Windows upload whose inode exceeds Number precision', async (t) => {
+  const result = await runPreciseSetupFailure(t, 'upload', false);
+  assert.equal(BigInt(Number(result.capturedInode)), result.replacementInode);
+  assert.deepEqual({
+    claimedRemovalAttempts: result.claimedRemovalAttempts,
+    quarantineExists: result.quarantineExists,
+    claimedEntries: result.claimedEntries,
+  }, {
+    claimedRemovalAttempts: 1, quarantineExists: false, claimedEntries: [],
+  });
+  await importImage(result.projectDir, SECOND_ID);
+});
+
+test('setup cleanup preserves a Windows upload whose precise inode changed after capture', async (t) => {
+  const result = await runPreciseSetupFailure(t, 'upload', true);
+  assert.equal(Number(result.capturedInode), Number(result.replacementInode));
+  assert.notEqual(result.capturedInode, result.replacementInode);
+  assert.deepEqual({
+    claimedRemovalAttempts: result.claimedRemovalAttempts,
+    quarantineExists: result.quarantineExists,
+    claimedEntries: result.claimedEntries,
+  }, {
+    claimedRemovalAttempts: 0, quarantineExists: true, claimedEntries: ['claimed'],
+  });
+});
+
+test('clean setup failure removes every high-inode entry at a late placeholder boundary', async (t) => {
+  for (const mediaKind of ['image', 'video']) {
+    await t.test(mediaKind, async (subtest) => {
+      const projectDir = tempProject(subtest);
+      const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+      const bundlePath = path.join(quarantinePath, 'bundle');
+      const canonicalName = mediaKind === 'image' ? 'media.webp' : 'media.mp4';
+      const keys = ['bundle', 'upload', 'owner', 'ownerAnchor', 'claim', 'placeholder'];
+      if (mediaKind === 'video') keys.push('preview');
+      const targets = new Map([
+        [path.join(quarantinePath, 'upload.bin'), 'upload'],
+        [path.join(quarantinePath, 'owner.jsonl'), 'owner'],
+        [path.join(quarantinePath, 'owner.anchor'), 'ownerAnchor'],
+        [path.join(quarantinePath, 'publication.claim'), 'claim'],
+        [path.join(bundlePath, canonicalName), 'placeholder'],
+        ...(mediaKind === 'video' ? [[path.join(quarantinePath, 'preview.webm'), 'preview']] : []),
+        [bundlePath, 'bundle'],
+      ]);
+      const prefixes = new Map([
+        ['.upload.bin.remove-', 'upload'],
+        ['.owner.jsonl.remove-', 'owner'],
+        ['.owner.anchor.remove-', 'ownerAnchor'],
+        ['.publication.claim.remove-', 'claim'],
+        [`.${canonicalName}.remove-`, 'placeholder'],
+        ...(mediaKind === 'video' ? [['.preview.webm.remove-', 'preview']] : []),
+        ['.bundle.remove-', 'bundle'],
+      ]);
+      const preciseInode = 9007199254740993n;
+      const fileSystem = Object.create(fs);
+      Object.defineProperty(fileSystem, 'platform', { value: 'win32' });
+      const descriptors = new Map();
+      const removalAttempts = Object.fromEntries(keys.map((key) => [key, 0]));
+      let lateFailureInjected = false;
+      const targetKey = (target) => {
+        if (targets.has(target)) return targets.get(target);
+        if (path.basename(target) !== 'claimed') return null;
+        const tombstone = path.basename(path.dirname(target));
+        for (const [prefix, key] of prefixes) {
+          if (tombstone.startsWith(prefix)) return key;
+        }
+        return null;
+      };
+
+      fileSystem.openSync = (target, ...args) => {
+        const descriptor = fs.openSync(target, ...args);
+        const key = targets.get(target);
+        if (key && key !== 'bundle' && key !== 'ownerAnchor') descriptors.set(descriptor, key);
+        return descriptor;
+      };
+      fileSystem.fstatSync = (descriptor, options) => {
+        const stat = fs.fstatSync(descriptor, options);
+        return descriptors.has(descriptor)
+          ? spoofIdentity(stat, options, preciseInode)
+          : stat;
+      };
+      fileSystem.lstatSync = (target, options) => {
+        const stat = fs.lstatSync(target, options);
+        return targetKey(target) ? spoofIdentity(stat, options, preciseInode) : stat;
+      };
+      fileSystem.unlinkSync = (target) => {
+        const key = targetKey(target);
+        if (key) removalAttempts[key] += 1;
+        return fs.unlinkSync(target);
+      };
+      fileSystem.rmdirSync = (target) => {
+        const key = targetKey(target);
+        if (key) removalAttempts[key] += 1;
+        return fs.rmdirSync(target);
+      };
+      fileSystem.closeSync = (descriptor) => {
+        const key = descriptors.get(descriptor);
+        descriptors.delete(descriptor);
+        fs.closeSync(descriptor);
+        const lastPlaceholder = mediaKind === 'video' ? 'preview' : 'placeholder';
+        if (key === lastPlaceholder && !lateFailureInjected) {
+          lateFailureInjected = true;
+          const error = new Error('injected failure after the last setup placeholder capture');
+          error.code = 'EIO';
+          throw error;
+        }
+      };
+
+      await assert.rejects(importImage(projectDir, FIRST_ID, {
+        fileSystem,
+        platform: 'win32',
+        ...(mediaKind === 'video' ? { headers: {
+          'content-length': '1',
+          'content-type': 'video/mp4',
+          'x-automontage-filename': 'screen.mp4',
+        } } : {}),
+      }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+      assert.equal(lateFailureInjected, true);
+      assert.deepEqual(removalAttempts, Object.fromEntries(keys.map((key) => [key, 1])));
+      assert.equal(fs.existsSync(quarantinePath), false);
+      await importImage(projectDir, SECOND_ID);
+    });
+  }
+});
+
+test('post-append setup failure removes exact high-inode owner and anchor records', async (t) => {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const ownerPath = path.join(quarantinePath, 'owner.jsonl');
+  const anchorPath = path.join(quarantinePath, 'owner.anchor');
+  const preciseInode = 9007199254740993n;
+  const fileSystem = Object.create(fs);
+  let ownerFd = null;
+  let ownerBytesWritten = 0;
+  let postAppendFailureInjected = false;
+  const removedBytes = { owner: [], anchor: [] };
+  const ownerKey = (target) => {
+    if (target === ownerPath) return 'owner';
+    if (target === anchorPath) return 'anchor';
+    if (path.basename(target) !== 'claimed') return null;
+    const tombstone = path.basename(path.dirname(target));
+    if (tombstone.startsWith('.owner.jsonl.remove-')) return 'owner';
+    if (tombstone.startsWith('.owner.anchor.remove-')) return 'anchor';
+    return null;
+  };
+  fileSystem.openSync = (target, ...args) => {
+    if (target === quarantinePath && ownerBytesWritten > 0) {
+      postAppendFailureInjected = true;
+      const error = new Error('injected directory fsync failure after owner record append');
+      error.code = 'EIO';
+      throw error;
+    }
+    const descriptor = fs.openSync(target, ...args);
+    if (target === ownerPath) ownerFd = descriptor;
+    return descriptor;
+  };
+  fileSystem.fstatSync = (descriptor, options) => {
+    const stat = fs.fstatSync(descriptor, options);
+    return descriptor === ownerFd ? spoofIdentity(stat, options, preciseInode) : stat;
+  };
+  fileSystem.lstatSync = (target, options) => {
+    const stat = fs.lstatSync(target, options);
+    return ownerKey(target) ? spoofIdentity(stat, options, preciseInode) : stat;
+  };
+  fileSystem.writeSync = (descriptor, ...args) => {
+    const written = fs.writeSync(descriptor, ...args);
+    if (descriptor === ownerFd) ownerBytesWritten += written;
+    return written;
+  };
+  fileSystem.unlinkSync = (target) => {
+    const key = ownerKey(target);
+    if (key) removedBytes[key].push(fs.readFileSync(target).length);
+    return fs.unlinkSync(target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, { fileSystem }), (error) => (
+    error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE'
+  ));
+  assert.equal(postAppendFailureInjected, true);
+  assert.ok(ownerBytesWritten > 0);
+  assert.equal(removedBytes.owner.length, 1);
+  assert.equal(removedBytes.anchor.length, 1);
+  assert.ok(removedBytes.owner[0] > 0);
+  assert.equal(removedBytes.anchor[0], removedBytes.owner[0]);
+  assert.equal(fs.existsSync(quarantinePath), false);
+  await importImage(projectDir, SECOND_ID);
+});
+
+test('setup cleanup preserves a Windows bundle whose precise inode changed after capture', async (t) => {
+  const result = await runPreciseSetupFailure(t, 'bundle', true);
+  assert.equal(Number(result.capturedInode), Number(result.replacementInode));
+  assert.deepEqual({
+    claimedRemovalAttempts: result.claimedRemovalAttempts,
+    quarantineExists: result.quarantineExists,
+    claimedEntries: result.claimedEntries,
+  }, {
+    claimedRemovalAttempts: 0, quarantineExists: true, claimedEntries: ['claimed'],
+  });
+});
+
+test('setup cleanup preserves a Windows owner whose precise inode changed after capture', async (t) => {
+  const result = await runPreciseSetupFailure(t, 'owner', true);
+  assert.equal(Number(result.capturedInode), Number(result.replacementInode));
+  assert.deepEqual({
+    claimedRemovalAttempts: result.claimedRemovalAttempts,
+    quarantineExists: result.quarantineExists,
+    claimedEntries: result.claimedEntries,
+  }, {
+    claimedRemovalAttempts: 0, quarantineExists: true, claimedEntries: ['claimed'],
+  });
 });
 
 test('clean setup failure removes a Windows upload tombstone after delayed empty observation', async (t) => {

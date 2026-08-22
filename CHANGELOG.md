@@ -73,6 +73,8 @@
 - Windows cleanup повторяет только временные `EPERM`/`EBUSY`/`ENOTEMPTY` при удалении
   identity-проверенных пустых tombstone и quarantine root; чужие и недоказанные остатки
   сохраняются, а завершившийся `rmdir`, сообщивший ошибку, согласуется без ложного orphan.
+  Rollback setup хранит точные BigInt device/inode, поэтому длинные NTFS file id не округляются
+  и не блокируют очистку либо принятие соседнего чужого inode.
 - Image и video master normalization полагаются на одинаково включённый по умолчанию
   autorotation, поэтому импорт работает и с системным FFmpeg 6.1, и с более новыми версиями.
 - Video import предпочитает корректный `avg_frame_rate`, но безопасно использует

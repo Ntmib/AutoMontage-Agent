@@ -133,7 +133,9 @@ recovery, handoff, final publication и безопасного логирова�
 mode/umask, signal/hard-exit границы и rename открытого файла намеренно не выдаются за
 Windows-проверку. Import ownership отдельно воспроизводит временные `EPERM`/`EBUSY`/`ENOTEMPTY`:
 повтор разрешён только для identity-проверенных пустых tombstone и quarantine root, а чужой или
-недоказанный остаток должен сохраниться. Локально проверяются команды и YAML; hosted Windows run
+недоказанный остаток должен сохраниться. Отдельная матрица использует NTFS-подобные inode выше
+`2^53`: собственные setup entries очищаются по точному BigInt id, а соседние округляемые id
+сохраняются. Локально проверяются команды и YAML; hosted Windows run
 остаётся обязательным pre-merge gate.
 
 Статический guard для `scripts/build.js` запрещает `execSync` и `shell: true`. Опции
