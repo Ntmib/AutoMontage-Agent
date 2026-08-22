@@ -357,3 +357,21 @@ publication одновременно живут stage и copy. Поэтому bu
 в `ffmpeg -fs`, bounded copies и post-close gate. `statfs` повторяется перед каждой дорогой фазой
 по peak live bytes плюс reserve. Любая quota/disk boundary имеет стабильный `507` и использует
 тот же identity-only cleanup/retry, что прерванный импорт.
+
+## D-019 - Custom scene video использует тот же immutable render bundle
+
+**Дата:** 2026-08-22
+**Статус:** принято
+
+Старые approved lesson могли задавать локальный `scene.faceSrc`, но прямое чтение live project
+или public pathname во время Remotion возвращало TOCTOU и host path в props. Полный запрет ломал
+совместимость. Поэтому approved brief остаётся authoritative: render props обязаны иметь тот же
+scene type и точный исходный `faceSrc`, после чего разрешён только canonical project `assets/...`
+или repository-public video. Он проходит существующие trusted-chain, no-follow, identity,
+bounded copy, SHA-256, File Provider repin и owned cleanup barriers и получает одноразовое имя.
+
+Точное совпадение с top-level source alias переиспользует main snapshot. Другой inode
+deduplicate-ится только при совместимых video role и extension. Top-level `audioSrc` всегда
+указывает на main source, а custom `OffthreadVideo` остаётся muted и использует глобальный
+`sourceStartFrame`. Отклонены live pathname, отдельное custom audio и новый resolver: они либо
+возвращали race/path leak, либо дублировали уже проверенный security boundary.

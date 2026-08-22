@@ -210,7 +210,17 @@ function ensureLeaseBase(root, fileSystem) {
 
 function canonicalSegments(reference) {
   if (!isCanonicalBrollReference(reference)) fail('media reference must be canonical and local');
-  return reference.split('/');
+  const segments = reference.split('/');
+  for (const segment of segments) {
+    let decoded;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch (_) {
+      fail('media reference must be canonical and local');
+    }
+    if (decoded.includes('/')) fail('media reference must be canonical and local');
+  }
+  return segments;
 }
 
 function resolveContainedReference({ storageRoot, reference, fileSystem }) {
@@ -320,6 +330,10 @@ function extensionForStructured(media) {
     media.kind === 'image' ? IMAGE_EXTENSIONS : VIDEO_EXTENSIONS,
     `structured ${media.kind}`,
   );
+}
+
+function extensionForCustomFace(reference) {
+  return safeExtension(reference, VIDEO_EXTENSIONS, 'scene face video');
 }
 
 function openTracked(resolved, fileSystem) {
@@ -943,14 +957,6 @@ function prepareRenderMediaBundle({
     const originalFaceSrc = props.faceSrc;
     clonedProps.faceSrc = sourcePublicPath;
     clonedProps.audioSrc = sourcePublicPath;
-    for (const scene of clonedProps.scenes) {
-      if (scene && Object.hasOwn(scene, 'faceSrc')) {
-        if (scene.faceSrc !== originalFaceSrc) {
-          fail('scene source does not match the approved lesson source');
-        }
-        scene.faceSrc = sourcePublicPath;
-      }
-    }
 
     for (let index = 0; index < approvedBrief.scenes.length; index += 1) {
       const approvedScene = approvedBrief.scenes[index];
@@ -959,6 +965,27 @@ function prepareRenderMediaBundle({
       const hasStructured = approvedScene && Object.hasOwn(approvedScene, 'brollMedia');
       if (!clonedScene || clonedScene.scene !== approvedScene?.scene) {
         fail('lesson props do not match the approved brief');
+      }
+      const approvedHasFace = Object.hasOwn(approvedScene, 'faceSrc');
+      const propsHasFace = Object.hasOwn(clonedScene, 'faceSrc');
+      if (approvedHasFace !== propsHasFace
+        || (approvedHasFace && clonedScene.faceSrc !== approvedScene.faceSrc)) {
+        fail('lesson props scene face reference does not match the approved brief');
+      }
+      if (approvedHasFace) {
+        if (approvedScene.faceSrc === originalFaceSrc) {
+          clonedScene.faceSrc = sourcePublicPath;
+        } else {
+          const customExtension = extensionForCustomFace(approvedScene.faceSrc);
+          clonedScene.faceSrc = snapshotResolved(
+            resolveBrollReference({
+              root, workspace, reference: approvedScene.faceSrc, fileSystem,
+            }),
+            customExtension,
+            null,
+            'video',
+          );
+        }
       }
       if (!hasLegacy && Object.hasOwn(clonedScene, 'brollSrc')) {
         fail('lesson props legacy reference does not match the approved brief');
@@ -1033,7 +1060,9 @@ function withRenderMediaBundle(options, operation) {
   let operationFailed = false;
   try {
     lease[ASSERT_BUNDLE_CURRENT]();
-    return operation(lease);
+    const result = operation(lease);
+    lease[ASSERT_BUNDLE_CURRENT]();
+    return result;
   } catch (error) {
     operationError = error;
     operationFailed = true;

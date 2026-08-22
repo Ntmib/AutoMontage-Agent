@@ -175,6 +175,14 @@ Approval сначала атомарно публикует новые Markdown 
 Первичный draft создаётся по тому же правилу: номер версии выбирается только внутри project
 transaction, поэтому параллельный запуск не может перезаписать уже появившийся JSON/Markdown.
 
+Approved lesson может задать отдельный локальный video для конкретной сцены через
+`scene.faceSrc`: либо `assets/...` внутри project, либо web-relative путь из repository
+`public/` (также допустим явный префикс `public/`). Перед Remotion файл проверяется как
+канонический regular video без symlink, копируется в одноразовый immutable render bundle и
+заменяется в props на `.automontage/.../media-N.ext`. Main `audioSrc` всегда остаётся исходным
+видео; звук custom face video не добавляется. Absolute paths, URL, traversal и не-video
+расширения отклоняются до запуска Remotion.
+
 ### Локальная проверка Review Workbench
 
 Review Workbench необязателен и работает только с уже созданной project-папкой. Обычный запуск

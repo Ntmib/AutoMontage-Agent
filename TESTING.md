@@ -51,7 +51,8 @@ npm test
   hard-exit recovery, late-syscall replacement/tombstone, shutdown escalation и identity-only
   immutable cleanup boundaries;
 - approval/render media: descriptor probe/hash, normalized metadata/proxy, silent/audio rules,
-  repeated asset dedup, одноразовый render bundle, безопасный полный rehash при File Provider
+  repeated asset/custom face dedup, authoritative faceSrc matching, одноразовый render bundle,
+  безопасный полный rehash при File Provider
   `ctime`-only drift, bounded retry при drift во время hash, fail-closed same-size/append/overwrite
   и `Img`/`OffthreadVideo` audio envelopes;
 - portable opened-media probe: реальные PNG/JPEG/WebP, H.264 MP4 с `moov` в конце и WebM идут
@@ -226,7 +227,15 @@ node --test \
 
 npm run test:review-ui -- --grep "media import|video b-roll"
 node --test tests/video-broll-e2e.test.js
+AUTOMONTAGE_FFMPEG_DIR=/opt/homebrew/opt/ffmpeg-full/bin \
+  node --test tests/custom-face-media-real.test.js
 ```
+
+`custom-face-media-real.test.js` создаёт main video с тоном 440 Hz и двухцветный custom video
+с собственным тоном 880 Hz. Реальный двухсценный CLI/Remotion render обязан показать вторую
+половину custom video по глобальному таймкоду, сохранить 440 Hz через обе сцены, не добавить
+880 Hz и удалить одноразовый bundle. В обычном `npm test` этот тяжёлый acceptance честно
+skipped; перед завершением изменения его запускают отдельной командой без skip.
 
 `media-duration-geometry.test.js` создаёт настоящие пары video 1 s/audio 3 s и video 3 s/audio
 1 s, нечётные landscape/portrait и rotation fixture. Проверка требует visual `durationSec`,

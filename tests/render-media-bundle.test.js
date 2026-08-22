@@ -141,6 +141,380 @@ test('identical resolved files deduplicate across source and repeated scenes', (
   lease.cleanup();
 });
 
+test('approved public and project custom face videos are snapshotted and deduplicated', (t) => {
+  const fixture = makeFixture(t);
+  writeFile(path.join(fixture.root, 'public', 'clips', 'public-face.mp4'), 'public-face');
+  writeFile(
+    path.join(fixture.workspace.dir, 'assets', 'faces', 'project-face.webm'),
+    'project-face',
+  );
+  const scenes = [
+    { scene: 'fullscreen', faceSrc: 'source.mp4' },
+    { scene: 'split', faceSrc: 'clips/public-face.mp4' },
+    { scene: 'blur-overlay', faceSrc: 'clips/public-face.mp4' },
+    { scene: 'fullscreen', faceSrc: 'public/clips/public-face.mp4' },
+    { scene: 'fullscreen', faceSrc: 'assets/faces/project-face.webm' },
+  ];
+  const input = bundleInput(fixture, scenes);
+  const beforeBrief = JSON.stringify(input.approvedBrief);
+
+  const lease = prepareRenderMediaBundle(input);
+
+  assert.deepEqual(fs.readdirSync(lease.directory).sort(), [
+    'media-1.mp4', 'media-2.mp4', 'media-3.webm',
+  ]);
+  assert.equal(lease.props.scenes[0].faceSrc, lease.props.faceSrc);
+  assert.equal(lease.props.scenes[1].faceSrc, lease.props.scenes[2].faceSrc);
+  assert.match(lease.props.scenes[1].faceSrc, /\/media-2\.mp4$/);
+  assert.equal(lease.props.scenes[3].faceSrc, lease.props.scenes[1].faceSrc);
+  assert.match(lease.props.scenes[4].faceSrc, /\/media-3\.webm$/);
+  assert.equal(lease.props.audioSrc, lease.props.faceSrc);
+  assert.equal(JSON.stringify(input.approvedBrief), beforeBrief);
+  assert.equal(JSON.stringify(lease.props).includes(fixture.directory), false);
+  lease.cleanup();
+});
+
+test('custom face hard-link deduplicates with source only for the same video extension and role', (t) => {
+  const fixture = makeFixture(t);
+  const reference = 'assets/faces/source.mp4';
+  const customPath = path.join(fixture.workspace.dir, ...reference.split('/'));
+  fs.mkdirSync(path.dirname(customPath), { recursive: true });
+  fs.linkSync(fixture.sourcePath, customPath);
+  const lease = prepareRenderMediaBundle(bundleInput(fixture, [
+    { scene: 'fullscreen', faceSrc: reference },
+    { scene: 'fullscreen', faceSrc: reference },
+  ]));
+
+  assert.deepEqual(fs.readdirSync(lease.directory), ['media-1.mp4']);
+  assert.equal(lease.props.scenes[0].faceSrc, lease.props.faceSrc);
+  assert.equal(lease.props.scenes[1].faceSrc, lease.props.faceSrc);
+  assert.equal(lease.props.audioSrc, lease.props.faceSrc);
+  lease.cleanup();
+});
+
+test('custom face hard-link with a different extension fails instead of reusing source bytes', (t) => {
+  const fixture = makeFixture(t);
+  const reference = 'assets/faces/source.mov';
+  const customPath = path.join(fixture.workspace.dir, ...reference.split('/'));
+  fs.mkdirSync(path.dirname(customPath), { recursive: true });
+  fs.linkSync(fixture.sourcePath, customPath);
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle(bundleInput(fixture, [
+    { scene: 'fullscreen', faceSrc: reference },
+  ]), () => {
+    invoked = true;
+  }), /incompatible|extension|role/i);
+  assert.equal(invoked, false);
+});
+
+test('approved brief is authoritative for every scene custom face reference and type', async (t) => {
+  const fixture = makeFixture(t);
+  writeFile(path.join(fixture.root, 'public', 'clips', 'approved.mp4'), 'approved');
+  writeFile(path.join(fixture.root, 'public', 'clips', 'other.mp4'), 'other');
+  const cases = [
+    {
+      name: 'props-only reference',
+      approved: [{ scene: 'fullscreen' }],
+      props: [{ scene: 'fullscreen', faceSrc: 'clips/approved.mp4' }],
+    },
+    {
+      name: 'approved-only reference',
+      approved: [{ scene: 'fullscreen', faceSrc: 'clips/approved.mp4' }],
+      props: [{ scene: 'fullscreen' }],
+    },
+    {
+      name: 'different reference',
+      approved: [{ scene: 'fullscreen', faceSrc: 'clips/approved.mp4' }],
+      props: [{ scene: 'fullscreen', faceSrc: 'clips/other.mp4' }],
+    },
+    {
+      name: 'different scene type',
+      approved: [{ scene: 'fullscreen', faceSrc: 'clips/approved.mp4' }],
+      props: [{ scene: 'split', faceSrc: 'clips/approved.mp4' }],
+    },
+  ];
+  for (let index = 0; index < cases.length; index += 1) {
+    const item = cases[index];
+    await t.test(item.name, () => {
+      let invoked = false;
+      assert.throws(() => withRenderMediaBundle({
+        ...bundleInput(fixture, item.approved, item.props),
+        temporaryId: `33333333-3333-4333-8333-33333333333${index}`,
+      }, () => {
+        invoked = true;
+      }), /props|approved brief|scene|match/i);
+      assert.equal(invoked, false);
+    });
+  }
+});
+
+test('unsafe custom face references fail before the render callback without leaking the value', async (t) => {
+  const fixture = makeFixture(t);
+  const references = [
+    '/private/face.mp4',
+    'C:\\private\\face.mp4',
+    '\\\\server\\share\\face.mp4',
+    '..\\private\\face.mp4',
+    '../private/face.mp4',
+    '%2e%2e%2fprivate/face.mp4',
+    'file:///private/face.mp4',
+    'https://example.test/face.mp4',
+    'data:video/mp4;base64,AAAA',
+    'blob:https://example.test/id',
+    'clips/face.png',
+    'clips/face.mp3',
+    'clips/face.txt',
+  ];
+  const sourceBefore = fs.readFileSync(fixture.sourcePath);
+  for (let index = 0; index < references.length; index += 1) {
+    await t.test(`unsafe reference ${index + 1}`, () => {
+      const reference = references[index];
+      let invoked = false;
+      let error;
+      try {
+        withRenderMediaBundle({
+          ...bundleInput(fixture, [{ scene: 'fullscreen', faceSrc: reference }]),
+          temporaryId: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`,
+        }, () => {
+          invoked = true;
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      assert.ok(error);
+      assert.equal(invoked, false);
+      assert.equal(String(error.message).includes(reference), false);
+      assert.ok(/canonical|local|extension|reference|render-safe/i.test(error.message), error.message);
+      assert.deepEqual(fs.readFileSync(fixture.sourcePath), sourceBefore);
+    });
+  }
+});
+
+test('custom face symlink ancestors, final symlinks, and non-files fail closed', async (t) => {
+  const fixture = makeFixture(t);
+  const outside = path.join(fixture.directory, 'outside');
+  const outsideVideo = writeFile(path.join(outside, 'face.mp4'), 'outside-face');
+  fs.mkdirSync(path.join(fixture.workspace.dir, 'assets', 'faces'), { recursive: true });
+  fs.symlinkSync(outside, path.join(fixture.workspace.dir, 'assets', 'linked'), 'dir');
+  fs.symlinkSync(outsideVideo, path.join(fixture.workspace.dir, 'assets', 'faces', 'linked.mp4'));
+  fs.mkdirSync(path.join(fixture.workspace.dir, 'assets', 'faces', 'directory.mp4'));
+  const references = [
+    'assets/linked/face.mp4',
+    'assets/faces/linked.mp4',
+    'assets/faces/directory.mp4',
+  ];
+  for (let index = 0; index < references.length; index += 1) {
+    await t.test(String(index), () => {
+      assert.throws(() => prepareRenderMediaBundle({
+        ...bundleInput(fixture, [{ scene: 'fullscreen', faceSrc: references[index] }]),
+        temporaryId: `55555555-5555-4555-8555-${String(index).padStart(12, '0')}`,
+      }), /symbolic link|regular file|symlink/i);
+      assert.equal(fs.readFileSync(outsideVideo, 'utf8'), 'outside-face');
+    });
+  }
+});
+
+test('custom face source replacement during its bounded copy aborts and cleans owned bytes', (t) => {
+  const fixture = makeFixture(t);
+  const reference = 'assets/faces/custom.mp4';
+  const customPath = writeFile(
+    path.join(fixture.workspace.dir, ...reference.split('/')),
+    Buffer.alloc(160 * 1024, 9),
+  );
+  const descriptors = new Map();
+  let replaced = false;
+  const racingFs = {
+    ...fs,
+    openSync(filename, flags, mode) {
+      const descriptor = fs.openSync(filename, flags, mode);
+      descriptors.set(descriptor, filename);
+      return descriptor;
+    },
+    closeSync(descriptor) {
+      descriptors.delete(descriptor);
+      return fs.closeSync(descriptor);
+    },
+    readSync(descriptor, buffer, offset, length, position) {
+      const count = fs.readSync(descriptor, buffer, offset, length, position);
+      if (!replaced && descriptors.get(descriptor) === customPath && position >= 64 * 1024) {
+        replaced = true;
+        const replacement = `${customPath}.replacement`;
+        fs.writeFileSync(replacement, 'foreign-custom');
+        fs.renameSync(replacement, customPath);
+      }
+      return count;
+    },
+  };
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle({
+    ...bundleInput(fixture, [{ scene: 'fullscreen', faceSrc: reference }]),
+    fileSystem: racingFs,
+  }, () => {
+    invoked = true;
+  }), /identity|changed/i);
+  assert.equal(replaced, true);
+  assert.equal(invoked, false);
+  assert.equal(fs.readFileSync(customPath, 'utf8'), 'foreign-custom');
+  assert.equal(fs.existsSync(path.join(
+    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+  )), false);
+});
+
+test('custom bundle same-size mutation inside a successful callback fails before cleanup', (t) => {
+  const fixture = makeFixture(t);
+  const reference = 'assets/faces/custom.mp4';
+  writeFile(path.join(fixture.workspace.dir, ...reference.split('/')), 'custom-video-bytes');
+  let bundlePath;
+
+  assert.throws(() => withRenderMediaBundle(
+    bundleInput(fixture, [{ scene: 'fullscreen', faceSrc: reference }]),
+    (lease) => {
+      bundlePath = path.join(lease.directory, path.basename(lease.props.scenes[0].faceSrc));
+      const original = fs.readFileSync(bundlePath);
+      fs.writeFileSync(bundlePath, Buffer.alloc(original.length, 0x78));
+      return 'rendered';
+    },
+  ), /bundle file|identity|hash|changed/i);
+  assert.equal(fs.existsSync(bundlePath), false);
+});
+
+test('custom bundle append and overwrite after copy abort before the callback', async (t) => {
+  for (const mutation of ['append', 'overwrite']) {
+    await t.test(mutation, () => {
+      const fixture = makeFixture(t);
+      const reference = 'assets/faces/custom.mp4';
+      writeFile(path.join(fixture.workspace.dir, ...reference.split('/')), 'custom-video-bytes');
+      const descriptors = new Map();
+      let mutated = false;
+      const isCustomBundle = (filename) => typeof filename === 'string'
+        && /[\\/]\.automontage[\\/].*[\\/]media-2\.mp4$/.test(filename);
+      const mutatingFs = {
+        ...fs,
+        openSync(filename, flags, mode) {
+          const descriptor = fs.openSync(filename, flags, mode);
+          descriptors.set(descriptor, filename);
+          return descriptor;
+        },
+        closeSync(descriptor) {
+          const filename = descriptors.get(descriptor);
+          if (!mutated && isCustomBundle(filename)) {
+            mutated = true;
+            if (mutation === 'append') fs.appendFileSync(filename, 'append');
+            else {
+              const bytes = fs.readFileSync(filename);
+              bytes[0] ^= 0xff;
+              fs.writeFileSync(filename, bytes);
+            }
+          }
+          descriptors.delete(descriptor);
+          return fs.closeSync(descriptor);
+        },
+      };
+      let invoked = false;
+
+      assert.throws(() => withRenderMediaBundle({
+        ...bundleInput(fixture, [{ scene: 'fullscreen', faceSrc: reference }]),
+        fileSystem: mutatingFs,
+      }, () => {
+        invoked = true;
+      }), /bundle|identity|hash|changed/i);
+      assert.equal(mutated, true);
+      assert.equal(invoked, false);
+    });
+  }
+});
+
+test('custom bundle ctime drift during hash is accepted only after a complete stable rehash', (t) => {
+  const fixture = makeFixture(t);
+  const reference = 'assets/faces/custom.mp4';
+  writeFile(path.join(fixture.workspace.dir, ...reference.split('/')), Buffer.alloc(96 * 1024, 7));
+  const descriptors = new Map();
+  let destinationClosed = false;
+  let driftAtNextFstat = false;
+  let ctimeOffset = 0n;
+  let postDriftReads = 0;
+  const isCustomBundle = (filename) => typeof filename === 'string'
+    && /[\\/]\.automontage[\\/].*[\\/]media-2\.mp4$/.test(filename);
+  const shifted = (stat) => {
+    if (ctimeOffset === 0n) return stat;
+    const proxy = Object.create(stat);
+    Object.defineProperty(proxy, 'ctimeNs', { value: stat.ctimeNs + ctimeOffset });
+    return proxy;
+  };
+  const fileProviderFs = {
+    ...fs,
+    openSync(filename, flags, mode) {
+      const descriptor = fs.openSync(filename, flags, mode);
+      descriptors.set(descriptor, filename);
+      return descriptor;
+    },
+    closeSync(descriptor) {
+      const filename = descriptors.get(descriptor);
+      const result = fs.closeSync(descriptor);
+      descriptors.delete(descriptor);
+      if (isCustomBundle(filename)) destinationClosed = true;
+      return result;
+    },
+    readSync(descriptor, ...args) {
+      const filename = descriptors.get(descriptor);
+      const bytesRead = fs.readSync(descriptor, ...args);
+      if (destinationClosed && isCustomBundle(filename)) {
+        if (ctimeOffset > 0n) postDriftReads += 1;
+        else driftAtNextFstat = true;
+      }
+      return bytesRead;
+    },
+    fstatSync(descriptor, options) {
+      const filename = descriptors.get(descriptor);
+      if (driftAtNextFstat && isCustomBundle(filename)) {
+        driftAtNextFstat = false;
+        ctimeOffset = 1n;
+      }
+      const stat = fs.fstatSync(descriptor, options);
+      return isCustomBundle(filename) ? shifted(stat) : stat;
+    },
+    lstatSync(filename, options) {
+      const stat = fs.lstatSync(filename, options);
+      return isCustomBundle(filename) ? shifted(stat) : stat;
+    },
+  };
+  let invoked = false;
+
+  assert.equal(withRenderMediaBundle({
+    ...bundleInput(fixture, [{ scene: 'fullscreen', faceSrc: reference }]),
+    fileSystem: fileProviderFs,
+  }, () => {
+    invoked = true;
+    return 'rendered';
+  }), 'rendered');
+  assert.equal(invoked, true);
+  assert.equal(ctimeOffset, 1n);
+  assert.ok(postDriftReads >= 2, postDriftReads);
+});
+
+test('custom bundle success and render failure both remove every owned snapshot', (t) => {
+  const fixture = makeFixture(t);
+  const reference = 'assets/faces/custom.mp4';
+  writeFile(path.join(fixture.workspace.dir, ...reference.split('/')), 'custom-video');
+  const input = bundleInput(fixture, [{ scene: 'fullscreen', faceSrc: reference }]);
+  let successDirectory;
+  assert.equal(withRenderMediaBundle(input, (lease) => {
+    successDirectory = lease.directory;
+    assert.deepEqual(fs.readdirSync(lease.directory).sort(), ['media-1.mp4', 'media-2.mp4']);
+    return 'rendered';
+  }), 'rendered');
+  assert.equal(fs.existsSync(successDirectory), false);
+
+  let failureDirectory;
+  assert.throws(() => withRenderMediaBundle({ ...input, temporaryId: SECOND_ID }, (lease) => {
+    failureDirectory = lease.directory;
+    throw new Error('custom render failed');
+  }), /custom render failed/);
+  assert.equal(fs.existsSync(failureDirectory), false);
+});
+
 test('legacy HTTPS images stay remote while structured remote media fails closed', (t) => {
   const fixture = makeFixture(t);
   const remote = 'https://cdn.example.test/diagram.png?version=2';

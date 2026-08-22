@@ -128,7 +128,11 @@ reader либо видит прежний currentBrief, либо новый ук
 manifest удаляет только собственные опубликованные файлы; hard exit может оставить безопасный
 orphan, и следующая draft-ревизия пропускает занятое имя. При рендере точный legacy
 `faceSrc: "source.mp4"` внутри сцены переводится на
-текущий source lease вместе с top-level `faceSrc` и `audioSrc`.
+текущий source lease вместе с top-level `faceSrc` и `audioSrc`. Другой approved
+`scene.faceSrc` разрешён только как canonical `assets/...` project video или web-relative
+repository-public video. Props обязаны сохранить точный исходный reference и scene type до
+bundle boundary; после проверки cloned scene получает отдельный `.automontage/...` snapshot,
+а top-level `audioSrc` не меняется.
 
 Первичный lesson/scenario draft тоже использует этот contract: build context не резервирует
 номер заранее, генератор сначала создаёт временную no-replace пару, а `publishBriefRevision()`
@@ -313,9 +317,9 @@ Workbench изолирован от OpenCut runtime/project format и Remotion S
 видео в браузере, не меняет текст, не делает global ripple и не реализует effects registry,
 keyframes или masks. Канонический путь остаётся прежним: draft -> внешнее approval -> approved
 brief -> `scripts/build.js --brief` -> Remotion. Перед вызовом Remotion lesson build копирует
-source и все локальные legacy/structured b-roll в один immutable одноразовый каталог
+source, approved custom scene face videos и все локальные legacy/structured b-roll в один immutable одноразовый каталог
 `public/.automontage/`, переписывает только clone props на безопасные basenames, ещё раз сверяет
-identity/hash и удаляет owned bundle после success/error. На iCloud File Provider допустим только
+identity/hash до и после render callback и удаляет owned bundle после success/error. На iCloud File Provider допустим только
 `ctime`-only metadata drift: при неизменных `dev/ino/size/mtime/mode/nlink` файл заново полностью
 хэшируется и лишь затем получает новый bounded identity baseline. Если `ctime` сдвинулся во время
 чтения, этот digest отбрасывается и выполняется ограниченный полный повтор. Изменение bytes или

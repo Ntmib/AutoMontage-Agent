@@ -157,6 +157,13 @@ node scripts/build.js \
 Каждая следующая правка получает свой `renders/vNN-<version-label>/`, а принятый файл лежит
 в `final/<slug>.mp4`.
 
+Для отдельной сцены approved JSON может содержать `faceSrc: "assets/faces/cutaway.mp4"` или
+web-relative video из repository `public/`. Точное значение и тип сцены обязаны совпасть в
+approved brief и render props. Build открывает локальный файл без follow, проверяет identity,
+копирует его в одноразовый bundle и передаёт Remotion только `.automontage/.../media-N.ext`.
+Custom video использует глобальный таймкод сцены и всегда muted; main voice продолжает идти из
+top-level `audioSrc`. URL, absolute/traversal path, symlink и image/audio/text здесь запрещены.
+
 Публичный approved fixture без LLM, музыки и внешней темы лежит в
 `examples/lesson-neutral-approved.json`. Короткую проверку lesson и Dynamic вместе запускает
 `npm run smoke:release`; скрипт оставляет оба финала для просмотра.

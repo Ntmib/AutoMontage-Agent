@@ -7,6 +7,9 @@
 
 ### Добавлено
 
+- Approved lesson снова поддерживает локальный custom `scene.faceSrc` из project `assets/...`
+  или repository `public/`: каждый video попадает в одноразовый render bundle, сохраняет
+  глобальный таймкод и не меняет main audio.
 - Review Workbench загружает AVIF/GIF/JPEG/PNG/WebP и MP4/MOV/M4V/WebM прямо в текущую
   project-папку, показывает authenticated image/video preview и не назначает новый asset сцене
   без отдельного выбора пользователя.
@@ -24,6 +27,9 @@
 
 ### Безопасность
 
+- Custom scene video сверяется с authoritative approved brief, открывается no-follow и проходит
+  identity/hash/TOCTOU/File Provider barriers до и после render callback; unsafe path, URL,
+  symlink, не-video extension и props mismatch отклоняются до Remotion.
 - Импорт потоково пишет только в owner-only quarantine, проверяет размер, тип, decode,
   геометрию, длительность, свободное место и symlink/file identity; браузер получает только
   opaque id и token-protected routes без project path или media SHA-256.
