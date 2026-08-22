@@ -5,6 +5,7 @@ const { setPrivatePathMode } = require('../filesystem-capabilities');
 
 const SAFE_TOKEN = /^[A-Za-z0-9_-]+$/;
 const WIN32_TOMBSTONE_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
+const WIN32_CLAIMED_UNLINK_RETRY_CODES = new Set(['EPERM', 'EBUSY']);
 const TOMBSTONE_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 250, 250];
 const TOMBSTONE_RETRY_WAIT = new Int32Array(new SharedArrayBuffer(4));
 const UNPROVEN_RETAINED_CLAIM = Symbol('unproven-retained-claim');
@@ -73,7 +74,11 @@ function removeOwnedEmptyTombstone(
     if (!stat.isDirectory() || stat.isSymbolicLink()
       || String(stat.dev) !== String(expected.dev)
       || String(stat.ino) !== String(expected.ino)) return false;
-    if (fileSystem.readdirSync(tombstoneDirectory).length !== 0) return false;
+    if (fileSystem.readdirSync(tombstoneDirectory).length !== 0) {
+      if (platform !== 'win32' || attempt === attempts - 1) return false;
+      Atomics.wait(TOMBSTONE_RETRY_WAIT, 0, 0, TOMBSTONE_RETRY_DELAYS_MS[attempt]);
+      continue;
+    }
     try {
       fileSystem.rmdirSync(tombstoneDirectory);
       return true;
@@ -95,6 +100,45 @@ function removeOwnedEmptyTombstone(
           || String(reconciled.dev) !== String(expected.dev)
           || String(reconciled.ino) !== String(expected.ino)
           || fileSystem.readdirSync(tombstoneDirectory).length !== 0) return false;
+        throw error;
+      }
+      Atomics.wait(TOMBSTONE_RETRY_WAIT, 0, 0, TOMBSTONE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  return false;
+}
+
+function removeOwnedClaimedFile(fileSystem, claimedPath, expected, kind, platform) {
+  const attempts = platform === 'win32' ? TOMBSTONE_RETRY_DELAYS_MS.length + 1 : 1;
+  let removalUncertain = false;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let claimed;
+    try {
+      claimed = fileSystem.lstatSync(claimedPath, { bigint: true });
+    } catch (error) {
+      if (error?.code === 'ENOENT' && removalUncertain) return true;
+      return false;
+    }
+    if (!matchesIdentity(claimed, expected, kind)
+      || !matchesBytes(fileSystem, claimedPath, expected, kind)) return false;
+    try {
+      fileSystem.unlinkSync(claimedPath);
+      return true;
+    } catch (error) {
+      const retryable = platform === 'win32'
+        && WIN32_CLAIMED_UNLINK_RETRY_CODES.has(error?.code);
+      if (!retryable) throw error;
+      removalUncertain = true;
+      if (attempt === attempts - 1) {
+        let reconciled;
+        try {
+          reconciled = fileSystem.lstatSync(claimedPath, { bigint: true });
+        } catch (reconcileError) {
+          if (reconcileError?.code === 'ENOENT') return true;
+          return false;
+        }
+        if (!matchesIdentity(reconciled, expected, kind)
+          || !matchesBytes(fileSystem, claimedPath, expected, kind)) return false;
         throw error;
       }
       Atomics.wait(TOMBSTONE_RETRY_WAIT, 0, 0, TOMBSTONE_RETRY_DELAYS_MS[attempt]);
@@ -134,7 +178,9 @@ function resumeRetainedClaim(fileSystem, target, expected, kind, platform) {
     const tombstoneIdentity = captureTombstoneIdentity(fileSystem, tombstoneDirectory);
     if (!tombstoneIdentity) return false;
     if (kind === 'directory') fileSystem.rmdirSync(claimedPath);
-    else fileSystem.unlinkSync(claimedPath);
+    else if (!removeOwnedClaimedFile(fileSystem, claimedPath, expected, kind, platform)) {
+      return false;
+    }
     return removeOwnedEmptyTombstone(
       fileSystem, tombstoneDirectory, tombstoneIdentity, platform,
     );
@@ -194,13 +240,20 @@ function claimAndRemoveOwnedPath({
   if (!matchesIdentity(claimed, expected, kind)
     || !matchesBytes(fileSystem, claimedPath, expected, kind)) return false;
   let removalError = null;
-  const removalAttempts = kind === 'directory' ? 3 : 1;
-  for (let attempt = 0; attempt < removalAttempts; attempt += 1) {
+  const removalAttempts = 3;
+  for (let attempt = 0; kind === 'directory' && attempt < removalAttempts; attempt += 1) {
     try {
       if (kind === 'directory') fileSystem.rmdirSync(claimedPath);
       else fileSystem.unlinkSync(claimedPath);
       removalError = null;
       break;
+    } catch (error) {
+      removalError = error;
+    }
+  }
+  if (kind !== 'directory') {
+    try {
+      if (!removeOwnedClaimedFile(fileSystem, claimedPath, expected, kind, platform)) return false;
     } catch (error) {
       removalError = error;
     }

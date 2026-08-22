@@ -24,6 +24,14 @@ function tempProject(t) {
   return projectDir;
 }
 
+function exactFileExpected(target) {
+  const stat = fs.lstatSync(target, { bigint: true });
+  return {
+    dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs,
+    bytes: fs.readFileSync(target),
+  };
+}
+
 function headers() {
   return {
     'content-length': '1',
@@ -393,7 +401,73 @@ test('simulated Windows setup cleanup retries transient owner tombstone removal 
   }
 });
 
-test('clean setup failure removes quarantine when a Windows child tombstone unlocks after five errors', async (t) => {
+test('clean setup failure removes quarantine when Windows upload claimed unlink unlocks', async (t) => {
+  for (const code of ['EPERM', 'EBUSY']) {
+    await t.test(code, async (subtest) => {
+      const projectDir = tempProject(subtest);
+      const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+      const fileSystem = Object.create(fs);
+      Object.defineProperty(fileSystem, 'platform', { value: 'win32' });
+      fileSystem.linkSync = (source, target) => {
+        if (target === path.join(quarantinePath, 'owner.anchor')) {
+          const error = new Error('injected owner anchor failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.linkSync(source, target);
+      };
+      let transientFailures = 5;
+      let claimedUnlinkAttempts = 0;
+      let claimedIdentityChecks = 0;
+      let claimedByteChecks = 0;
+      const claimedSnapshots = [];
+      fileSystem.lstatSync = (target, options) => {
+        if (path.basename(target) === 'claimed'
+          && path.basename(path.dirname(target)).startsWith('.upload.bin.remove-')) {
+          claimedIdentityChecks += 1;
+        }
+        return fs.lstatSync(target, options);
+      };
+      fileSystem.readFileSync = (target, ...args) => {
+        if (path.basename(target) === 'claimed'
+          && path.basename(path.dirname(target)).startsWith('.upload.bin.remove-')) {
+          claimedByteChecks += 1;
+        }
+        return fs.readFileSync(target, ...args);
+      };
+      fileSystem.unlinkSync = (target) => {
+        const tombstone = path.basename(path.dirname(target));
+        if (path.basename(target) === 'claimed'
+          && tombstone.startsWith('.upload.bin.remove-')) {
+          claimedUnlinkAttempts += 1;
+          claimedSnapshots.push(fs.readdirSync(path.dirname(target)).sort());
+          if (transientFailures > 0) {
+            transientFailures -= 1;
+            const error = new Error(`injected delayed Windows upload release ${code}`);
+            error.code = code;
+            throw error;
+          }
+        }
+        return fs.unlinkSync(target);
+      };
+
+      await assert.rejects(importImage(projectDir, FIRST_ID, {
+        fileSystem,
+        platform: 'win32',
+      }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+      assert.equal(transientFailures, 0);
+      assert.equal(claimedUnlinkAttempts, 6);
+      assert.deepEqual(claimedSnapshots, Array.from({ length: 6 }, () => ['claimed']));
+      assert.ok(claimedIdentityChecks >= claimedUnlinkAttempts);
+      assert.ok(claimedByteChecks >= claimedUnlinkAttempts);
+      assert.equal(fs.existsSync(quarantinePath), false);
+      assert.deepEqual(fs.readdirSync(path.dirname(quarantinePath)), []);
+      await importImage(projectDir, SECOND_ID);
+    });
+  }
+});
+
+test('clean setup failure removes a Windows upload tombstone after delayed empty observation', async (t) => {
   const projectDir = tempProject(t);
   const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
   const fileSystem = Object.create(fs);
@@ -406,27 +480,35 @@ test('clean setup failure removes quarantine when a Windows child tombstone unlo
     }
     return fs.linkSync(source, target);
   };
-  let transientFailures = 5;
-  let childTombstoneAttempts = 0;
-  fileSystem.rmdirSync = (target) => {
-    if (path.basename(target).startsWith('.owner.jsonl.remove-')) {
-      childTombstoneAttempts += 1;
-      if (transientFailures > 0) {
-        transientFailures -= 1;
-        const error = new Error('injected delayed Windows handle release');
-        error.code = 'EBUSY';
-        throw error;
-      }
+  let uploadTombstone = null;
+  let uploadClaimedUnlinked = false;
+  fileSystem.unlinkSync = (target) => {
+    const tombstone = path.dirname(target);
+    if (path.basename(target) === 'claimed'
+      && path.basename(tombstone).startsWith('.upload.bin.remove-')) {
+      fs.unlinkSync(target);
+      uploadTombstone = tombstone;
+      uploadClaimedUnlinked = true;
+      return;
     }
-    return fs.rmdirSync(target);
+    return fs.unlinkSync(target);
+  };
+  let delayedNonemptyObservations = 3;
+  fileSystem.readdirSync = (target, ...args) => {
+    if (uploadClaimedUnlinked && target === uploadTombstone
+      && delayedNonemptyObservations > 0) {
+      delayedNonemptyObservations -= 1;
+      return ['claimed'];
+    }
+    return fs.readdirSync(target, ...args);
   };
 
   await assert.rejects(importImage(projectDir, FIRST_ID, {
     fileSystem,
     platform: 'win32',
   }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
-  assert.equal(transientFailures, 0);
-  assert.equal(childTombstoneAttempts, 6);
+  assert.equal(uploadClaimedUnlinked, true);
+  assert.equal(delayedNonemptyObservations, 0);
   assert.equal(fs.existsSync(quarantinePath), false);
   assert.deepEqual(fs.readdirSync(path.dirname(quarantinePath)), []);
   await importImage(projectDir, SECOND_ID);
@@ -783,6 +865,179 @@ test('POSIX tombstone removal is one-shot on a transient Windows-style error', (
   assert.equal(fs.existsSync(target), false);
   assert.equal(fs.existsSync(tombstone), true);
   assert.deepEqual(fs.readdirSync(tombstone), []);
+});
+
+test('POSIX claimed file unlink is one-shot on a transient Windows-style error', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  const claimed = path.join(tombstone, 'claimed');
+  fs.writeFileSync(target, 'owned bytes');
+  const expected = exactFileExpected(target);
+  const fileSystem = Object.create(fs);
+  let attempts = 0;
+  fileSystem.unlinkSync = (candidate) => {
+    if (candidate === claimed) {
+      attempts += 1;
+      const error = new Error('injected POSIX EBUSY');
+      error.code = 'EBUSY';
+      throw error;
+    }
+    return fs.unlinkSync(candidate);
+  };
+
+  assert.throws(() => claimAndRemoveOwnedPath({
+    target,
+    expected,
+    kind: 'file',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'linux',
+  }), (error) => error?.code === 'EBUSY');
+  assert.equal(attempts, 1);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'owned bytes');
+  assert.equal(fs.readFileSync(claimed, 'utf8'), 'owned bytes');
+});
+
+test('Windows claimed file ENOTEMPTY is one-shot and restores the original bytes', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  const claimed = path.join(tombstone, 'claimed');
+  fs.writeFileSync(target, 'owned bytes');
+  const expected = exactFileExpected(target);
+  const fileSystem = Object.create(fs);
+  let attempts = 0;
+  fileSystem.unlinkSync = (candidate) => {
+    if (candidate === claimed) {
+      attempts += 1;
+      const error = new Error('injected file ENOTEMPTY');
+      error.code = 'ENOTEMPTY';
+      throw error;
+    }
+    return fs.unlinkSync(candidate);
+  };
+
+  assert.throws(() => claimAndRemoveOwnedPath({
+    target,
+    expected,
+    kind: 'file',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'win32',
+  }), (error) => error?.code === 'ENOTEMPTY');
+  assert.equal(attempts, 1);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'owned bytes');
+  assert.equal(fs.readFileSync(claimed, 'utf8'), 'owned bytes');
+});
+
+test('Windows claimed unlink reconciles removal completed before EPERM', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  const claimed = path.join(tombstone, 'claimed');
+  fs.writeFileSync(target, 'owned bytes');
+  const expected = exactFileExpected(target);
+  const fileSystem = Object.create(fs);
+  let injected = false;
+  fileSystem.unlinkSync = (candidate) => {
+    if (!injected && candidate === claimed) {
+      injected = true;
+      fs.unlinkSync(candidate);
+      const error = new Error('injected completed unlink EPERM');
+      error.code = 'EPERM';
+      throw error;
+    }
+    return fs.unlinkSync(candidate);
+  };
+
+  assert.equal(claimAndRemoveOwnedPath({
+    target,
+    expected,
+    kind: 'file',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'win32',
+  }), true);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(tombstone), false);
+});
+
+test('Windows claimed unlink preserves a foreign replacement before retry', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  const claimed = path.join(tombstone, 'claimed');
+  const ownedBackup = path.join(projectDir, 'owned-backup');
+  fs.writeFileSync(target, 'owned bytes');
+  const expected = exactFileExpected(target);
+  const fileSystem = Object.create(fs);
+  let attempts = 0;
+  fileSystem.unlinkSync = (candidate) => {
+    if (candidate === claimed) {
+      attempts += 1;
+      if (attempts === 1) {
+        fs.renameSync(claimed, ownedBackup);
+        fs.writeFileSync(claimed, 'foreign bytes');
+        const error = new Error('injected replacement EBUSY');
+        error.code = 'EBUSY';
+        throw error;
+      }
+    }
+    return fs.unlinkSync(candidate);
+  };
+
+  assert.equal(claimAndRemoveOwnedPath({
+    target,
+    expected,
+    kind: 'file',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'win32',
+  }), false);
+  assert.equal(attempts, 1);
+  assert.equal(fs.readFileSync(claimed, 'utf8'), 'foreign bytes');
+  assert.equal(fs.readFileSync(ownedBackup, 'utf8'), 'owned bytes');
+});
+
+test('nonempty claimed tombstone observations never delete a foreign child', async (t) => {
+  for (const [platform, expectedObservations] of [['linux', 1], ['win32', 8]]) {
+    await t.test(platform, (subtest) => {
+      const projectDir = tempProject(subtest);
+      const target = path.join(projectDir, 'target');
+      const tombstone = path.join(projectDir, '.target.remove-owned');
+      const claimed = path.join(tombstone, 'claimed');
+      const foreign = path.join(tombstone, 'foreign');
+      fs.writeFileSync(target, 'owned bytes');
+      const expected = exactFileExpected(target);
+      const fileSystem = Object.create(fs);
+      let observations = 0;
+      fileSystem.unlinkSync = (candidate) => {
+        if (candidate === claimed) {
+          fs.unlinkSync(candidate);
+          fs.writeFileSync(foreign, 'foreign bytes');
+          return;
+        }
+        return fs.unlinkSync(candidate);
+      };
+      fileSystem.readdirSync = (candidate, ...args) => {
+        if (candidate === tombstone) observations += 1;
+        return fs.readdirSync(candidate, ...args);
+      };
+
+      assert.equal(claimAndRemoveOwnedPath({
+        target,
+        expected,
+        kind: 'file',
+        fileSystem,
+        temporaryId: () => 'owned',
+        platform,
+      }), false);
+      assert.equal(observations, expectedObservations);
+      assert.equal(fs.readFileSync(foreign, 'utf8'), 'foreign bytes');
+      assert.deepEqual(fs.readdirSync(tombstone), ['foreign']);
+    });
+  }
 });
 
 test('bigint tombstone identity rejects adjacent unsafe inodes after container replacement', (t) => {
