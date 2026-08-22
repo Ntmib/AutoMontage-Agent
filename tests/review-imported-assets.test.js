@@ -397,6 +397,90 @@ test('generic preview-only video and audio do not invoke the image hash reader',
   ]);
 });
 
+test('legacy image discovery enforces the 25 MiB policy before bounded descriptor hashing', (t) => {
+  const projectDir = makeProject(t);
+  const projectAssets = path.join(projectDir, 'assets', 'broll');
+  const publicAssets = path.join(projectDir, 'public', 'broll');
+  fs.mkdirSync(projectAssets, { recursive: true });
+  fs.mkdirSync(publicAssets, { recursive: true });
+  const exactPath = path.join(projectAssets, 'exact.webp');
+  const oversizedPath = path.join(projectAssets, 'oversized.webp');
+  const publicPath = path.join(publicAssets, 'public.png');
+  fs.writeFileSync(exactPath, '');
+  fs.truncateSync(exactPath, 25 * 1024 * 1024);
+  fs.writeFileSync(oversizedPath, '');
+  fs.truncateSync(oversizedPath, (25 * 1024 * 1024) + 1);
+  fs.writeFileSync(publicPath, 'normal public image');
+
+  const opened = new Map();
+  const readLengths = [];
+  const fileSystem = Object.create(fs);
+  fileSystem.openSync = (target, ...args) => {
+    const descriptor = fs.openSync(target, ...args);
+    opened.set(descriptor, path.resolve(target));
+    return descriptor;
+  };
+  fileSystem.closeSync = (descriptor) => {
+    opened.delete(descriptor);
+    return fs.closeSync(descriptor);
+  };
+  fileSystem.readFileSync = (target, ...args) => {
+    if (typeof target === 'number') throw new Error('whole descriptor reads are forbidden');
+    return fs.readFileSync(target, ...args);
+  };
+  fileSystem.readSync = (descriptor, buffer, offset, length, position) => {
+    readLengths.push({ path: opened.get(descriptor), length });
+    return fs.readSync(descriptor, buffer, offset, length, position);
+  };
+
+  for (let restart = 0; restart < 2; restart += 1) {
+    const records = listReviewAssetRecords({
+      root: projectDir,
+      projectDir,
+      fileSystem,
+    });
+    assert.ok(records.some((asset) => asset.filePath === exactPath));
+    assert.ok(records.some((asset) => asset.filePath === publicPath));
+    assert.equal(records.some((asset) => asset.filePath === oversizedPath), false);
+  }
+  assert.ok(readLengths.some((entry) => entry.path === exactPath));
+  assert.ok(readLengths.some((entry) => entry.path === publicPath));
+  assert.equal(readLengths.some((entry) => entry.path === oversizedPath), false);
+  assert.ok(Math.max(...readLengths.map((entry) => entry.length)) <= 64 * 1024);
+});
+
+test('legacy image discovery fails closed when the opened image mutates while hashing', (t) => {
+  const projectDir = makeProject(t);
+  const imagePath = path.join(projectDir, 'assets', 'broll', 'changing.png');
+  fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+  fs.writeFileSync(imagePath, Buffer.alloc(128 * 1024, 0x31));
+
+  const opened = new Map();
+  let mutated = false;
+  const fileSystem = Object.create(fs);
+  fileSystem.openSync = (target, ...args) => {
+    const descriptor = fs.openSync(target, ...args);
+    opened.set(descriptor, path.resolve(target));
+    return descriptor;
+  };
+  fileSystem.closeSync = (descriptor) => {
+    opened.delete(descriptor);
+    return fs.closeSync(descriptor);
+  };
+  fileSystem.readSync = (descriptor, buffer, offset, length, position) => {
+    const count = fs.readSync(descriptor, buffer, offset, length, position);
+    if (!mutated && opened.get(descriptor) === imagePath) {
+      mutated = true;
+      fs.writeFileSync(imagePath, Buffer.alloc(128 * 1024, 0x32));
+    }
+    return count;
+  };
+
+  const records = listReviewAssetRecords({ root: projectDir, projectDir, fileSystem });
+  assert.equal(mutated, true);
+  assert.equal(records.some((asset) => asset.filePath === imagePath), false);
+});
+
 test('review state exposes imported media through opaque URLs without server-only hashes or references', async (t) => {
   const fixture = makeReviewProject(t);
   writeBundle(fixture.projectDir);

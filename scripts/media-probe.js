@@ -74,6 +74,14 @@ function parseRate(value, stage) {
   return fps;
 }
 
+function preferredVideoRate(video, stage) {
+  try {
+    return parseRate(video?.avg_frame_rate, stage);
+  } catch (_) {
+    return parseRate(video?.r_frame_rate, stage);
+  }
+}
+
 function parseClockDuration(value) {
   if (typeof value !== 'string') return null;
   const match = /^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$/.exec(value);
@@ -185,7 +193,7 @@ function parseMediaProbeJson(raw) {
   let hasAudio = false;
   const containerDurationSec = parseContainerDuration(data.format);
   if (mediaKind === 'video') {
-    fps = parseRate(video.avg_frame_rate || video.r_frame_rate, stage);
+    fps = preferredVideoRate(video, stage);
     videoDurationSec = parseStreamDuration(video);
     if (videoDurationSec === null) fail(stage, 'video stream duration');
     durationSec = videoDurationSec;

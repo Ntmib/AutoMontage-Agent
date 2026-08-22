@@ -113,6 +113,40 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
   });
 });
 
+test('media probe prefers a valid average video frame rate', () => {
+  const parsed = parseMediaProbeJson(JSON.stringify({
+    streams: [{
+      codec_type: 'video', codec_name: 'h264', width: 320, height: 180,
+      avg_frame_rate: '24000/1001', r_frame_rate: '30/1', duration: '1',
+    }],
+    format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '1' },
+  }));
+  assert.equal(parsed.fps, 24000 / 1001);
+});
+
+test('media probe falls back to a valid real frame rate when average is unusable', () => {
+  for (const avgFrameRate of [undefined, '', '0/0', 'N/A', '25/0']) {
+    const parsed = parseMediaProbeJson(JSON.stringify({
+      streams: [{
+        codec_type: 'video', codec_name: 'h264', width: 320, height: 180,
+        avg_frame_rate: avgFrameRate, r_frame_rate: '30000/1001', duration: '1',
+      }],
+      format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '1' },
+    }));
+    assert.equal(parsed.fps, 30000 / 1001, String(avgFrameRate));
+  }
+});
+
+test('media probe keeps the exact FPS error when average and real rates are invalid', () => {
+  assert.throws(() => parseMediaProbeJson(JSON.stringify({
+    streams: [{
+      codec_type: 'video', codec_name: 'h264', width: 320, height: 180,
+      avg_frame_rate: '0/0', r_frame_rate: 'N/A', duration: '1',
+    }],
+    format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '1' },
+  })), (error) => error.message === 'media probe: ffprobe вернул недопустимое FPS');
+});
+
 test('media probe never substitutes container or audio duration for visual stream duration', () => {
   const mismatched = parseMediaProbeJson(JSON.stringify({
     streams: [

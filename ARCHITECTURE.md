@@ -228,6 +228,10 @@ owner journal с hard-link anchor; master/proxy inode создаются и фи
 inode и ожидаемым набором детей. UUID, имя и возраст не доказывают ownership; malformed/foreign,
 symlink, replacement и неожиданный child сохраняются. Publication claim так же удаляет только
 identity-записанные stage/final paths, а валидный bundle с marker-last `asset.json` неизменяем.
+Если setup quarantine падает до появления durable owner journal, каждый уже созданный файл и
+каталог удаляется в обратном порядке только по сразу записанным identity и точным bytes. Корень
+удаляется только обычным non-recursive `rmdir`, когда он всё ещё тот же и пуст; неожиданный или
+заменённый child сохраняет и себя, и quarantine для диагностики.
 Preview stage, claim и canonical final получают private inode и owner-journal запись до первой
 записи bytes; identity final-каталога журналируется сразу после `mkdir`. Удаление сначала атомарно
 перемещает pathname в случайный `0700` tombstone, проверяет перенесённый inode/размер/mtime и лишь
@@ -240,6 +244,13 @@ unlink по descriptor или rename no-replace, поэтому это наме�
 равен только длительности visual video stream, а `audioDurationSec` хранит отдельную длительность
 audio stream. Stream timing берётся из stream duration, `duration_ts × time_base` или stream
 `DURATION` tag; отсутствие проверяемой video/audio длительности закрывает импорт.
+Для video FPS сначала используется положительный `avg_frame_rate`; отсутствующее, `0/0` или
+другое невалидное среднее значение переключается на положительный `r_frame_rate`, а две
+невалидные величины сохраняют прежний fail-closed FPS error.
+
+Legacy project/public изображения используют тот же V1-предел 25 MiB, что browser upload.
+Размер проверяется до хеширования, SHA-256 читается из no-follow descriptor порциями не больше
+64 KiB, а полные path/descriptor identity до и после чтения закрывают mutation fail closed.
 
 Изображение нормализуется в WebP; видео – в H.264/yuv420p master с AAC 48 kHz stereo при
 наличии звука и отдельный VP8/Opus WebM proxy для браузера. После autorotate нечётные стороны

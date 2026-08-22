@@ -116,15 +116,21 @@ npm run doctor
 npm run demo
 ```
 
-Одна папка checkout допускает только одну активную сборку: Remotion source bridge изолирован
-уникальным lease в `public/.automontage/`, но `tmp/` и legacy-пути остаются общими.
-Параллельные проверки запускай в отдельных clone/worktree. Unit и integration tests также
-проверяют, что leases не пересекаются, cleanup идемпотентен и удаляет источник после успеха
-или ошибки рендера.
+Одна папка checkout допускает только одну активную сборку: lesson media изолированы в owner-only
+`os.tmpdir()` и передаются Remotion абсолютным `--public-dir`, но `tmp/` и legacy-пути остаются
+общими. Параллельные проверки запускай в отдельных clone/worktree. Unit и integration tests также
+проверяют, что leases не пересекаются, cleanup идемпотентен и удаляет источник после успеха или
+ошибки рендера.
 
 Для host filesystem path тест проверяет абсолютный отдельный argv. Ссылки Remotion/public
 остаются web-relative и не преобразуются в host path. Capture разрешён только для коротких
 ffprobe/JSON-результатов с явным `maxBuffer`.
+
+Job `portable-media-windows` на настоящем `windows-latest` дополнительно запускает переносимые
+подмножества владельцев duration/geometry, project transaction и import ownership. POSIX-only
+signal/hard-exit границы и rename открытого файла намеренно не выдаются за Windows-проверку.
+Локально проверяются команды и YAML; сам hosted Windows run остаётся внешним pre-merge gate до
+push/PR этой ветки.
 
 Статический guard для `scripts/build.js` запрещает `execSync` и `shell: true`. Опции
 `--frames`, `--max`, `--beatSec`, `--brandLock` и `--reframe` проверяются до ffprobe.

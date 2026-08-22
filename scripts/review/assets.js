@@ -4,7 +4,12 @@ const path = require('node:path');
 const { resolveProjectPath } = require('../project/workspace');
 const { isRenderableBrollSource } = require('../lesson/brief');
 const { listImportedAssetBundles } = require('./imported-assets');
+const { IMAGE_MAX_BYTES } = require('./media-limits');
+const { openReadOnlyFlags } = require('../filesystem-capabilities');
+const { sameOpenedFileSnapshot } = require('../media-probe');
 const crypto = require('node:crypto');
+
+const HASH_BUFFER_BYTES = 64 * 1024;
 
 const REVIEW_MEDIA_EXTENSIONS = new Set([
   '.aac', '.avif', '.flac', '.gif', '.jpeg', '.jpg', '.m4a', '.m4v', '.mov',
@@ -102,36 +107,106 @@ function mediaKindForPath(assetPath) {
   return 'video';
 }
 
-function legacyRecord({ kind, filePath, reference }) {
-  let descriptor = null;
-  try {
-    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-    const stat = fs.fstatSync(descriptor);
-    const nanosecondStat = fs.fstatSync(descriptor, { bigint: true });
-    if (!stat.isFile()) return null;
-    const mediaKind = mediaKindForPath(filePath);
-    const brollImage = mediaKind === 'image' && isRenderableBrollSource(filePath);
-    return {
-      kind,
-      mediaKind,
-      label: path.basename(filePath),
-      filePath,
-      previewPath: null,
-      reference,
-      ...(brollImage ? {
-        canonicalSha256: crypto.createHash('sha256').update(fs.readFileSync(descriptor)).digest('hex'),
-      } : {}),
-      capabilities: { preview: true, brollImage, brollVideo: false },
+function fileSnapshot(fileSystem, target, descriptor = false) {
+  const stat = descriptor
+    ? fileSystem.fstatSync(target)
+    : fileSystem.lstatSync(target);
+  const nanosecondStat = descriptor
+    ? fileSystem.fstatSync(target, { bigint: true })
+    : fileSystem.lstatSync(target, { bigint: true });
+  return {
+    stat,
+    snapshot: {
       dev: stat.dev,
       ino: stat.ino,
       size: stat.size,
       mtimeNs: nanosecondStat.mtimeNs,
-    };
+      ctimeNs: nanosecondStat.ctimeNs,
+      mode: stat.mode,
+      nlink: stat.nlink,
+    },
+  };
+}
+
+function hashLegacyImage(fileSystem, filePath, platform) {
+  let descriptor = null;
+  try {
+    const beforePath = fileSnapshot(fileSystem, filePath);
+    if (!beforePath.stat.isFile() || beforePath.stat.isSymbolicLink()
+      || beforePath.stat.size > IMAGE_MAX_BYTES) return null;
+    descriptor = fileSystem.openSync(filePath, openReadOnlyFlags(fileSystem, platform));
+    const beforeDescriptor = fileSnapshot(fileSystem, descriptor, true);
+    if (!beforeDescriptor.stat.isFile()
+      || !sameOpenedFileSnapshot(beforePath.snapshot, beforeDescriptor.snapshot, platform)) return null;
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
+    let total = 0;
+    let count;
+    do {
+      count = fileSystem.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (count > 0) {
+        hash.update(buffer.subarray(0, count));
+        total += count;
+      }
+    } while (count > 0);
+    const afterDescriptor = fileSnapshot(fileSystem, descriptor, true);
+    const afterPath = fileSnapshot(fileSystem, filePath);
+    if (total !== beforeDescriptor.snapshot.size
+      || !sameOpenedFileSnapshot(beforeDescriptor.snapshot, afterDescriptor.snapshot, platform)
+      || !sameOpenedFileSnapshot(beforeDescriptor.snapshot, afterPath.snapshot, platform)) return null;
+    return { sha256: hash.digest('hex'), ...beforeDescriptor.snapshot };
   } catch (_) {
     return null;
   } finally {
-    if (descriptor !== null) fs.closeSync(descriptor);
+    if (descriptor !== null) fileSystem.closeSync(descriptor);
   }
+}
+
+function snapshotLegacyFile(fileSystem, filePath, platform) {
+  let descriptor = null;
+  try {
+    const beforePath = fileSnapshot(fileSystem, filePath);
+    if (!beforePath.stat.isFile() || beforePath.stat.isSymbolicLink()) return null;
+    descriptor = fileSystem.openSync(filePath, openReadOnlyFlags(fileSystem, platform));
+    const descriptorSnapshot = fileSnapshot(fileSystem, descriptor, true);
+    const afterPath = fileSnapshot(fileSystem, filePath);
+    return descriptorSnapshot.stat.isFile()
+      && sameOpenedFileSnapshot(beforePath.snapshot, descriptorSnapshot.snapshot, platform)
+      && sameOpenedFileSnapshot(descriptorSnapshot.snapshot, afterPath.snapshot, platform)
+      ? descriptorSnapshot.snapshot
+      : null;
+  } catch (_) {
+    return null;
+  } finally {
+    if (descriptor !== null) fileSystem.closeSync(descriptor);
+  }
+}
+
+function legacyRecord({ kind, filePath, reference, fileSystem = fs, platform = process.platform }) {
+  const mediaKind = mediaKindForPath(filePath);
+  const brollImage = mediaKind === 'image' && isRenderableBrollSource(filePath);
+  let hashed = null;
+  if (brollImage) {
+    hashed = hashLegacyImage(fileSystem, filePath, platform);
+    if (!hashed) return null;
+  } else {
+    hashed = snapshotLegacyFile(fileSystem, filePath, platform);
+    if (!hashed) return null;
+  }
+  return {
+    kind,
+    mediaKind,
+    label: path.basename(filePath),
+    filePath,
+    previewPath: null,
+    reference,
+    ...(brollImage ? { canonicalSha256: hashed.sha256 } : {}),
+    capabilities: { preview: true, brollImage, brollVideo: false },
+    dev: hashed.dev,
+    ino: hashed.ino,
+    size: hashed.size,
+    mtimeNs: hashed.mtimeNs,
+  };
 }
 
 function descriptor({ id, asset }) {
@@ -229,28 +304,37 @@ function publicAssetReferences(root) {
   )).filter(isAllowedReviewMediaPath);
 }
 
-function listReviewAssetRecords({ root, projectDir } = {}) {
-  const imported = listImportedAssetBundles({ projectDir });
+function listReviewAssetRecords({
+  root,
+  projectDir,
+  fileSystem = fs,
+  platform = process.platform,
+} = {}) {
+  const imported = listImportedAssetBundles({ projectDir, fileSystem, platform });
   const importedPaths = new Set(imported.map((asset) => path.resolve(asset.filePath)));
   const projectAssets = projectAssetReferences({ dir: projectDir })
     .map((reference) => {
       const filePath = resolveProjectAsset({ dir: projectDir }, reference);
       if (!filePath || importedPaths.has(path.resolve(filePath))
         || /^assets\/broll\/(?:images|video)\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/media\.(?:webp|mp4)$/.test(reference)) return null;
-      return legacyRecord({ kind: 'project', filePath, reference });
+      return legacyRecord({ kind: 'project', filePath, reference, fileSystem, platform });
     })
     .filter(Boolean);
   const publicAssets = publicAssetReferences(root)
     .map((reference) => {
       const filePath = resolvePublicAsset(root, reference);
-      return filePath ? legacyRecord({ kind: 'public', filePath, reference }) : null;
+      return filePath
+        ? legacyRecord({ kind: 'public', filePath, reference, fileSystem, platform })
+        : null;
     })
     .filter(Boolean);
   return [...imported, ...projectAssets, ...publicAssets];
 }
 
-function listReviewAssets({ root, workspace } = {}) {
-  return listReviewAssetRecords({ root, projectDir: workspace && workspace.dir })
+function listReviewAssets({ root, workspace, fileSystem = fs, platform = process.platform } = {}) {
+  return listReviewAssetRecords({
+    root, projectDir: workspace && workspace.dir, fileSystem, platform,
+  })
     .map((asset, index) => descriptor({ id: `asset-${index + 1}`, asset }));
 }
 

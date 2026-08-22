@@ -67,6 +67,18 @@ jobs:
           ffprobe -version
           node --test tests/opened-media-probe.test.js tests/render-media-bundle-windows.test.js tests/review-media-import.test.js tests/review-imported-assets.test.js tests/review-server-security.test.js tests/project-workspace.test.js tests/review-draft-save.test.js
 
+      - name: Проверить portable duration и geometry
+        shell: pwsh
+        run: node --test --test-name-pattern='real still image|real mismatched streams|real odd landscape' tests/media-duration-geometry.test.js
+
+      - name: Проверить portable project transactions
+        shell: pwsh
+        run: node --test --test-name-pattern='approval rejects a stale|approval always runs|direct manifest update rejects|initial brief publication preserves' tests/project-mutation-transaction.test.js
+
+      - name: Проверить portable import ownership setup
+        shell: pwsh
+        run: node --test --test-name-pattern='setup failure removes only|clean setup failure removes|orphan cleanup never treats' tests/review-import-ownership.test.js
+
   review-ui:
     name: Node 20 · Review Chromium tests
     runs-on: ubuntu-latest

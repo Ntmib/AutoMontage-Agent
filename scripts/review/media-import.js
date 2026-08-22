@@ -13,6 +13,7 @@ const {
 } = require('./imported-assets');
 const { acquireProjectMutationLease } = require('../project/workspace');
 const { claimAndRemoveOwnedPath } = require('../project/owned-removal');
+const { IMAGE_MAX_BYTES, VIDEO_MAX_BYTES } = require('./media-limits');
 const {
   fileSystemCapabilities,
   fsyncDirectoryIfSupported,
@@ -23,8 +24,6 @@ const {
   withNoFollow,
 } = require('../filesystem-capabilities');
 
-const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
-const VIDEO_MAX_BYTES = 1024 * 1024 * 1024;
 const DISK_RESERVE_BYTES = 512n * 1024n * 1024n;
 const IMPORT_OVERHEAD_BYTES = 4n * 1024n * 1024n;
 const MAX_IMAGE_OUTPUT_BYTES = 128n * 1024n * 1024n;
@@ -303,7 +302,12 @@ function appendOwnerRecord(owned, fileSystem) {
   owned.ownerIdentity.bytes = Buffer.from(owned.ownerBytes);
 }
 
-function createOwnedOutputPlaceholder(fileSystem, filePath, platform = process.platform) {
+function createOwnedOutputPlaceholder(
+  fileSystem,
+  filePath,
+  platform = process.platform,
+  onCreate = null,
+) {
   const constants = fileSystem.constants || fs.constants;
   const descriptor = fileSystem.openSync(
     filePath,
@@ -313,6 +317,11 @@ function createOwnedOutputPlaceholder(fileSystem, filePath, platform = process.p
     0o600,
   );
   try {
+    const createdIdentity = openedFileIdentity(
+      fileSystem.fstatSync(descriptor),
+      fileSystem.fstatSync(descriptor, { bigint: true }),
+    );
+    onCreate?.(createdIdentity);
     setPrivateDescriptorMode(fileSystem, descriptor, 0o600, platform);
     fileSystem.fsyncSync(descriptor);
     return openedFileIdentity(
@@ -389,6 +398,45 @@ function assertOwnedDirectory(fileSystem, directory, expected, projectReal) {
   }
 }
 
+function setupFileIdentity(fileSystem, target) {
+  const stat = fileSystem.lstatSync(target);
+  const nanosecondStat = fileSystem.lstatSync(target, { bigint: true });
+  if (!stat.isFile() || stat.isSymbolicLink()) throw unsafeFilesystem();
+  return openedFileIdentity(stat, nanosecondStat);
+}
+
+function removeOwnedEmptySetupRoot(fileSystem, target, expected) {
+  try {
+    const stat = fileSystem.lstatSync(target);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || !sameIdentity(stat, expected)) return false;
+    if (fileSystem.readdirSync(target).length !== 0) return false;
+    fileSystem.rmdirSync(target);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function cleanupOwnedSetupEntries(fileSystem, entries) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    try {
+      if (entry.root) {
+        removeOwnedEmptySetupRoot(fileSystem, entry.target, entry.expected);
+      } else {
+        claimAndRemoveOwnedPath({
+          target: entry.target,
+          expected: entry.expected,
+          kind: entry.kind,
+          fileSystem,
+        });
+      }
+    } catch (_) {
+      // A replacement or late foreign child stays recoverable in the quarantine.
+    }
+  }
+}
+
 function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
   platform = process.platform) {
   if (!UUID.test(id)) throw unsafeFilesystem();
@@ -403,21 +451,30 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
     : null;
   const quarantinePath = path.join(quarantineParent.directory, id);
   let owned;
-  let createdQuarantineIdentity = null;
+  const setupEntries = [];
   try {
     fileSystem.mkdirSync(quarantinePath, { mode: 0o700 });
-    setPrivatePathMode(fileSystem, quarantinePath, 0o700, platform);
     const quarantineStat = fileSystem.lstatSync(quarantinePath);
-    createdQuarantineIdentity = identity(quarantineStat);
-    if (!quarantineStat.isDirectory() || quarantineStat.isSymbolicLink()
-      || !privateModeMatches(quarantineStat, 0o700, platform)) throw unsafeFilesystem();
+    if (!quarantineStat.isDirectory() || quarantineStat.isSymbolicLink()) throw unsafeFilesystem();
+    setupEntries.push({
+      target: quarantinePath, expected: identity(quarantineStat), kind: 'directory', root: true,
+    });
+    setPrivatePathMode(fileSystem, quarantinePath, 0o700, platform);
+    if (!privateModeMatches(fileSystem.lstatSync(quarantinePath), 0o700, platform)) {
+      throw unsafeFilesystem();
+    }
 
     const bundlePath = path.join(quarantinePath, 'bundle');
     fileSystem.mkdirSync(bundlePath, { mode: 0o700 });
-    setPrivatePathMode(fileSystem, bundlePath, 0o700, platform);
     const bundleStat = fileSystem.lstatSync(bundlePath);
-    if (!bundleStat.isDirectory() || bundleStat.isSymbolicLink()
-      || !privateModeMatches(bundleStat, 0o700, platform)) throw unsafeFilesystem();
+    if (!bundleStat.isDirectory() || bundleStat.isSymbolicLink()) throw unsafeFilesystem();
+    setupEntries.push({
+      target: bundlePath, expected: identity(bundleStat), kind: 'directory', root: false,
+    });
+    setPrivatePathMode(fileSystem, bundlePath, 0o700, platform);
+    if (!privateModeMatches(fileSystem.lstatSync(bundlePath), 0o700, platform)) {
+      throw unsafeFilesystem();
+    }
 
     const uploadPath = path.join(quarantinePath, 'upload.bin');
     const constants = fileSystem.constants || fs.constants;
@@ -428,10 +485,21 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
       ),
       0o600,
     );
-    setPrivateDescriptorMode(fileSystem, uploadFd, 0o600, platform);
     const uploadStat = fileSystem.fstatSync(uploadFd);
     const uploadNanosecondStat = fileSystem.fstatSync(uploadFd, { bigint: true });
-    if (!uploadStat.isFile() || !privateModeMatches(uploadStat, 0o600, platform)) {
+    if (!uploadStat.isFile()) {
+      fileSystem.closeSync(uploadFd);
+      throw unsafeFilesystem();
+    }
+    const uploadSetupEntry = {
+      target: uploadPath,
+      expected: { ...openedFileIdentity(uploadStat, uploadNanosecondStat), bytes: Buffer.alloc(0) },
+      kind: 'file',
+      root: false,
+    };
+    setupEntries.push(uploadSetupEntry);
+    setPrivateDescriptorMode(fileSystem, uploadFd, 0o600, platform);
+    if (!privateModeMatches(fileSystem.fstatSync(uploadFd), 0o600, platform)) {
       fileSystem.closeSync(uploadFd);
       throw unsafeFilesystem();
     }
@@ -480,13 +548,27 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
       ),
       0o600,
     );
-    setPrivateDescriptorMode(fileSystem, owned.ownerFd, 0o600, platform);
     owned.ownerIdentity = openedFileIdentity(
       fileSystem.fstatSync(owned.ownerFd),
       fileSystem.fstatSync(owned.ownerFd, { bigint: true }),
     );
     owned.ownerIdentity.bytes = Buffer.alloc(0);
+    const ownerSetupEntry = {
+      target: owned.ownerPath, expected: owned.ownerIdentity, kind: 'file', root: false,
+    };
+    setupEntries.push(ownerSetupEntry);
+    setPrivateDescriptorMode(fileSystem, owned.ownerFd, 0o600, platform);
     fileSystem.linkSync(owned.ownerPath, owned.ownerAnchorPath);
+    const ownerAnchorSetupEntry = {
+      target: owned.ownerAnchorPath,
+      expected: { ...owned.ownerIdentity, bytes: Buffer.alloc(0) },
+      kind: 'file',
+      root: false,
+    };
+    setupEntries.push(ownerAnchorSetupEntry);
+    ownerAnchorSetupEntry.expected = {
+      ...setupFileIdentity(fileSystem, owned.ownerAnchorPath), bytes: Buffer.alloc(0),
+    };
     owned.claimFd = fileSystem.openSync(
       owned.claimPrivatePath,
       withNoFollow(
@@ -496,21 +578,52 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
       ),
       0o600,
     );
-    setPrivateDescriptorMode(fileSystem, owned.claimFd, 0o600, platform);
     owned.claimIdentity = openedFileIdentity(
       fileSystem.fstatSync(owned.claimFd),
       fileSystem.fstatSync(owned.claimFd, { bigint: true }),
     );
     owned.claimIdentity.bytes = Buffer.alloc(0);
+    setupEntries.push({
+      target: owned.claimPrivatePath, expected: owned.claimIdentity, kind: 'file', root: false,
+    });
+    setPrivateDescriptorMode(fileSystem, owned.claimFd, 0o600, platform);
+    let canonicalSetupEntry;
     owned.canonicalIdentity = createOwnedOutputPlaceholder(
-      fileSystem, owned.canonicalPath, platform,
+      fileSystem,
+      owned.canonicalPath,
+      platform,
+      (expected) => {
+        canonicalSetupEntry = {
+          target: owned.canonicalPath,
+          expected: { ...expected, bytes: Buffer.alloc(0) },
+          kind: 'file',
+          root: false,
+        };
+        setupEntries.push(canonicalSetupEntry);
+      },
     );
+    canonicalSetupEntry.expected = { ...owned.canonicalIdentity, bytes: Buffer.alloc(0) };
     if (owned.normalizedPreviewPath) {
+      let previewSetupEntry;
       owned.previewIdentity = createOwnedOutputPlaceholder(
-        fileSystem, owned.normalizedPreviewPath, platform,
+        fileSystem,
+        owned.normalizedPreviewPath,
+        platform,
+        (expected) => {
+          previewSetupEntry = {
+            target: owned.normalizedPreviewPath,
+            expected: { ...expected, bytes: Buffer.alloc(0) },
+            kind: 'file',
+            root: false,
+          };
+          setupEntries.push(previewSetupEntry);
+        },
       );
+      previewSetupEntry.expected = { ...owned.previewIdentity, bytes: Buffer.alloc(0) };
     }
     appendOwnerRecord(owned, fileSystem);
+    ownerSetupEntry.expected = owned.ownerIdentity;
+    ownerAnchorSetupEntry.expected = owned.ownerIdentity;
     fsyncDirectoryIfSupported(
       fileSystem, quarantinePath, fileSystemCapabilities(platform),
     );
@@ -525,13 +638,7 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
     if (owned?.claimFd !== null && owned?.claimFd !== undefined) {
       try { fileSystem.closeSync(owned.claimFd); } catch (_) { /* owned descriptor */ }
     }
-    try {
-      const current = fileSystem.lstatSync(quarantinePath);
-      if (current.isDirectory() && !current.isSymbolicLink()
-        && sameIdentity(current, createdQuarantineIdentity)) {
-        fileSystem.rmSync(quarantinePath, { recursive: true, force: false });
-      }
-    } catch (_) { /* refuse broader cleanup */ }
+    cleanupOwnedSetupEntries(fileSystem, setupEntries);
     throw error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE' ? error : unsafeFilesystem();
   }
 }

@@ -1,0 +1,7 @@
+const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+const VIDEO_MAX_BYTES = 1024 * 1024 * 1024;
+
+module.exports = {
+  IMAGE_MAX_BYTES,
+  VIDEO_MAX_BYTES,
+};

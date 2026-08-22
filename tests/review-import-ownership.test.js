@@ -191,6 +191,73 @@ test('a live import owns the shared mutation lease before quarantine and keeps r
   await importImage(projectDir, SECOND_ID);
 });
 
+test('setup failure removes only recorded owned entries and retains a foreign quarantine child', async (t) => {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const foreignPath = path.join(quarantinePath, 'foreign-after-create.txt');
+  const fileSystem = Object.create(fs);
+  fileSystem.linkSync = (source, target) => {
+    if (target === path.join(quarantinePath, 'owner.anchor')) {
+      fs.writeFileSync(foreignPath, 'foreign survives setup cleanup');
+      const error = new Error('injected owner anchor failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.linkSync(source, target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, { fileSystem }), (error) => (
+    error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE'
+  ));
+  assert.equal(fs.readFileSync(foreignPath, 'utf8'), 'foreign survives setup cleanup');
+  assert.deepEqual(fs.readdirSync(quarantinePath), ['foreign-after-create.txt']);
+  await importImage(projectDir, SECOND_ID);
+});
+
+test('clean setup failure removes the empty owned quarantine and releases retry', async (t) => {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const fileSystem = Object.create(fs);
+  fileSystem.linkSync = (source, target) => {
+    if (target === path.join(quarantinePath, 'owner.anchor')) {
+      const error = new Error('injected owner anchor failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.linkSync(source, target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, { fileSystem }), (error) => (
+    error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE'
+  ));
+  assert.equal(fs.existsSync(quarantinePath), false);
+  await importImage(projectDir, SECOND_ID);
+});
+
+test('setup cleanup retains a child that replaced an owned placeholder', async (t) => {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const uploadPath = path.join(quarantinePath, 'upload.bin');
+  const fileSystem = Object.create(fs);
+  fileSystem.linkSync = (source, target) => {
+    if (target === path.join(quarantinePath, 'owner.anchor')) {
+      fs.renameSync(uploadPath, `${uploadPath}.owned-backup`);
+      fs.writeFileSync(uploadPath, 'foreign replacement survives');
+      const error = new Error('injected owner anchor failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.linkSync(source, target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, { fileSystem }), (error) => (
+    error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE'
+  ));
+  assert.ok(findRegularFileWithBytes(quarantinePath, 'foreign replacement survives'));
+  assert.equal(fs.existsSync(quarantinePath), true);
+  await importImage(projectDir, SECOND_ID);
+});
+
 test('hard-exit upload recovery reclaims the shared lease and only its identity-owned quarantine', async (t) => {
   const projectDir = tempProject(t);
   const workerPath = path.join(projectDir, 'crash-import-worker.js');

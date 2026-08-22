@@ -77,6 +77,8 @@ function probeJson({
   width = 320,
   height = 180,
   fps = '25/1',
+  avgFps = fps,
+  realFps = fps,
   duration = 1,
   videoDuration = duration,
   audioDuration = duration,
@@ -94,7 +96,7 @@ function probeJson({
     streams: [
       {
         codec_type: 'video', codec_name: videoCodec, pix_fmt: pixelFormat,
-        width, height, avg_frame_rate: fps, r_frame_rate: fps,
+        width, height, avg_frame_rate: avgFps, r_frame_rate: realFps,
         ...(kind === 'video' ? { duration: String(videoDuration) } : {}),
         ...(rotation ? { side_data_list: [{ rotation }] } : {}),
       },
@@ -253,6 +255,27 @@ test('disk reserve is checked before reading a request byte', async () => {
     runMediaProcessImpl: fakeProcessor({ source: probeJson({ kind: 'image' }) }),
   }), (error) => error.status === 507 && error.code === 'MEDIA_IMPORT_DISK_FULL');
   assert.equal(reads, 0);
+});
+
+test('import publishes video when ffprobe average FPS is 0/0 but real FPS is valid', async (t) => {
+  const projectDir = tempProject(t);
+  const result = await importReviewMedia({
+    request: Readable.from([Buffer.from('x')]),
+    projectDir,
+    outputFps: 25,
+    headers: rawHeaders('fallback-fps.mp4', 'video/mp4', 1),
+    controller: createImportController(),
+    statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }),
+    randomId: () => UUID,
+    runMediaProcessImpl: fakeProcessor({
+      source: probeJson({ avgFps: '0/0', realFps: '25/1' }),
+    }),
+  });
+
+  assert.equal(result.fps, 25);
+  assert.equal(fs.existsSync(result.filePath), true);
+  assert.equal(fs.existsSync(result.previewPath), true);
+  assert.equal(fs.existsSync(path.join(path.dirname(result.filePath), 'asset.json')), true);
 });
 
 test('video normalization uses visual duration, even padding, explicit audio duration, and hard encoder bounds', async (t) => {
