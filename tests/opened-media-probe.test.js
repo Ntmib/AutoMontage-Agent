@@ -12,8 +12,8 @@ const { toolAvailable } = require('./helpers/media-fixtures');
 const { windowsFileSystem } = require('./helpers/windows-filesystem');
 
 const PROBE_ENTRIES = [
-  'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels',
-  'stream_tags=rotate',
+  'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,duration_ts,time_base,pix_fmt,sample_rate,channels',
+  'stream_tags=rotate,DURATION',
   'stream_disposition=attached_pic',
   'stream_side_data=rotation',
   'format=format_name,duration',
@@ -265,7 +265,7 @@ test('Windows-mode approval verifies a normalized video proxy without POSIX flag
   fs.writeFileSync(mediaPath, canonical);
   fs.writeFileSync(path.join(previewDirectory, `${id}.webm`), preview);
   const metadata = {
-    version: 1,
+    version: 2,
     id,
     label: 'demo.mov',
     mediaKind: 'video',
@@ -275,6 +275,7 @@ test('Windows-mode approval verifies a normalized video proxy without POSIX flag
     height: 90,
     fps: 15,
     durationSec: 1,
+    audioDurationSec: null,
     hasAudio: false,
   };
   fs.writeFileSync(path.join(mediaDirectory, 'asset.json'), `${JSON.stringify(metadata)}\n`);
@@ -304,7 +305,7 @@ test('Windows-mode approval verifies a normalized video proxy without POSIX flag
       stdout: JSON.stringify({
         streams: [{
           codec_type: 'video', codec_name: 'h264', width: 160, height: 90,
-          avg_frame_rate: '15/1', r_frame_rate: '15/1', pix_fmt: 'yuv420p',
+          avg_frame_rate: '15/1', r_frame_rate: '15/1', duration: '1', pix_fmt: 'yuv420p',
           disposition: { attached_pic: 0 },
         }],
         format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '1' },

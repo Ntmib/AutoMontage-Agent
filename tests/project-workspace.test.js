@@ -511,6 +511,7 @@ function writeApprovalImportedAsset(state, {
   id = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1',
   durationSec = 10,
   hasAudio = true,
+  audioDurationSec = hasAudio ? durationSec : null,
   fps = 30,
 } = {}) {
   const mediaType = kind === 'image' ? 'images' : 'video';
@@ -532,7 +533,7 @@ function writeApprovalImportedAsset(state, {
     previewSha256 = crypto.createHash('sha256').update(preview).digest('hex');
   }
   const metadata = {
-    version: 1,
+    version: 2,
     id,
     label: kind === 'image' ? 'diagram.png' : 'demo.mov',
     mediaKind: kind,
@@ -542,6 +543,7 @@ function writeApprovalImportedAsset(state, {
     height: 360,
     fps: kind === 'image' ? 0 : fps,
     durationSec: kind === 'image' ? 0 : durationSec,
+    audioDurationSec: kind === 'image' ? null : audioDurationSec,
     hasAudio: kind === 'image' ? false : hasAudio,
   };
   const metadataPath = path.join(directory, 'asset.json');
@@ -657,12 +659,14 @@ function approvalProbe(metadata) {
       height: metadata.height,
       avg_frame_rate: metadata.mediaKind === 'image' ? '25/1' : `${metadata.fps}/1`,
       r_frame_rate: metadata.mediaKind === 'image' ? '25/1' : `${metadata.fps}/1`,
+      ...(metadata.mediaKind === 'video' ? { duration: String(metadata.durationSec) } : {}),
       pix_fmt: 'yuv420p',
       disposition: { attached_pic: 0 },
     };
     const streams = metadata.hasAudio
       ? [video, {
         codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2,
+        duration: String(metadata.audioDurationSec),
       }]
       : [video];
     return {
@@ -1038,6 +1042,11 @@ test('approval rejects each stale normalized b-roll condition with an exact reas
       name: 'replace without audio',
       expected: APPROVAL_MEDIA_ERRORS.audio,
       assetOptions: { hasAudio: false },
+    },
+    {
+      name: 'replace beyond short audio',
+      expected: APPROVAL_MEDIA_ERRORS.clip,
+      assetOptions: { durationSec: 10, audioDurationSec: 1, hasAudio: true },
     },
   ];
 

@@ -8,10 +8,11 @@ const {
   privateModeMatches,
 } = require('../filesystem-capabilities');
 
-const REQUIRED_KEYS = [
+const REQUIRED_KEYS_V1 = [
   'version', 'id', 'label', 'mediaKind', 'canonicalSha256',
   'previewSha256', 'width', 'height', 'fps', 'durationSec', 'hasAudio',
 ];
+const REQUIRED_KEYS_V2 = [...REQUIRED_KEYS_V1, 'audioDurationSec'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const CONTROL = /[\p{Cc}]/u;
@@ -229,11 +230,12 @@ function parseImportedAssetMetadata({ bytes, expectedId } = {}) {
   } catch (_) {
     invalid('is invalid JSON');
   }
+  const requiredKeys = metadata?.version === 1 ? REQUIRED_KEYS_V1 : REQUIRED_KEYS_V2;
   if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)
-    || !isDeepStrictEqual(Object.keys(metadata).sort(), [...REQUIRED_KEYS].sort())) {
+    || !isDeepStrictEqual(Object.keys(metadata).sort(), [...requiredKeys].sort())) {
     invalid('shape is invalid');
   }
-  if (!UUID.test(expectedId) || metadata.version !== 1 || metadata.id !== expectedId) {
+  if (!UUID.test(expectedId) || ![1, 2].includes(metadata.version) || metadata.id !== expectedId) {
     invalid('id is invalid');
   }
   if (typeof metadata.label !== 'string' || metadata.label.length === 0
@@ -253,9 +255,20 @@ function parseImportedAssetMetadata({ bytes, expectedId } = {}) {
   }
   if (metadata.mediaKind === 'image') {
     if (metadata.previewSha256 !== null || metadata.fps !== 0 || metadata.durationSec !== 0
-      || metadata.hasAudio !== false) invalid('image fields are invalid');
+      || metadata.hasAudio !== false
+      || (metadata.version === 2 && metadata.audioDurationSec !== null)) {
+      invalid('image fields are invalid');
+    }
+  } else if (metadata.version === 1) {
+    invalid('legacy video duration is unverified');
   } else if (!SHA256.test(metadata.previewSha256) || !Number.isFinite(metadata.fps)
-    || metadata.fps <= 0 || !Number.isFinite(metadata.durationSec) || metadata.durationSec <= 0) {
+    || metadata.fps <= 0 || !Number.isFinite(metadata.durationSec) || metadata.durationSec <= 0
+    || !(
+      metadata.hasAudio === false && metadata.audioDurationSec === null
+      || metadata.hasAudio === true && Number.isFinite(metadata.audioDurationSec)
+        && metadata.audioDurationSec > 0
+        && metadata.audioDurationSec <= metadata.durationSec + (1 / metadata.fps) + 0.001
+    )) {
     invalid('video fields are invalid');
   }
   return metadata;
@@ -305,6 +318,7 @@ function buildImportedAssetRecord({ projectDir, mediaType, id, verified }) {
     height: metadata.height,
     fps: metadata.fps,
     durationSec: metadata.durationSec,
+    audioDurationSec: metadata.version === 2 ? metadata.audioDurationSec : null,
     hasAudio: metadata.hasAudio,
     capabilities: {
       preview: true,

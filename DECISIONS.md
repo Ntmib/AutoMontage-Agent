@@ -333,3 +333,27 @@ durability flush, не regular-file fsync. Обязательными остаю
 opened-handle/path identity до и после probe/hash, size/timestamps и SHA-256. Отклонены pathname
 fallback и простое отключение identity-проверок: первое возвращает race, второе разрешает
 same-size подмену.
+
+## D-018 – Длительность медиа принадлежит потоку, а выход ограничен по фазам
+
+**Дата:** 2026-08-22
+**Статус:** принято
+
+Контейнер MP4/MOV/WebM может сообщать максимум из нескольких потоков. Если считать его
+`durationSec`, ролик с video 1 s/audio 3 s разрешает двухсекундный визуальный trim, а ролик с
+video 3 s/audio 1 s разрешает `replace` без существующего звука. Поэтому metadata v2 задаёт
+два независимых значения: `durationSec` только для visual video stream и `audioDurationSec`
+только для audio stream. Fallback к container duration отвергнут. Legacy v1 image остаётся
+однозначным, а legacy v1 video требует переимпорта.
+
+Master и proxy завершаются по visual duration. Это обрезает длинный звук, но не растягивает
+короткий. `mute`/`mix` проверяются по visual duration, `replace` одновременно по visual/audio.
+Нечётную геометрию после autorotate дополняет `pad` до ближайшего чётного размера: crop терял бы
+край, а scale менял бы геометрию и соотношение сторон.
+
+Одной проверки свободного места до upload недостаточно: encoder способен разрастись, а во время
+publication одновременно живут stage и copy. Поэтому budgets считаются безопасной BigInt
+арифметикой из проверенных probe/input параметров, ограничиваются абсолютными caps и применяются
+в `ffmpeg -fs`, bounded copies и post-close gate. `statfs` повторяется перед каждой дорогой фазой
+по peak live bytes плюс reserve. Любая quota/disk boundary имеет стабильный `507` и использует
+тот же identity-only cleanup/retry, что прерванный импорт.

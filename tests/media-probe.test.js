@@ -55,10 +55,14 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
         height: 1920,
         avg_frame_rate: '24000/1001',
         r_frame_rate: '30/1',
+        duration: '11.75',
         pix_fmt: 'yuv420p',
         side_data_list: [{ side_data_type: 'Display Matrix', rotation: -90 }],
       },
-      { codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2 },
+      {
+        codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2,
+        duration: '8.25',
+      },
     ],
     format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '12.5' },
   });
@@ -67,7 +71,10 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
     width: 1080,
     height: 1920,
     fps: 24000 / 1001,
-    durationSec: 12.5,
+    durationSec: 11.75,
+    containerDurationSec: 12.5,
+    videoDurationSec: 11.75,
+    audioDurationSec: 8.25,
     hasAudio: true,
     rotation: 270,
     container: 'mov,mp4,m4a,3gp,3g2,mj2',
@@ -91,6 +98,9 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
     height: 480,
     fps: 0,
     durationSec: 0,
+    containerDurationSec: null,
+    videoDurationSec: null,
+    audioDurationSec: null,
     hasAudio: false,
     rotation: 0,
     container: 'png_pipe',
@@ -103,10 +113,48 @@ test('media probe distinguishes still images and reports audio, VFR timing, and 
   });
 });
 
+test('media probe never substitutes container or audio duration for visual stream duration', () => {
+  const mismatched = parseMediaProbeJson(JSON.stringify({
+    streams: [
+      {
+        codec_type: 'video', codec_name: 'h264', width: 320, height: 180,
+        avg_frame_rate: '25/1', r_frame_rate: '25/1', duration: '1.000000',
+        pix_fmt: 'yuv420p',
+      },
+      {
+        codec_type: 'audio', codec_name: 'aac', duration: '3.000000',
+        sample_rate: '48000', channels: 2,
+      },
+    ],
+    format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '3.000000' },
+  }));
+  assert.equal(mismatched.durationSec, 1);
+  assert.equal(mismatched.videoDurationSec, 1);
+  assert.equal(mismatched.audioDurationSec, 3);
+  assert.equal(mismatched.containerDurationSec, 3);
+
+  for (const duration of [undefined, 'N/A', 'NaN', '0', '-1']) {
+    const raw = JSON.stringify({
+      streams: [
+        {
+          codec_type: 'video', codec_name: 'h264', width: 320, height: 180,
+          avg_frame_rate: '25/1', r_frame_rate: '25/1', duration,
+        },
+        { codec_type: 'audio', codec_name: 'aac', duration: '3', sample_rate: '48000', channels: 2 },
+      ],
+      format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '3' },
+    });
+    assert.throws(
+      () => parseMediaProbeJson(raw),
+      /media probe.*video stream duration/i,
+    );
+  }
+});
+
 test('media probe recognizes AVIF brand but keeps renamed AV1 video as video', () => {
   const av1Stream = {
     codec_type: 'video', codec_name: 'av1', width: 64, height: 48,
-    avg_frame_rate: '1/1', r_frame_rate: '1/1', pix_fmt: 'yuv420p',
+    avg_frame_rate: '1/1', r_frame_rate: '1/1', duration: '1', pix_fmt: 'yuv420p',
   };
   const still = parseMediaProbeJson(JSON.stringify({
     streams: [av1Stream],

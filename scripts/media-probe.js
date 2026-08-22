@@ -7,8 +7,8 @@ const {
 } = require('./filesystem-capabilities');
 
 const OPENED_MEDIA_PROBE_ENTRIES = [
-  'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels',
-  'stream_tags=rotate',
+  'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,duration_ts,time_base,pix_fmt,sample_rate,channels',
+  'stream_tags=rotate,DURATION',
   'stream_disposition=attached_pic',
   'stream_side_data=rotation',
   'format=format_name,duration',
@@ -72,6 +72,40 @@ function parseRate(value, stage) {
     fail(stage, 'FPS');
   }
   return fps;
+}
+
+function parseClockDuration(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$/.exec(value);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3]);
+  const duration = (hours * 3600) + (minutes * 60) + seconds;
+  return Number.isFinite(duration) && minutes < 60 && seconds < 60 && duration > 0
+    ? duration
+    : null;
+}
+
+function parseStreamDuration(stream) {
+  const direct = Number(stream?.duration);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const durationTs = Number(stream?.duration_ts);
+  if (Number.isFinite(durationTs) && durationTs > 0 && stream?.time_base) {
+    const parts = String(stream.time_base).split('/');
+    if (parts.length === 2) {
+      const numerator = Number(parts[0]);
+      const denominator = Number(parts[1]);
+      const duration = durationTs * numerator / denominator;
+      if (Number.isFinite(duration) && denominator > 0 && duration > 0) return duration;
+    }
+  }
+  return parseClockDuration(stream?.tags?.DURATION ?? stream?.tags?.duration);
+}
+
+function parseContainerDuration(format) {
+  const duration = Number(format?.duration);
+  return Number.isFinite(duration) && duration > 0 ? duration : null;
 }
 
 function parseVideoProbe(raw, stage = 'video probe') {
@@ -146,12 +180,20 @@ function parseMediaProbeJson(raw) {
     : 'video';
   let fps = 0;
   let durationSec = 0;
+  let videoDurationSec = null;
+  let audioDurationSec = null;
   let hasAudio = false;
+  const containerDurationSec = parseContainerDuration(data.format);
   if (mediaKind === 'video') {
     fps = parseRate(video.avg_frame_rate || video.r_frame_rate, stage);
-    durationSec = Number(data.format?.duration ?? video.duration);
-    if (!Number.isFinite(durationSec) || durationSec <= 0) fail(stage, 'duration');
+    videoDurationSec = parseStreamDuration(video);
+    if (videoDurationSec === null) fail(stage, 'video stream duration');
+    durationSec = videoDurationSec;
     hasAudio = Boolean(audio);
+    if (hasAudio) {
+      audioDurationSec = parseStreamDuration(audio);
+      if (audioDurationSec === null) fail(stage, 'audio stream duration');
+    }
   }
 
   const sideDataRotation = Array.isArray(video.side_data_list)
@@ -179,6 +221,9 @@ function parseMediaProbeJson(raw) {
     height,
     fps,
     durationSec,
+    containerDurationSec,
+    videoDurationSec,
+    audioDurationSec,
     hasAudio,
     rotation: normalizedRotation,
     container,

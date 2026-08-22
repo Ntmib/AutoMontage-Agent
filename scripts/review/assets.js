@@ -148,6 +148,7 @@ function descriptor({ id, asset }) {
       height: asset.height,
       fps: asset.fps,
       durationSec: asset.durationSec,
+      audioDurationSec: asset.audioDurationSec,
       hasAudio: asset.hasAudio,
     } : {}),
     capabilities: {

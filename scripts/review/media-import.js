@@ -26,6 +26,10 @@ const {
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 1024 * 1024 * 1024;
 const DISK_RESERVE_BYTES = 512n * 1024n * 1024n;
+const IMPORT_OVERHEAD_BYTES = 4n * 1024n * 1024n;
+const MAX_IMAGE_OUTPUT_BYTES = 128n * 1024n * 1024n;
+const MAX_MASTER_OUTPUT_BYTES = 2n * 1024n * 1024n * 1024n;
+const MAX_PROXY_OUTPUT_BYTES = 512n * 1024n * 1024n;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CONTROL = /\p{Cc}/u;
 const OWNER_PURPOSE = 'review-media-import-owner';
@@ -119,6 +123,96 @@ function parseImportHeaders(headers) {
 
 function requiredFreeBytes(contentLength) {
   return 4n * BigInt(contentLength) + DISK_RESERVE_BYTES;
+}
+
+function clampBudget(value, minimum, maximum) {
+  return value < minimum ? minimum : value > maximum ? maximum : value;
+}
+
+function deriveOutputBudgets({
+  mediaKind,
+  inputBytes,
+  width,
+  height,
+  durationSec = 0,
+  fps = 0,
+  hasAudio = false,
+} = {}) {
+  if (!['image', 'video'].includes(mediaKind)
+    || !Number.isSafeInteger(inputBytes) || inputBytes <= 0
+    || !Number.isSafeInteger(width) || width <= 0
+    || !Number.isSafeInteger(height) || height <= 0) {
+    throw mediaImportError(422, 'MEDIA_IMPORT_OUTPUT_BUDGET_INVALID');
+  }
+  const input = BigInt(inputBytes);
+  const pixels = BigInt(width) * BigInt(height);
+  if (mediaKind === 'image') {
+    return {
+      image: clampBudget(
+        (2n * input) + (4n * pixels) + IMPORT_OVERHEAD_BYTES,
+        2n * 1024n * 1024n,
+        MAX_IMAGE_OUTPUT_BYTES,
+      ),
+      master: 0n,
+      proxy: 0n,
+    };
+  }
+  const frameCountNumber = Math.ceil(durationSec * fps);
+  if (!Number.isFinite(durationSec) || durationSec <= 0
+    || !Number.isFinite(fps) || fps <= 0
+    || !Number.isSafeInteger(frameCountNumber) || frameCountNumber <= 0) {
+    throw mediaImportError(422, 'MEDIA_IMPORT_OUTPUT_BUDGET_INVALID');
+  }
+  const frames = BigInt(frameCountNumber);
+  const durationMillis = BigInt(Math.ceil(durationSec * 1000));
+  const audioBytes = hasAudio ? (durationMillis * 32_000n + 999n) / 1000n : 0n;
+  const master = clampBudget(
+    (2n * input) + ((pixels * frames + 15n) / 16n) + audioBytes + IMPORT_OVERHEAD_BYTES,
+    8n * 1024n * 1024n,
+    MAX_MASTER_OUTPUT_BYTES,
+  );
+  const scale = Math.min(1, 1280 / Math.max(width, height));
+  const proxyWidth = BigInt(Math.max(2, Math.ceil(width * scale / 2) * 2));
+  const proxyHeight = BigInt(Math.max(2, Math.ceil(height * scale / 2) * 2));
+  const proxyPixels = proxyWidth * proxyHeight;
+  const proxy = clampBudget(
+    (input / 2n) + ((proxyPixels * frames + 31n) / 32n)
+      + (hasAudio ? (durationMillis * 16_000n + 999n) / 1000n : 0n)
+      + IMPORT_OVERHEAD_BYTES,
+    4n * 1024n * 1024n,
+    MAX_PROXY_OUTPUT_BYTES,
+  );
+  return { image: 0n, master, proxy };
+}
+
+function phaseFreeBytes(mediaKind, budgets, phase) {
+  const overhead = IMPORT_OVERHEAD_BYTES + DISK_RESERVE_BYTES;
+  if (mediaKind === 'image') {
+    return phase === 'encode'
+      ? (2n * budgets.image) + overhead
+      : budgets.image + overhead;
+  }
+  if (phase === 'master') return (2n * budgets.master) + (2n * budgets.proxy) + overhead;
+  if (phase === 'proxy') return budgets.master + (2n * budgets.proxy) + overhead;
+  if (phase === 'preview-publication') return budgets.master + budgets.proxy + overhead;
+  if (phase === 'canonical-publication') return budgets.master + overhead;
+  throw mediaImportError(500, 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+}
+
+function availableDiskBytes(projectDir, statfsImpl) {
+  try {
+    const stats = statfsImpl(projectDir);
+    const available = BigInt(stats.bavail) * BigInt(stats.bsize);
+    return available >= 0n ? available : 0n;
+  } catch (_) {
+    throw unsafeFilesystem();
+  }
+}
+
+function assertDiskSpace(projectDir, statfsImpl, required) {
+  if (availableDiskBytes(projectDir, statfsImpl) < required) {
+    throw mediaImportError(507, 'MEDIA_IMPORT_DISK_FULL');
+  }
 }
 
 function createImportController() {
@@ -477,6 +571,7 @@ function assertOwnedFile(fileSystem, filePath, expected) {
 
 function captureOwnedFile(fileSystem, filePath, {
   chmod = false,
+  maxBytes = null,
   platform = process.platform,
 } = {}) {
   try {
@@ -485,8 +580,12 @@ function captureOwnedFile(fileSystem, filePath, {
     const nanosecondStat = fileSystem.lstatSync(filePath, { bigint: true });
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0
       || (chmod && !privateModeMatches(stat, 0o600, platform))) throw unsafeFilesystem();
+    if (maxBytes !== null && BigInt(stat.size) > maxBytes) {
+      throw mediaImportError(507, 'MEDIA_IMPORT_OUTPUT_QUOTA_EXCEEDED');
+    }
     return openedFileIdentity(stat, nanosecondStat);
   } catch (error) {
+    if (error.status) throw error;
     if (error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE') throw error;
     throw mediaImportError(422, 'MEDIA_IMPORT_OUTPUT_INVALID');
   }
@@ -550,7 +649,7 @@ function buildProbeInvocation(inputPath, signal) {
     args: [
       '-v', 'error',
       '-show_entries',
-      'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels:stream_tags=rotate:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration:format_tags=major_brand,compatible_brands',
+      'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,duration_ts,time_base,pix_fmt,sample_rate,channels:stream_tags=rotate,DURATION:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration:format_tags=major_brand,compatible_brands',
       '-of', 'json',
       inputPath,
     ],
@@ -594,13 +693,14 @@ function assertMediaLimits(source, headers) {
   }
 }
 
-function imageInvocation(owned, signal) {
+function imageInvocation(owned, signal, quota) {
   return {
     command: 'ffmpeg',
     args: [
       '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', owned.uploadPath,
       '-map', '0:v:0', '-map_metadata', '-1', '-frames:v', '1',
       '-vf', 'format=rgba', '-c:v', 'libwebp', '-quality', '90', '-pix_fmt', 'yuva420p',
+      '-fs', String(quota),
       '-y', owned.canonicalPath,
     ],
     cwd: owned.quarantinePath,
@@ -611,7 +711,7 @@ function imageInvocation(owned, signal) {
   };
 }
 
-function videoMasterInvocation(owned, source, outputFps, signal) {
+function videoMasterInvocation(owned, source, outputFps, signal, quota) {
   const args = [
     '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', owned.uploadPath,
     '-map', '0:v:0',
@@ -619,7 +719,8 @@ function videoMasterInvocation(owned, source, outputFps, signal) {
   if (source.hasAudio) args.push('-map', '0:a:0');
   args.push(
     '-map_metadata', '-1', '-metadata:s:v:0', 'rotate=0',
-    '-vf', `fps=${outputFps}`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    '-vf', `fps=${outputFps},pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0`,
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
     '-crf', '18', '-preset', 'medium',
   );
   if (source.hasAudio) {
@@ -627,7 +728,10 @@ function videoMasterInvocation(owned, source, outputFps, signal) {
   } else {
     args.push('-an');
   }
-  args.push('-movflags', '+faststart', '-y', owned.canonicalPath);
+  args.push(
+    '-t', String(source.durationSec),
+    '-movflags', '+faststart', '-fs', String(quota), '-y', owned.canonicalPath,
+  );
   return {
     command: 'ffmpeg', args, cwd: owned.quarantinePath, signal,
     timeoutMs: 2 * 60 * 60_000,
@@ -636,7 +740,7 @@ function videoMasterInvocation(owned, source, outputFps, signal) {
   };
 }
 
-function videoProxyInvocation(owned, source, outputFps, signal) {
+function videoProxyInvocation(owned, source, outputFps, signal, quota) {
   const proxyFps = Math.min(30, outputFps);
   const args = [
     '-hide_banner', '-loglevel', 'error', '-i', owned.canonicalPath,
@@ -645,7 +749,7 @@ function videoProxyInvocation(owned, source, outputFps, signal) {
   if (source.hasAudio) args.push('-map', '0:a:0');
   args.push(
     '-map_metadata', '-1',
-    '-vf', `scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=${proxyFps}`,
+    '-vf', `scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=${proxyFps},pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0`,
     '-c:v', 'libvpx', '-crf', '32', '-b:v', '0',
   );
   if (source.hasAudio) {
@@ -653,7 +757,7 @@ function videoProxyInvocation(owned, source, outputFps, signal) {
   } else {
     args.push('-an');
   }
-  args.push('-y', owned.normalizedPreviewPath);
+  args.push('-t', String(source.durationSec), '-fs', String(quota), '-y', owned.normalizedPreviewPath);
   return {
     command: 'ffmpeg', args, cwd: owned.quarantinePath, signal,
     timeoutMs: 2 * 60 * 60_000,
@@ -674,34 +778,42 @@ function decodeInvocation(inputPath, signal) {
   };
 }
 
-async function normalizeIntoQuarantine({ source, outputFps, owned, signal, fileSystem, run }) {
-  if (!Number.isFinite(outputFps) || outputFps <= 0 || outputFps > 120) {
+async function normalizeIntoQuarantine({
+  source, outputFps, owned, signal, fileSystem, run, budgets, checkDisk,
+}) {
+  if (source.mediaKind === 'video'
+    && (!Number.isFinite(outputFps) || outputFps <= 0 || outputFps > 120)) {
     throw mediaImportError(500, 'MEDIA_IMPORT_OUTPUT_FPS_INVALID');
   }
   assertOwnedImport(fileSystem, owned);
   if (source.mediaKind === 'image') {
-    await run(imageInvocation(owned, signal));
+    checkDisk('encode');
+    await run(imageInvocation(owned, signal, budgets.image));
     assertOwnedImport(fileSystem, owned);
     owned.canonicalIdentity = captureOwnedFile(fileSystem, owned.canonicalPath, {
       chmod: true,
+      maxBytes: budgets.image,
       platform: owned.platform,
     });
     appendOwnerRecord(owned, fileSystem);
   } else {
-    await run(videoMasterInvocation(owned, source, outputFps, signal));
+    checkDisk('master');
+    await run(videoMasterInvocation(owned, source, outputFps, signal, budgets.master));
     assertOwnedImport(fileSystem, owned);
     owned.canonicalIdentity = captureOwnedFile(fileSystem, owned.canonicalPath, {
       chmod: true,
+      maxBytes: budgets.master,
       platform: owned.platform,
     });
     appendOwnerRecord(owned, fileSystem);
     assertOutputIdentities(fileSystem, owned);
-    await run(videoProxyInvocation(owned, source, outputFps, signal));
+    checkDisk('proxy');
+    await run(videoProxyInvocation(owned, source, outputFps, signal, budgets.proxy));
     assertOwnedFile(fileSystem, owned.canonicalPath, owned.canonicalIdentity);
     owned.previewIdentity = captureOwnedFile(
       fileSystem,
       owned.normalizedPreviewPath,
-      { chmod: true, platform: owned.platform },
+      { chmod: true, maxBytes: budgets.proxy, platform: owned.platform },
     );
     appendOwnerRecord(owned, fileSystem);
   }
@@ -715,8 +827,14 @@ async function verifyNormalizedOutputs({ source, outputFps, owned, signal, fileS
   assertOutputIdentities(fileSystem, owned);
   const master = parseMediaProbeJson(masterProbe.stdout);
   const swapsAxes = source.rotation === 90 || source.rotation === 270;
-  const expectedWidth = swapsAxes ? source.height : source.width;
-  const expectedHeight = swapsAxes ? source.width : source.height;
+  const rotatedWidth = swapsAxes ? source.height : source.width;
+  const rotatedHeight = swapsAxes ? source.width : source.height;
+  const expectedWidth = source.mediaKind === 'video'
+    ? Math.ceil(rotatedWidth / 2) * 2
+    : rotatedWidth;
+  const expectedHeight = source.mediaKind === 'video'
+    ? Math.ceil(rotatedHeight / 2) * 2
+    : rotatedHeight;
   if (master.mediaKind !== source.mediaKind || master.rotation !== 0
     || master.width !== expectedWidth || master.height !== expectedHeight) {
     throw mediaImportError(422, 'MEDIA_IMPORT_OUTPUT_INVALID');
@@ -734,9 +852,17 @@ async function verifyNormalizedOutputs({ source, outputFps, owned, signal, fileS
       master.audioCodec === 'aac' && master.audioSampleRate === 48_000
       && master.audioChannels === 2
     );
+    const expectedAudioDuration = source.hasAudio
+      ? Math.min(source.audioDurationSec, source.durationSec)
+      : null;
+    const masterAudioDurationMatches = expectedAudioDuration === null
+      ? master.audioDurationSec === null
+      : Number.isFinite(master.audioDurationSec)
+        && Math.abs(master.audioDurationSec - expectedAudioDuration) <= (1 / outputFps) + 0.001;
     if (master.videoCodec !== 'h264' || master.pixelFormat !== 'yuv420p'
       || Math.abs(master.fps - outputFps) > 1e-6 || master.hasAudio !== source.hasAudio
       || !expectedMasterAudio
+      || !masterAudioDurationMatches
       || Math.abs(master.durationSec - source.durationSec) > (1 / outputFps) + 0.001) {
       throw mediaImportError(422, 'MEDIA_IMPORT_OUTPUT_INVALID');
     }
@@ -757,6 +883,10 @@ async function verifyNormalizedOutputs({ source, outputFps, owned, signal, fileS
       || Math.abs(preview.fps - Math.min(30, outputFps)) > 1e-6
       || preview.hasAudio !== master.hasAudio
       || !expectedPreviewAudio
+      || (master.audioDurationSec === null
+        ? preview.audioDurationSec !== null
+        : !Number.isFinite(preview.audioDurationSec)
+          || Math.abs(preview.audioDurationSec - master.audioDurationSec) > durationTolerance + 0.001)
       || aspectError > Math.max(master.width, master.height)
       || Math.abs(preview.durationSec - master.durationSec) > durationTolerance + 0.001) {
       throw mediaImportError(422, 'MEDIA_IMPORT_OUTPUT_INVALID');
@@ -884,10 +1014,12 @@ function copyExclusiveFile({
   preownedIdentity = null,
   onOwned = () => {},
   platform = process.platform,
+  maxBytes = null,
 }) {
   const constants = fileSystem.constants || fs.constants;
   let sourceFd = null;
   let targetFd = null;
+  let targetBytes = 0;
   try {
     sourceFd = fileSystem.openSync(sourcePath, openReadOnlyFlags(fileSystem, platform));
     const sourceBefore = openedFileIdentity(
@@ -916,12 +1048,16 @@ function copyExclusiveFile({
       count = fileSystem.readSync(sourceFd, buffer, 0, buffer.length, null);
       if (count > 0) {
         hash.update(buffer.subarray(0, count));
+        if (maxBytes !== null && BigInt(targetBytes + count) > maxBytes) {
+          throw mediaImportError(507, 'MEDIA_IMPORT_OUTPUT_QUOTA_EXCEEDED');
+        }
         let offset = 0;
         while (offset < count) {
           const written = fileSystem.writeSync(targetFd, buffer, offset, count - offset);
           if (written <= 0) throw unsafeFilesystem();
           offset += written;
         }
+        targetBytes += count;
       }
     } while (count > 0);
     fileSystem.fsyncSync(targetFd);
@@ -959,7 +1095,7 @@ function buildCanonicalMetadata(owned, headers, master, fileSystem) {
     : null;
   assertOutputIdentities(fileSystem, owned);
   const metadata = {
-    version: 1,
+    version: 2,
     id: owned.id,
     label: headers.filename,
     mediaKind: headers.mediaKind,
@@ -969,6 +1105,7 @@ function buildCanonicalMetadata(owned, headers, master, fileSystem) {
     height: master.height,
     fps: headers.mediaKind === 'image' ? 0 : master.fps,
     durationSec: headers.mediaKind === 'image' ? 0 : master.durationSec,
+    audioDurationSec: headers.mediaKind === 'image' ? null : master.audioDurationSec,
     hasAudio: headers.mediaKind === 'image' ? false : master.hasAudio,
   };
   return metadata;
@@ -1016,11 +1153,12 @@ function claimFinalDirectory(owned, fileSystem) {
     || !privateModeMatches(checked, 0o700, owned.platform)) throw unsafeFilesystem();
 }
 
-function publishImportedBundle({ owned, metadata, fileSystem }) {
+function publishImportedBundle({ owned, metadata, fileSystem, budgets, checkDisk }) {
   assertOwnedImport(fileSystem, owned);
   assertOutputIdentities(fileSystem, owned);
   openPublicationClaim(owned, fileSystem);
   if (owned.normalizedPreviewPath) {
+    checkDisk('preview-publication');
     owned.previewStageIdentity = createOwnedOutputPlaceholder(
       fileSystem, owned.previewStagePath, owned.platform,
     );
@@ -1033,6 +1171,7 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
       preownedIdentity: owned.previewStageIdentity,
       onOwned: (value) => { owned.previewStageIdentity = value; },
       platform: owned.platform,
+      maxBytes: budgets.proxy,
     });
     if (previewCopy.sha256 !== metadata.previewSha256) throw unsafeFilesystem();
     owned.previewStageIdentity = previewCopy.identity;
@@ -1047,6 +1186,7 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
     }
   }
   assertOwnedDirectory(fileSystem, owned.assetParent, owned.assetParentIdentity, owned.projectReal);
+  checkDisk('canonical-publication');
   claimFinalDirectory(owned, fileSystem);
   appendOwnerRecord(owned, fileSystem);
   writePublicationClaimState(owned, fileSystem);
@@ -1068,6 +1208,7 @@ function publishImportedBundle({ owned, metadata, fileSystem }) {
     preownedIdentity: owned.canonicalFinalIdentity,
     onOwned: (value) => { owned.canonicalFinalIdentity = value; },
     platform: owned.platform,
+    maxBytes: metadata.mediaKind === 'image' ? budgets.image : budgets.master,
   });
   if (canonicalCopy.sha256 !== metadata.canonicalSha256) throw unsafeFilesystem();
   owned.canonicalFinalIdentity = canonicalCopy.identity;
@@ -1463,16 +1604,7 @@ async function importReviewMedia({
   let workError = null;
   try {
     const parsedHeaders = parseImportHeaders(headers);
-    let filesystemStats;
-    try {
-      filesystemStats = statfsImpl(projectDir);
-    } catch (_) {
-      throw unsafeFilesystem();
-    }
-    const availableBytes = BigInt(filesystemStats.bavail) * BigInt(filesystemStats.bsize);
-    if (availableBytes < requiredFreeBytes(parsedHeaders.contentLength)) {
-      throw mediaImportError(507, 'MEDIA_IMPORT_DISK_FULL');
-    }
+    assertDiskSpace(projectDir, statfsImpl, requiredFreeBytes(parsedHeaders.contentLength));
     try {
       mutationLease = acquireProjectMutationLease(projectDir, { fileSystem, platform });
     } catch (error) {
@@ -1499,10 +1631,25 @@ async function importReviewMedia({
       throw mediaImportError(422, 'MEDIA_IMPORT_DECODE_FAILED', 'media decode failed', { cause: error });
     }
     assertMediaLimits(source, parsedHeaders);
+    const budgets = deriveOutputBudgets({
+      mediaKind: source.mediaKind,
+      inputBytes: parsedHeaders.contentLength,
+      width: source.width,
+      height: source.height,
+      durationSec: source.durationSec,
+      fps: source.mediaKind === 'video' ? outputFps : 0,
+      hasAudio: source.hasAudio,
+    });
+    const checkDisk = (phase) => assertDiskSpace(
+      projectDir,
+      statfsImpl,
+      phaseFreeBytes(source.mediaKind, budgets, phase),
+    );
     let metadata;
     try {
       await normalizeIntoQuarantine({
         source, outputFps, owned, signal, fileSystem, run: runMediaProcessImpl,
+        budgets, checkDisk,
       });
       const master = await verifyNormalizedOutputs({
         source, outputFps, owned, signal, fileSystem, run: runMediaProcessImpl,
@@ -1527,7 +1674,7 @@ async function importReviewMedia({
       throw mediaImportError(422, 'MEDIA_IMPORT_NORMALIZATION_FAILED', 'media normalization failed', { cause: error });
     }
     try {
-      return publishImportedBundle({ owned, metadata, fileSystem });
+      return publishImportedBundle({ owned, metadata, fileSystem, budgets, checkDisk });
     } catch (error) {
       if (error.status) throw error;
       throw mediaImportError(500, 'MEDIA_IMPORT_FILESYSTEM_UNSAFE', undefined, { cause: error });
@@ -1556,10 +1703,15 @@ async function importReviewMedia({
 }
 
 module.exports = {
+  DISK_RESERVE_BYTES,
   IMAGE_MAX_BYTES,
+  MAX_IMAGE_OUTPUT_BYTES,
+  MAX_MASTER_OUTPUT_BYTES,
+  MAX_PROXY_OUTPUT_BYTES,
   VIDEO_MAX_BYTES,
   createImportController,
   cleanupOrphanImportQuarantines,
+  deriveOutputBudgets,
   importReviewMedia,
   mediaImportError,
   parseImportHeaders,

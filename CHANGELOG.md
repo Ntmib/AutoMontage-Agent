@@ -37,6 +37,16 @@
 
 ### Исправлено
 
+- Media import теперь считает `durationSec` только по видеопотоку, хранит отдельный
+  `audioDurationSec`, обрезает длинный звук по картинке и не разрешает `replace` за концом
+  короткого audio; container duration больше не расширяет trim.
+- Нечётные и повёрнутые видео получают even padding без crop/distortion, а still image не
+  наследует video ceiling 120 FPS.
+- Encoder, output и publication copy ограничены рассчитанными budgets и absolute caps;
+  свободное место проверяется перед каждой фазой, quota/disk boundary возвращает `507` с
+  owned cleanup и безопасным retry.
+- Metadata v2 переносит visual/audio durations через registry, Save, restart, approval и render;
+  legacy v1 image остаётся совместимым, а неоднозначный v1 video требует переимпорта.
 - Save и approval теперь проверяют открытый immutable media descriptor через общий portable
   `ffprobe pipe:0` adapter без `/dev/fd` или live pathname. Windows сохраняет identity/hash/
   containment barriers без ложной зависимости от POSIX mode bits; отдельный CI job проверяет

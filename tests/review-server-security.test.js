@@ -126,7 +126,7 @@ function writeImportedVideoBundle(projectDir, {
   fs.writeFileSync(canonicalPath, canonicalBytes);
   fs.writeFileSync(previewPath, previewBytes);
   fs.writeFileSync(path.join(mediaDirectory, 'asset.json'), `${JSON.stringify({
-    version: 1,
+    version: 2,
     id,
     label,
     mediaKind: 'video',
@@ -136,6 +136,7 @@ function writeImportedVideoBundle(projectDir, {
     height: 1080,
     fps: 25,
     durationSec: 18.4,
+    audioDurationSec: 18.4,
     hasAudio: true,
   })}\n`);
   return {
@@ -986,7 +987,7 @@ test('review b-roll commands accept images and normalized video but reject audio
       fs.readSync(target.fileDescriptor, bytes, 0, bytes.length, 0);
       return bytes.equals(Buffer.from('canonical video')) ? {
         mediaKind: 'video', width: 1920, height: 1080, fps: 25,
-        durationSec: 18.4, hasAudio: true,
+        durationSec: 18.4, audioDurationSec: 18.4, hasAudio: true,
       }
         : { mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false };
     },
@@ -1084,7 +1085,7 @@ test('review validate rebuilds the registry and sees imported duration changes a
     open: false,
     probeReviewMediaImpl: () => ({
       mediaKind: 'video', width: 1920, height: 1080, fps: 25,
-      durationSec: 1, hasAudio: true,
+      durationSec: 1, audioDurationSec: 1, hasAudio: true,
     }),
   });
   t.after(() => closeServer(session.server));
@@ -1096,6 +1097,7 @@ test('review validate rebuilds the registry and sees imported duration changes a
   const metadataPath = path.join(imported.mediaDirectory, 'asset.json');
   const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
   metadata.durationSec = 1;
+  metadata.audioDurationSec = 1;
   fs.writeFileSync(metadataPath, `${JSON.stringify(metadata)}\n`);
   const beforeManifest = fs.readFileSync(path.join(projectDir, 'project.json'));
   const beforeBriefs = fs.readdirSync(path.join(projectDir, 'brief')).sort();
@@ -1872,6 +1874,7 @@ test('raw media import returns only an opaque registered descriptor and survives
       height: 1080,
       fps: 25,
       durationSec: 18.4,
+      audioDurationSec: 18.4,
       hasAudio: true,
       capabilities: { preview: true, brollImage: false, brollVideo: true },
     },

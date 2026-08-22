@@ -295,7 +295,7 @@ function sameAuthoritativeAssetRecord(left, right) {
   for (const field of [
     'kind', 'mediaKind', 'label', 'filePath', 'previewPath', 'reference',
     'canonicalSha256', 'previewSha256', 'width', 'height', 'fps',
-    'durationSec', 'hasAudio',
+    'durationSec', 'audioDurationSec', 'hasAudio',
   ]) {
     if (left[field] !== right[field]) return false;
   }
@@ -329,6 +329,7 @@ function descriptorForAsset(id, asset) {
       height: asset.height,
       fps: asset.fps,
       durationSec: asset.durationSec,
+      audioDurationSec: asset.audioDurationSec,
       hasAudio: asset.hasAudio,
     } : {}),
     capabilities: { ...asset.capabilities },
@@ -781,6 +782,10 @@ function probeMatchesRegistered(registered, probe) {
     && Number.isFinite(probe.fps) && Math.abs(probe.fps - registered.fps) <= 1e-6
     && Number.isFinite(probe.durationSec)
     && Math.abs(probe.durationSec - registered.durationSec) <= tolerance
+    && (registered.hasAudio === false
+      ? probe.audioDurationSec === null && registered.audioDurationSec === null
+      : Number.isFinite(probe.audioDurationSec)
+        && Math.abs(probe.audioDurationSec - registered.audioDurationSec) <= tolerance)
     && probe.hasAudio === registered.hasAudio;
 }
 
@@ -799,7 +804,8 @@ function currentMaterializationAsset({
     .find((asset) => assetIdentityKey(asset) === assetIdentityKey(registered));
   if (!beforeScan || !sameAssetIdentity(registered, beforeScan)) return null;
   for (const field of [
-    'mediaKind', 'reference', 'canonicalSha256', 'width', 'height', 'fps', 'durationSec', 'hasAudio',
+    'mediaKind', 'reference', 'canonicalSha256', 'width', 'height', 'fps',
+    'durationSec', 'audioDurationSec', 'hasAudio',
   ]) {
     if (registered[field] !== beforeScan[field]) return null;
   }
@@ -824,7 +830,7 @@ function currentMaterializationAsset({
       || afterScan.canonicalSha256 !== digest) return null;
     for (const field of [
       'mediaKind', 'reference', 'canonicalSha256', 'width', 'height',
-      'fps', 'durationSec', 'hasAudio',
+      'fps', 'durationSec', 'audioDurationSec', 'hasAudio',
     ]) {
       if (registered[field] !== afterScan[field]) return null;
     }
@@ -867,10 +873,16 @@ function materializeReviewAssets({
       const trimStartFrame = Math.round(selected.trimStartSec * compositionFps);
       const sceneFrames = Math.round((scene.end - scene.start) * compositionFps);
       const clipFrames = Math.round(verified.probe.durationSec * compositionFps);
+      const audioFrames = selected.audioMode === 'replace'
+        ? Math.round(Number(verified.probe.audioDurationSec) * compositionFps)
+        : null;
       if (!Number.isSafeInteger(trimStartFrame) || trimStartFrame < 0
         || !Number.isSafeInteger(sceneFrames) || sceneFrames <= 0
         || !Number.isSafeInteger(clipFrames) || clipFrames <= 0
         || trimStartFrame + sceneFrames > clipFrames
+        || (selected.audioMode === 'replace'
+          && (!Number.isSafeInteger(audioFrames) || audioFrames <= 0
+            || trimStartFrame + sceneFrames > audioFrames))
         || (verified.probe.hasAudio !== true && selected.audioMode !== 'mute')) {
         rejectRequest(422, 'UNRESOLVED_REVIEW_ASSET');
       }

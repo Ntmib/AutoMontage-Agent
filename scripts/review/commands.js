@@ -153,9 +153,17 @@ function validateMediaSelection(scene, assets, fps) {
   if (media.trimStartSec !== trimStartFrame / fps) commandError('video start is not frame snapped');
   const sceneFrames = Math.round((scene.end - scene.start) * fps);
   const clipFrames = Math.round(Number(asset.durationSec) * fps);
+  const audioFrames = media.audioMode === 'replace'
+    ? Math.round(Number(asset.audioDurationSec) * fps)
+    : null;
   if (!Number.isSafeInteger(sceneFrames) || sceneFrames <= 0
     || !Number.isSafeInteger(clipFrames) || clipFrames <= 0
-    || trimStartFrame + sceneFrames > clipFrames) commandError('video clip duration is too short');
+    || trimStartFrame + sceneFrames > clipFrames
+    || (media.audioMode === 'replace'
+      && (!Number.isSafeInteger(audioFrames) || audioFrames <= 0
+        || trimStartFrame + sceneFrames > audioFrames))) {
+    commandError('video clip duration is too short');
+  }
   return {
     kind: 'video',
     src: asset.reference,

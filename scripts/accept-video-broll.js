@@ -438,7 +438,7 @@ async function exerciseSanitizedFailureLog({ session, projectDir, serverLogs }) 
 
 function browserSafeAsset(asset) {
   assert.deepEqual(Object.keys(asset).sort(), [
-    'capabilities', 'durationSec', 'fps', 'hasAudio', 'height', 'id', 'kind', 'label',
+    'audioDurationSec', 'capabilities', 'durationSec', 'fps', 'hasAudio', 'height', 'id', 'kind', 'label',
     'mediaKind', 'previewUrl', 'url', 'width',
   ].filter((key) => key !== 'previewUrl' || asset.mediaKind === 'video').sort());
   const serialized = JSON.stringify(asset);

@@ -44,7 +44,9 @@ npm test
   frame/word timing reasons, межпроцессный project lease, in-memory undo/redo, новая draft-пара
   на Save, manifest-last visibility и byte-identical approved;
 - media import: exact-length streaming в owned quarantine, type/size/geometry/duration/disk
-  limits, abort/semaphore, real ffprobe/decode, WebP/H.264 master + WebM proxy, UUID publication,
+  limits, separate visual/audio stream timing without container fallback, even padding after
+  autorotate, encoder/output/copy quotas, phase `statfs`, abort/semaphore, real ffprobe/decode,
+  WebP/H.264 master + WebM proxy, UUID publication,
   отсутствие auto-select, browser path/hash privacy, общий project lease, durable owner journal,
   hard-exit recovery, late-syscall replacement/tombstone, shutdown escalation и identity-only
   immutable cleanup boundaries;
@@ -211,6 +213,8 @@ bytes. В `--edit` перенеси одну общую границу, загр
 
 ```bash
 node --test \
+  tests/media-duration-geometry.test.js \
+  tests/media-probe.test.js \
   tests/review-media-import.test.js \
   tests/review-media-process.test.js \
   tests/review-commands.test.js \
@@ -223,6 +227,19 @@ node --test \
 npm run test:review-ui -- --grep "media import|video b-roll"
 node --test tests/video-broll-e2e.test.js
 ```
+
+`media-duration-geometry.test.js` создаёт настоящие пары video 1 s/audio 3 s и video 3 s/audio
+1 s, нечётные landscape/portrait и rotation fixture. Проверка требует visual `durationSec`,
+отдельный `audioDurationSec`, trim длинного audio, сохранение короткого audio и even geometry
+без crop/distortion. Она также доказывает, что короткий audio отклоняет только overrun
+`replace` до новой revision/render, а допустимый interval проходит Save → approval → короткий
+Remotion render. Тест использует `AUTOMONTAGE_FFMPEG_DIR`, ffmpeg-full на macOS или системные
+ffmpeg/ffprobe и пропускается только если этих бинарников действительно нет.
+
+`review-media-import.test.js` отдельно проходит каждую границу свободного места: initial,
+master, proxy, preview publication и canonical publication. Для каждой ожидаются один `507`,
+owned cleanup и успешный retry; exact quota boundary проходит, превышение после close даёт
+`MEDIA_IMPORT_OUTPUT_QUOTA_EXCEEDED`, а опасная арифметика отклоняется до запуска encoder.
 
 Последняя команда — обязательный локальный acceptance без mock ffmpeg, Remotion, Review server,
 Save, approval или render bundle. Она сама создаёт маленькие JPEG/silent/audio fixtures и

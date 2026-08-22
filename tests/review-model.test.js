@@ -162,7 +162,7 @@ test('review state reconstructs the exact opaque imported-video descriptor from 
   fs.writeFileSync(path.join(mediaDirectory, 'media.mp4'), canonical);
   fs.writeFileSync(path.join(previewDirectory, `${id}.webm`), preview);
   fs.writeFileSync(path.join(mediaDirectory, 'asset.json'), `${JSON.stringify({
-    version: 1,
+    version: 2,
     id,
     label: 'Product demo.mov',
     mediaKind: 'video',
@@ -172,6 +172,7 @@ test('review state reconstructs the exact opaque imported-video descriptor from 
     height: 1080,
     fps: 25,
     durationSec: 18.4,
+    audioDurationSec: 18.4,
     hasAudio: true,
   })}\n`);
 
@@ -188,6 +189,7 @@ test('review state reconstructs the exact opaque imported-video descriptor from 
     height: 1080,
     fps: 25,
     durationSec: 18.4,
+    audioDurationSec: 18.4,
     hasAudio: true,
     capabilities: { preview: true, brollImage: false, brollVideo: true },
   });

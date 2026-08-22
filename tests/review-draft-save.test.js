@@ -48,6 +48,7 @@ function writeImportedVideo(projectDir, {
   id = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1',
   durationSec = 20,
   hasAudio = true,
+  audioDurationSec = hasAudio ? durationSec : null,
 } = {}) {
   const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', id);
   const previewDirectory = path.join(projectDir, 'previews', 'broll');
@@ -60,7 +61,7 @@ function writeImportedVideo(projectDir, {
   fs.writeFileSync(canonicalPath, canonical);
   fs.writeFileSync(previewPath, preview);
   const metadata = {
-    version: 1,
+    version: 2,
     id,
     label: 'Recorded demo.mov',
     mediaKind: 'video',
@@ -70,6 +71,7 @@ function writeImportedVideo(projectDir, {
     height: 1080,
     fps: 25,
     durationSec,
+    audioDurationSec,
     hasAudio,
   };
   const metadataPath = path.join(mediaDirectory, 'asset.json');
@@ -99,11 +101,13 @@ function approvalVideoProbe(metadata) {
           {
             codec_type: 'video', codec_name: 'h264', width: metadata.width,
             height: metadata.height, avg_frame_rate: `${metadata.fps}/1`,
-            r_frame_rate: `${metadata.fps}/1`, pix_fmt: 'yuv420p',
+            r_frame_rate: `${metadata.fps}/1`, duration: String(metadata.durationSec),
+            pix_fmt: 'yuv420p',
             disposition: { attached_pic: 0 },
           },
           ...(metadata.hasAudio ? [{
             codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2,
+            duration: String(metadata.audioDurationSec),
           }] : []),
         ],
         format: {
@@ -1232,7 +1236,7 @@ test('video materialization rechecks probe fields and persists snapped seconds w
     words: [],
     probeMediaImpl: () => ({
       mediaKind: 'video', width: 1920, height: 1080, fps: 25,
-      durationSec: 20, hasAudio: false,
+      durationSec: 20, audioDurationSec: null, hasAudio: false,
     }),
   }), /probe|media|audio|unresolved/i);
   assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
@@ -1247,7 +1251,7 @@ test('video materialization rechecks probe fields and persists snapped seconds w
     words: [],
     probeMediaImpl: () => ({
       mediaKind: 'video', width: 1920, height: 1080, fps: 25,
-      durationSec: 19.96, hasAudio: true,
+      durationSec: 19.96, audioDurationSec: 20, hasAudio: true,
     }),
   }), /duration|clip|media|unresolved/i);
   assert.equal(fs.existsSync(expectedDraftPaths(state.workspace).jsonPath), false);
@@ -1260,7 +1264,7 @@ test('video materialization rechecks probe fields and persists snapped seconds w
     words: [],
     probeMediaImpl: () => ({
       mediaKind: 'video', width: 1920, height: 1080, fps: 25,
-      durationSec: 20, hasAudio: true,
+      durationSec: 20, audioDurationSec: 20, hasAudio: true,
     }),
   });
   assert.deepEqual(materialized.scenes[1].brollMedia, {

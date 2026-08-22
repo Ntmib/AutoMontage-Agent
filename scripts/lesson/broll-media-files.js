@@ -340,7 +340,11 @@ function probeMatchesMetadata(metadata, probe) {
   const tolerance = (1 / metadata.fps) + 0.001;
   return Number.isFinite(probe.fps) && Math.abs(metadata.fps - probe.fps) <= 1e-6
     && Number.isFinite(probe.durationSec)
-    && Math.abs(metadata.durationSec - probe.durationSec) <= tolerance;
+    && Math.abs(metadata.durationSec - probe.durationSec) <= tolerance
+    && (metadata.hasAudio === false
+      ? metadata.audioDurationSec === null && probe.audioDurationSec === null
+      : Number.isFinite(metadata.audioDurationSec) && Number.isFinite(probe.audioDurationSec)
+        && Math.abs(metadata.audioDurationSec - probe.audioDurationSec) <= tolerance);
 }
 
 function verifyOpenedBrollAsset({
@@ -425,8 +429,13 @@ function verifySceneBrollMedia({ scene, fps, probe }) {
     fail('BROLL_MEDIA_CLIP_OVERRUN');
   }
   const clipFrames = Math.round(probe.durationSec * fps);
+  const audioFrames = media.audioMode === 'replace'
+    ? Math.round(Number(probe.audioDurationSec) * fps)
+    : null;
   if (!Number.isSafeInteger(endFrame) || endFrame <= 0
-    || !Number.isSafeInteger(clipFrames) || clipFrames <= 0 || endFrame > clipFrames) {
+    || !Number.isSafeInteger(clipFrames) || clipFrames <= 0 || endFrame > clipFrames
+    || (media.audioMode === 'replace'
+      && (!Number.isSafeInteger(audioFrames) || audioFrames <= 0 || endFrame > audioFrames))) {
     fail('BROLL_MEDIA_CLIP_OVERRUN');
   }
 }

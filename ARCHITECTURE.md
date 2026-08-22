@@ -216,11 +216,29 @@ Preview stage, claim и canonical final получают private inode и owner-
 unlink по descriptor или rename no-replace, поэтому это намеренная strongest-available граница,
 а не обещание абсолютной атомарности против процесса с тем же UID и открытым private pathname.
 Затем ffprobe и полный decode подтверждают реальный контейнер, codec, геометрию, длительность и
-аудио. Изображение нормализуется в WebP; видео — в H.264/yuv420p master с AAC 48 kHz stereo при
-наличии звука и отдельный VP8/Opus WebM proxy для браузера. Metadata удаляется. Публикация
+аудио. Общий probe не выводит media duration из `format.duration`: canonical `durationSec`
+равен только длительности visual video stream, а `audioDurationSec` хранит отдельную длительность
+audio stream. Stream timing берётся из stream duration, `duration_ts × time_base` или stream
+`DURATION` tag; отсутствие проверяемой video/audio длительности закрывает импорт.
+
+Изображение нормализуется в WebP; видео – в H.264/yuv420p master с AAC 48 kHz stereo при
+наличии звука и отдельный VP8/Opus WebM proxy для браузера. После autorotate нечётные стороны
+дополняются до чётных максимум на один пиксель, поэтому encoder не требует crop и не искажает
+aspect ratio. Оба видео ограничены visual duration: длинный audio trim-ится, короткий остаётся
+коротким. Metadata удаляется. Публикация
 атомарно переносит один immutable UUID bundle в `assets/broll/images|video/` и proxy в
 `previews/broll/`; `asset.json` содержит параметры и hashes без путей, а фиксированные
-относительные ссылки сервер выводит из UUID и типа медиа.
+относительные ссылки сервер выводит из UUID и типа медиа. Metadata v2 требует
+`audioDurationSec`; legacy v1 image безопасно читается, legacy v1 video отклоняется для
+переимпорта, а не получает догадку из старого `durationSec`.
+
+После начального admission `4 × input + 512 MiB` импорт вычисляет BigInt output budgets из
+проверенных bytes/geometry/visual duration/FPS/audio. Hard caps равны 128 MiB для WebP,
+2 GiB для master и 512 MiB для proxy; `ffmpeg -fs`, bounded writer/copy и post-close size gate
+не позволяют encoder или publication превысить budget. `statfs` повторяется перед encode,
+master, proxy и каждой publication copy с учётом peak live copies, 4 MiB overhead и 512 MiB
+reserve. Любая граница возвращает стабильный `507`, а существующий owned cleanup/retry contract
+удаляет только доказанные partial paths.
 Импорт не отправляет `replace-broll`: после refresh новая карточка появляется в media lane, но
 пользователь обязан отдельно назначить её сцене.
 
@@ -244,6 +262,11 @@ Approval повторяет containment, probe, metadata/proxy/hash и clip-dura
 descriptors до commit boundary и публикует approved только если все identities сохранились.
 Один и тот же UUID можно использовать в нескольких сценах с разными start/fit/audio; удалить
 или заменить опубликованный asset на месте в V1 нельзя.
+
+Registry, Review state, Save/restart и approval переносят обе длительности без вычисления одной
+из другой. Для `mute` и `mix` trim обязан помещаться в visual duration. Для `replace` он обязан
+помещаться одновременно в visual и audio duration; короткий audio поэтому нельзя молча
+дополнить тишиной или растянуть до картинки.
 
 Filesystem capability сосредоточен в `scripts/filesystem-capabilities.js` и независимо описывает
 `noFollow`, `posixPermissions` и `directoryFsync`. POSIX сохраняет `O_NOFOLLOW`, точные private

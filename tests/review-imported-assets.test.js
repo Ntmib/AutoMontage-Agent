@@ -22,7 +22,7 @@ const SHA = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
 function metadata(overrides = {}) {
   return {
-    version: 1,
+    version: 2,
     id: UUID,
     label: 'Product demo.mov',
     mediaKind: 'video',
@@ -32,6 +32,7 @@ function metadata(overrides = {}) {
     height: 1080,
     fps: 25,
     durationSec: 18.4,
+    audioDurationSec: 18.4,
     hasAudio: true,
     ...overrides,
   };
@@ -66,12 +67,43 @@ function writeBundle(projectDir, { mediaKind = 'video', id = UUID, metadataOverr
     height: mediaKind === 'image' ? 800 : 1080,
     fps: mediaKind === 'image' ? 0 : 25,
     durationSec: mediaKind === 'image' ? 0 : 18.4,
+    audioDurationSec: mediaKind === 'image' ? null : 18.4,
     hasAudio: mediaKind === 'image' ? false : true,
     ...metadataOverrides,
   });
   writeJson(path.join(mediaDirectory, 'asset.json'), assetMetadata);
   return { assetMetadata, canonicalPath, mediaDirectory, previewPath };
 }
+
+test('metadata v2 requires explicit audio duration and legacy video stays unavailable', () => {
+  const current = metadata();
+  assert.deepEqual(parseImportedAssetMetadata({
+    bytes: Buffer.from(JSON.stringify(current)),
+    expectedId: UUID,
+  }), current);
+  assert.throws(() => parseImportedAssetMetadata({
+    bytes: Buffer.from(JSON.stringify({ ...current, version: 1, audioDurationSec: undefined })),
+    expectedId: UUID,
+  }), /legacy video|version|shape/i);
+  assert.throws(() => parseImportedAssetMetadata({
+    bytes: Buffer.from(JSON.stringify({ ...current, audioDurationSec: null })),
+    expectedId: UUID,
+  }), /audio duration|video fields/i);
+
+  const legacyImage = metadata({
+    version: 1,
+    mediaKind: 'image',
+    previewSha256: null,
+    fps: 0,
+    durationSec: 0,
+    audioDurationSec: undefined,
+    hasAudio: false,
+  });
+  assert.equal(parseImportedAssetMetadata({
+    bytes: Buffer.from(JSON.stringify(legacyImage)),
+    expectedId: UUID,
+  }).mediaKind, 'image');
+});
 
 function directoryIdentity(filePath) {
   const stat = fs.lstatSync(filePath, { bigint: true });

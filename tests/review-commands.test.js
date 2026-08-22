@@ -56,16 +56,38 @@ function assetMap() {
     }],
     ['asset-7', {
       mediaKind: 'video', reference: 'assets/broll/video/id/media.mp4',
-      canonicalSha256: '7'.repeat(64), durationSec: 20, hasAudio: true,
+      canonicalSha256: '7'.repeat(64), durationSec: 20, audioDurationSec: 20, hasAudio: true,
       capabilities: { brollImage: false, brollVideo: true },
     }],
     ['asset-8', {
       mediaKind: 'video', reference: 'assets/broll/video/silent/media.mp4',
-      canonicalSha256: '8'.repeat(64), durationSec: 8, hasAudio: false,
+      canonicalSha256: '8'.repeat(64), durationSec: 8, audioDurationSec: null, hasAudio: false,
       capabilities: { brollImage: false, brollVideo: true },
     }],
   ]);
 }
+
+test('replace is bounded by audio while mute and mix use visual duration', () => {
+  const assets = assetMap();
+  assets.set('asset-7', { ...assets.get('asset-7'), durationSec: 20, audioDurationSec: 1 });
+  const selected = apply(fixtureBrief(), {
+    type: 'replace-broll', sceneIndex: 1, assetId: 'asset-7',
+  }, assets);
+  assert.equal(selected.scenes[1].brollMedia.audioMode, 'mute');
+  assert.doesNotThrow(() => apply(selected, {
+    type: 'set-broll-audio-mode', sceneIndex: 1, audioMode: 'mix',
+  }, assets));
+  assert.throws(() => apply(selected, {
+    type: 'set-broll-audio-mode', sceneIndex: 1, audioMode: 'replace',
+  }, assets), /audio|duration|clip|command/i);
+
+  const insideAudio = structuredClone(selected);
+  insideAudio.scenes[1].end = 5;
+  insideAudio.scenes[2].start = 5;
+  assert.equal(apply(insideAudio, {
+    type: 'set-broll-audio-mode', sceneIndex: 1, audioMode: 'replace',
+  }, assets).scenes[1].brollMedia.audioMode, 'replace');
+});
 
 function apply(brief, command, assets = assetMap()) {
   return applyReviewCommand({ brief, command, assets, fps: 25 });
