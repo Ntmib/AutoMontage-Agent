@@ -36,6 +36,23 @@ jobs:
       - name: Установить зависимости
         run: npm ci --no-audit --no-fund
 
+      - name: Установить системный FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
+      - name: Проверить FFmpeg, FFprobe и обязательные кодеры
+        run: |
+          ffmpeg -version
+          ffprobe -version
+          encoders="$(ffmpeg -hide_banner -encoders 2>&1)"
+          for encoder in libwebp libx264 libvpx libopus aac; do
+            if ! grep -Eq "[[:space:]]${encoder}[[:space:]]" <<<"${encoders}"; then
+              echo "::error::Системный FFmpeg не содержит обязательный кодер ${encoder}"
+              exit 1
+            fi
+          done
+
       - name: Проверить high/critical уязвимости зависимостей
         run: npm audit --audit-level=high
 
@@ -44,3 +61,74 @@ jobs:
 
       - name: Проверить публичное release-дерево
         run: npm run check:release
+
+  portable-media-windows:
+    name: Windows · opened media and filesystem capabilities
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Установить зависимости
+        run: npm ci --no-audit --no-fund
+
+      - name: Установить проверенный FFmpeg
+        run: choco install ffmpeg --version=7.1.1 --yes --no-progress --require-checksums
+
+      - name: Проверить FFprobe и portable media lifecycle
+        shell: pwsh
+        run: |
+          ffprobe -version
+          node --test tests/filesystem-capabilities.test.js tests/media-probe.test.js tests/opened-media-probe.test.js tests/render-media-bundle-windows.test.js
+          node --test --test-name-pattern='import publishes video when ffprobe average FPS is 0/0|Windows-mode import requires identity and bytes|real tiny images and videos normalize|Windows-mode claim recovery ignores POSIX mode bits|Windows-mode handoff stays exclusive|review save returns a fixed 500|publish final fsyncs through a write-capable handle' tests/review-media-import.test.js tests/review-imported-assets.test.js tests/review-server-security.test.js tests/project-workspace.test.js
+
+      - name: Проверить portable duration и geometry
+        shell: pwsh
+        run: node --test --test-name-pattern='real still image|real mismatched streams|real odd landscape' tests/media-duration-geometry.test.js
+
+      - name: Проверить portable project transactions
+        shell: pwsh
+        run: node --test --test-name-pattern='a live process mutation lease blocks|two real processes racing Save|two real processes racing approval|two real processes racing initial brief|approval rejects a stale|approval always runs|direct manifest update rejects|initial brief publication preserves' tests/project-mutation-transaction.test.js
+
+      - name: Проверить portable import ownership setup
+        shell: pwsh
+        run: node --test --test-name-pattern='a real import process keeps a second process out|setup failure removes only|clean setup failure removes|orphan cleanup never treats' tests/review-import-ownership.test.js
+
+  review-ui:
+    name: Node 20 · Review Chromium tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Установить зависимости
+        run: npm ci --no-audit --no-fund
+
+      - name: Установить системный FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
+      - name: Проверить FFmpeg, FFprobe и обязательные кодеры
+        run: |
+          ffmpeg -version
+          ffprobe -version
+          encoders="$(ffmpeg -hide_banner -encoders 2>&1)"
+          for encoder in libwebp libx264 libvpx libopus aac; do
+            if ! grep -Eq "[[:space:]]${encoder}[[:space:]]" <<<"${encoders}"; then
+              echo "::error::Системный FFmpeg не содержит обязательный кодер ${encoder}"
+              exit 1
+            fi
+          done
+
+      - name: Установить Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Запустить Review browser tests
+        run: npm run test:review-ui

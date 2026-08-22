@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Ajv = require('ajv');
+const { frameSnapSeconds, isCanonicalBrollReference } = require('./broll-media');
 
 const OFFICIAL_SCENES = [
   'fullscreen',
@@ -11,6 +12,10 @@ const OFFICIAL_SCENES = [
   'stat',
   'broll',
 ];
+const RENDERABLE_BROLL_EXTENSIONS = new Set([
+  '.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp',
+]);
+const REVIEW_ASSET_ID = /^asset-[1-9]\d*$/;
 
 const schemaPath = path.join(__dirname, '../../schema/lesson-brief.schema.json');
 const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
@@ -32,7 +37,23 @@ function schemaErrors(brief) {
   });
 }
 
-function validateLessonBrief(brief, { requireApproved = false } = {}) {
+function isRenderableBrollSource(value, { allowOpaqueAssetId = false } = {}) {
+  if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) return false;
+  if (allowOpaqueAssetId && REVIEW_ASSET_ID.test(value)) return true;
+  let pathname = value;
+  try {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) pathname = new URL(value).pathname;
+  } catch (_) {
+    return false;
+  }
+  pathname = pathname.split(/[?#]/, 1)[0].replaceAll('\\', '/');
+  return RENDERABLE_BROLL_EXTENSIONS.has(path.posix.extname(pathname).toLowerCase());
+}
+
+function validateLessonBrief(brief, {
+  requireApproved = false,
+  allowOpaqueBrollAssetIds = false,
+} = {}) {
   const errors = schemaErrors(brief);
   const scenes = Array.isArray(brief && brief.scenes) ? brief.scenes : [];
 
@@ -46,6 +67,27 @@ function validateLessonBrief(brief, { requireApproved = false } = {}) {
     if (index > 0 && Number.isFinite(scene.start) && Number.isFinite(scenes[index - 1].end)
       && scene.start < scenes[index - 1].end) {
       errors.push(`scenes[${index}]: тайминг пересекается с предыдущей сценой`);
+    }
+    if (scene.scene === 'broll' && typeof scene.brollSrc === 'string'
+      && !isRenderableBrollSource(scene.brollSrc, {
+        allowOpaqueAssetId: allowOpaqueBrollAssetIds,
+      })) {
+      errors.push(`scenes[${index}].brollSrc: b-roll поддерживает только изображения`);
+    }
+    if (scene.scene === 'broll' && scene.brollMedia) {
+      if (!isCanonicalBrollReference(scene.brollMedia.src)) {
+        errors.push(`scenes[${index}].brollMedia.src: ссылка на b-roll должна быть канонической относительной`);
+      }
+      if (scene.brollMedia.kind === 'video') {
+        try {
+          if (frameSnapSeconds(scene.brollMedia.trimStartSec, brief?.output?.fps)
+            !== scene.brollMedia.trimStartSec) {
+            errors.push(`scenes[${index}].brollMedia.trimStartSec: должен совпадать с границей кадра`);
+          }
+        } catch (_) {
+          errors.push(`scenes[${index}].brollMedia.trimStartSec: время b-roll некорректно`);
+        }
+      }
     }
   });
 
@@ -109,7 +151,7 @@ function sceneSummary(scene) {
   if (scene.scene === 'text-only') return `«${scene.quoteCream} ${scene.quoteOrange}»`;
   if (scene.scene === 'stat') return `${scene.statCream}${scene.statOrange}: ${scene.headCream} ${scene.headOrange}`;
   if (scene.scene === 'blur-overlay') return `${scene.big}: ${scene.headCream} ${scene.headOrange}`;
-  if (scene.scene === 'broll') return `${scene.headCream} ${scene.headOrange} (${scene.brollSrc})`;
+  if (scene.scene === 'broll') return `${scene.headCream} ${scene.headOrange} (${scene.brollMedia?.src ?? scene.brollSrc})`;
   return `${scene.headCream} ${scene.headOrange}: ${(scene.bullets || []).join('; ')}`;
 }
 
@@ -148,5 +190,6 @@ module.exports = {
   OFFICIAL_SCENES,
   buildReelScenesProps,
   formatBriefMarkdown,
+  isRenderableBrollSource,
   validateLessonBrief,
 };

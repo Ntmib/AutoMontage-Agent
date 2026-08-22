@@ -13,6 +13,34 @@ function tmp(name) {
   return path.join(TMPDIR, name);
 }
 
+function ffmpegEncoderAvailable(output, encoder) {
+  if (typeof output !== 'string' || typeof encoder !== 'string' || !encoder) return false;
+  const escaped = encoder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^\\s*[A-Z.]{6}\\s+${escaped}(?:\\s|$)`, 'm').test(output);
+}
+
+// Позволяет выбрать отдельную полную сборку ffmpeg без замены системного бинарника.
+// Публичный CLI применяет каталог до запуска Review/build, дочерние процессы наследуют PATH.
+function configureMediaToolPath(env = process.env, platform = process.platform) {
+  const configured = env.AUTOMONTAGE_FFMPEG_DIR;
+  if (configured == null || configured === '') return null;
+  const directory = path.resolve(configured);
+  const suffix = platform === 'win32' ? '.exe' : '';
+  for (const command of ['ffmpeg', 'ffprobe']) {
+    const executable = path.join(directory, `${command}${suffix}`);
+    try {
+      fs.accessSync(executable, fs.constants.X_OK);
+      if (!fs.statSync(executable).isFile()) throw new Error('not a file');
+    } catch (_) {
+      throw new Error(`AUTOMONTAGE_FFMPEG_DIR: ${command}${suffix} не найден в указанной папке`);
+    }
+  }
+  const entries = String(env.PATH || '').split(path.delimiter).filter(Boolean);
+  env.PATH = [directory, ...entries.filter((entry) => path.resolve(entry) !== directory)]
+    .join(path.delimiter);
+  return directory;
+}
+
 // Автоопределение интерпретатора Python 3.
 // Windows: обычно `python`. macOS/Linux: обычно `python3`. Берём тот, что реально Python 3.
 let _py = null;
@@ -78,6 +106,8 @@ function remotionBin() {
 module.exports = {
   ROOT,
   TMPDIR,
+  configureMediaToolPath,
+  ffmpegEncoderAvailable,
   tmp,
   python,
   pythonCandidates,

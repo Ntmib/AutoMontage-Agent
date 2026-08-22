@@ -12,12 +12,17 @@ const {
   getLessonAction,
   prepareLessonRender,
 } = require('../scripts/lesson/workflow');
+const { createOrOpenProject } = require('../scripts/project/workspace');
 
 const ROOT = path.resolve(__dirname, '..');
 
 function runLessonBuildWithIntercept(t, args, {
   failRender = false,
   materializeFinish = false,
+  materializePlan = false,
+  failPlan = false,
+  replacePlanJson = false,
+  racePlanJsonRemoval = false,
 } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-lesson-intercept-'));
   const hook = path.join(directory, 'hook.js');
@@ -28,9 +33,26 @@ function runLessonBuildWithIntercept(t, args, {
     "const path = require('node:path');",
     "const calls = process.env.AUTOMONTAGE_LESSON_CAPTURE;",
     `const materializeFinish = ${JSON.stringify(materializeFinish)};`,
+    `const materializePlan = ${JSON.stringify(materializePlan)};`,
+    `const failPlan = ${JSON.stringify(failPlan)};`,
+    `const replacePlanJson = ${JSON.stringify(replacePlanJson)};`,
+    `const racePlanJsonRemoval = ${JSON.stringify(racePlanJsonRemoval)};`,
+    'let generatedPlanJson = null;',
+    'let removalRaced = false;',
+    'const nativeUnlinkSync = fs.unlinkSync.bind(fs);',
+    'const nativeRenameSync = fs.renameSync.bind(fs);',
     'childProcess.spawnSync = (command, args) => {',
     "  fs.appendFileSync(calls, JSON.stringify({ command, args }) + '\\n');",
+    "  if (args.length === 1 && args[0] === '--version') return { status: 0, stdout: 'Python 3.12.0', stderr: '' };",
     "  if (command === 'ffprobe') return { status: 0, stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1080, height: 1920, r_frame_rate: '25/1' }], format: { duration: '20' } }) };",
+    "  if (materializePlan && command === process.execPath && path.basename(args[0]) === 'gen-brief.js') {",
+    "    const jsonPath = args[2];",
+    '    generatedPlanJson = jsonPath;',
+    "    const markdownPath = args[args.indexOf('--markdown') + 1];",
+    "    fs.writeFileSync(jsonPath, JSON.stringify({ version: 1, status: 'draft', title: 'PLAN', theme: 'lesson-neutral', output: { aspect: 'vertical' } }) + '\\n');",
+    "    fs.writeFileSync(markdownPath, '# PLAN\\n');",
+    "    return { status: failPlan ? 1 : 0, stdout: '', stderr: failPlan ? 'gen failed' : '' };",
+    '  }',
     "  if (process.env.AUTOMONTAGE_LESSON_FAIL_RENDER && args.includes('render')) return { status: 1, stdout: '', stderr: 'render failed' };",
     "  if (materializeFinish && command === process.execPath && path.basename(args[0]) === 'finish.js') {",
     "    fs.mkdirSync(path.dirname(args[2]), { recursive: true });",
@@ -39,6 +61,33 @@ function runLessonBuildWithIntercept(t, args, {
     '  }',
     "  return { status: 0, stdout: '' };",
     '};',
+    'if (racePlanJsonRemoval) {',
+    '  const swapRemovalTarget = (reportedTarget) => {',
+    '    if (removalRaced) return;',
+    '    removalRaced = true;',
+    "    nativeRenameSync(generatedPlanJson, generatedPlanJson + '.owned-race');",
+    "    fs.writeFileSync(generatedPlanJson, 'foreign-plan-at-removal');",
+    "    fs.appendFileSync(calls, JSON.stringify({ raceTarget: reportedTarget }) + '\\n');",
+    '  };',
+    '  fs.unlinkSync = (target) => {',
+    '    if (target === generatedPlanJson) swapRemovalTarget(target);',
+    '    return nativeUnlinkSync(target);',
+    '  };',
+    '  fs.renameSync = (from, to) => {',
+    '    if (from === generatedPlanJson) swapRemovalTarget(to);',
+    '    return nativeRenameSync(from, to);',
+    '  };',
+    '}',
+    "if (replacePlanJson) {",
+    "  const workspace = require(path.join(process.cwd(), 'scripts/project/workspace'));",
+    '  const publish = workspace.publishBriefRevision;',
+    '  workspace.publishBriefRevision = (...publishArgs) => {',
+    '    const result = publish(...publishArgs);',
+    "    fs.renameSync(generatedPlanJson, generatedPlanJson + '.original');",
+    "    fs.writeFileSync(generatedPlanJson, 'foreign replacement');",
+    '    return result;',
+    '  };',
+    '}',
     '',
   ].join('\n'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -49,6 +98,7 @@ function runLessonBuildWithIntercept(t, args, {
       ...process.env,
       AUTOMONTAGE_LESSON_CAPTURE: calls,
       AUTOMONTAGE_LESSON_FAIL_RENDER: failRender ? '1' : '',
+      ...(materializePlan ? { OPENAI_API_KEY: 'test-only-placeholder' } : {}),
       NODE_OPTIONS: `--require=${hook}`,
     },
   });
@@ -56,6 +106,31 @@ function runLessonBuildWithIntercept(t, args, {
     ? fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
     : [];
   return { result, invocations };
+}
+
+function makePlanProject(t) {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-plan-project-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  return createOrOpenProject({
+    projectDir: path.join(parent, 'project'),
+    name: 'Plan cleanup',
+    sourcePath: path.join(ROOT, 'examples', 'demo-source.mp4'),
+    now: new Date('2026-08-22T10:00:00.000Z'),
+  });
+}
+
+function findRegularFileWithBytes(root, expected) {
+  if (!fs.existsSync(root)) return null;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      const nested = findRegularFileWithBytes(candidate, expected);
+      if (nested) return nested;
+    } else if (entry.isFile() && fs.readFileSync(candidate, 'utf8') === expected) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 test('lesson workflow exposes one public default theme', () => {
@@ -115,8 +190,9 @@ test('approved brief cannot be rendered against another source', () => {
 });
 
 test('approved brief prepares ReelScenes with frozen geometry', () => {
+  const brief = makeBrief();
   const prepared = prepareLessonRender({
-    brief: makeBrief(),
+    brief,
     theme: { colors: { bg: '#16120E' } },
     sourceVideo: '/videos/source.mp4',
   });
@@ -127,6 +203,11 @@ test('approved brief prepares ReelScenes with frozen geometry', () => {
   assert.equal(prepared.props.fps, 30);
   assert.equal(prepared.props.durationInFrames, 300);
   assert.equal(prepared.props.audioSrc, 'source.mp4');
+  assert.deepEqual(prepared.approvedMedia, {
+    brief,
+    sourcePath: '/videos/source.mp4',
+    sourceAlias: 'source.mp4',
+  });
 });
 
 test('approved lesson keeps music out of Remotion and prepares post-render ducking', () => {
@@ -248,6 +329,78 @@ test('gen-brief arguments freeze an optional speaker zoom', () => {
   assert.deepEqual(args.slice(-2), ['--face-zoom', '1.08']);
 });
 
+test('project lesson planning removes its exact generated temporary pair after success and failure', async (t) => {
+  for (const failPlan of [false, true]) {
+    await t.test(failPlan ? 'failure' : 'success', (subtest) => {
+      const workspace = makePlanProject(subtest);
+      const { result, invocations } = runLessonBuildWithIntercept(subtest, [
+        'examples/demo-source.mp4',
+        '--template', 'lesson',
+        '--no-transcribe',
+        '--project-dir', workspace.dir,
+      ], { materializePlan: true, failPlan });
+      assert.equal(result.status, failPlan ? 1 : 0, result.stderr);
+      const generated = invocations.find((entry) => (
+        entry.command === process.execPath && path.basename(entry.args[0]) === 'gen-brief.js'
+      ));
+      assert.ok(generated);
+      const jsonPath = generated.args[2];
+      const markdownPath = generated.args[generated.args.indexOf('--markdown') + 1];
+      assert.equal(fs.existsSync(jsonPath), false);
+      assert.equal(fs.existsSync(markdownPath), false);
+    });
+  }
+});
+
+test('project lesson planning preserves a foreign replacement of its generated temp file and fails closed', (t) => {
+  const workspace = makePlanProject(t);
+  const { result, invocations } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--no-transcribe',
+    '--project-dir', workspace.dir,
+  ], { materializePlan: true, replacePlanJson: true });
+  assert.equal(result.status, 1);
+  const generated = invocations.find((entry) => (
+    entry.command === process.execPath && path.basename(entry.args[0]) === 'gen-brief.js'
+  ));
+  assert.ok(generated, result.stderr);
+  const jsonPath = generated.args[2];
+  const markdownPath = generated.args[generated.args.indexOf('--markdown') + 1];
+  t.after(() => {
+    for (const target of [jsonPath, `${jsonPath}.original`, markdownPath]) {
+      try { fs.unlinkSync(target); } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+  });
+  assert.ok(findRegularFileWithBytes(path.dirname(jsonPath), 'foreign replacement'));
+  assert.equal(fs.existsSync(markdownPath), false);
+});
+
+test('project lesson cleanup preserves foreign bytes swapped at the final removal syscall', (t) => {
+  const workspace = makePlanProject(t);
+  const { result, invocations } = runLessonBuildWithIntercept(t, [
+    'examples/demo-source.mp4',
+    '--template', 'lesson',
+    '--no-transcribe',
+    '--project-dir', workspace.dir,
+  ], { materializePlan: true, racePlanJsonRemoval: true });
+  assert.equal(result.status, 1);
+  const race = invocations.find((entry) => entry.raceTarget);
+  assert.ok(race, result.stderr);
+  assert.equal(fs.readFileSync(race.raceTarget, 'utf8'), 'foreign-plan-at-removal');
+  t.after(() => {
+    for (const entry of invocations) {
+      if (entry.raceTarget) {
+        try { fs.unlinkSync(entry.raceTarget); } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+    }
+  });
+});
+
 test('lesson rejects source-changing flags that invalidate approved timings', () => {
   assert.throws(
     () => assertLessonOptions({ isLesson: true, args: ['--tighten'] }),
@@ -267,7 +420,7 @@ test('lesson rejects source-changing flags that invalidate approved timings', ()
   }));
 });
 
-test('approved lesson props use one temporary public lease and remove it after render', (t) => {
+test('approved lesson props use one temporary media bundle and remove it after render', (t) => {
   const id = `lease-lesson-${process.pid}-${Date.now()}`;
   const propsPath = path.join(ROOT, 'out', `${id}.lesson.props.json`);
   t.after(() => fs.rmSync(propsPath, { force: true }));
@@ -282,9 +435,17 @@ test('approved lesson props use one temporary public lease and remove it after r
 
   assert.equal(result.status, 0, result.stderr);
   const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
-  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/source\.mp4$/);
+  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/media-1\.mp4$/);
   assert.equal(props.audioSrc, props.faceSrc);
-  assert.ok(invocations.some((entry) => entry.args.includes('ReelScenes')));
+  const render = invocations.find((entry) => entry.args.includes('ReelScenes'));
+  assert.ok(render);
+  const publicDirIndex = render.args.indexOf('--public-dir');
+  assert.ok(publicDirIndex > 0);
+  const publicDirectory = render.args[publicDirIndex + 1];
+  assert.equal(path.isAbsolute(publicDirectory), true);
+  assert.equal(publicDirectory.startsWith(`${ROOT}${path.sep}`), false);
+  assert.equal(fs.existsSync(publicDirectory), false);
+  assert.equal(JSON.stringify(props).includes(publicDirectory), false);
   assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
 });
 
@@ -315,7 +476,7 @@ test('approved lesson rebinds legacy scene faceSrc to the same temporary source 
   const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
   assert.equal(props.scenes[0].faceSrc, props.faceSrc);
   assert.equal(props.audioSrc, props.faceSrc);
-  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/source\.mp4$/);
+  assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/media-1\.mp4$/);
   assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
 });
 

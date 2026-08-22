@@ -18,6 +18,7 @@ const CANONICAL_MARKDOWN = new Set([
   'SECURITY.md',
   'docs/TEMPLATES.md',
 ]);
+const INHERITED_SYSTEM_ENV = new Set(['PATH']);
 const PRIVATE_PATTERNS = [
   { rule: 'private-id', pattern: new RegExp(['dima', 'grunge'].join('-'), 'gi'), label: 'private theme id' },
   { rule: 'private-id', pattern: new RegExp(['@MCD', 'ENIL'].join(''), 'gi'), label: 'private handle' },
@@ -335,7 +336,7 @@ function checkSecurityException(files, read, issues, now) {
   }
 }
 
-function checkReleaseNotes(files, read, issues) {
+function checkReleaseNotes(files, read, issues, { releaseCandidate = false } = {}) {
   if (!files.includes('CHANGELOG.md')) {
     issues.push(issue(
       'release-notes', 'CHANGELOG.md', 1,
@@ -361,7 +362,7 @@ function checkReleaseNotes(files, read, issues) {
       'exactly one undated [Unreleased] section is required',
       'keep one ## [Unreleased] heading before the current release section.',
     ));
-  } else if (sectionBody(unreleased[0]).trim()) {
+  } else if (releaseCandidate && sectionBody(unreleased[0]).trim()) {
     issues.push(issue(
       'release-notes', 'CHANGELOG.md', lineNumber(source, unreleased[0].index),
       '[Unreleased] must be whitespace-empty for a release candidate',
@@ -418,7 +419,7 @@ function checkEnvironment(files, read, issues) {
   for (const file of files.filter((name) => /\.(?:c?js|jsx|mjs)$/.test(name))) {
     const source = read(file);
     for (const match of source.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) {
-      if (!declarations.has(match[1])) {
+      if (!declarations.has(match[1]) && !INHERITED_SYSTEM_ENV.has(match[1])) {
         issues.push(issue(
           'env-declaration', file, lineNumber(source, match.index),
           `${match[1]} is used but absent from .env.example`,
@@ -538,7 +539,13 @@ function checkChangedPunctuation(additions, issues) {
   }
 }
 
-function checkRelease({ cwd = ROOT, tree = 'HEAD', base = null, now = new Date() } = {}) {
+function checkRelease({
+  cwd = ROOT,
+  tree = 'HEAD',
+  base = null,
+  release = false,
+  now = new Date(),
+} = {}) {
   const resolvedCwd = path.resolve(cwd);
   const treeSha = resolveTree(resolvedCwd, tree, 'tree');
   const baseSha = base ? resolveTree(resolvedCwd, base, 'base') : null;
@@ -553,7 +560,7 @@ function checkRelease({ cwd = ROOT, tree = 'HEAD', base = null, now = new Date()
   const issues = [];
   checkPackageMetadata(read, issues);
   checkSecurityException(files, read, issues, now);
-  checkReleaseNotes(files, read, issues);
+  checkReleaseNotes(files, read, issues, { releaseCandidate: release });
   checkEnvironment(files, read, issues);
   checkMarkdownLinks(files, read, issues);
   checkPrivateData(files, read, issues);
@@ -566,9 +573,13 @@ function checkRelease({ cwd = ROOT, tree = 'HEAD', base = null, now = new Date()
 }
 
 function parseArgs(args) {
-  const options = { tree: 'HEAD', base: null };
+  const options = { tree: 'HEAD', base: null, release: false };
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
+    if (token === '--release') {
+      options.release = true;
+      continue;
+    }
     if (token !== '--tree' && token !== '--base') throw new Error(`unknown option: ${token}`);
     const value = args[index + 1];
     if (!value || value.startsWith('--')) throw new Error(`${token} requires a Git ref`);

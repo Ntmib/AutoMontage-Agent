@@ -1,8 +1,9 @@
-import { AbsoluteFill, Sequence, Audio, staticFile, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
+import { AbsoluteFill, Sequence, Audio, staticFile, useVideoConfig } from 'remotion';
 import { FontStyle } from './fonts';
 import { ThemeContext, getTheme } from './theme';
 import { SCENES } from './scenes/scenes';
 import { safeFor } from './scenes/safezone';
+import { sourceVolumeForFrame } from './scenes/BrollMedia';
 
 const src = (s) => (s && s.startsWith('http') ? s : staticFile(s));
 
@@ -36,12 +37,8 @@ export const getMusicPlaybackProps = ({ trimBeforeFrames = 0, playbackRate = 1 }
   playbackRate,
 });
 
-// Мягкое появление сцены (кроссфейд-cut)
-const FadeIn = ({ children, dur }) => {
-  const frame = useCurrentFrame();
-  const op = interpolate(frame, [0, 8, dur - 6, dur], [0, 1, 1, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-  return <AbsoluteFill style={{ opacity: op }}>{children}</AbsoluteFill>;
-};
+// Сцены идут жёстким склеенным cut: fade без перекрытия оставлял пустой кадр на каждом стыке.
+const SceneLayer = ({ children }) => <AbsoluteFill style={{ opacity: 1 }}>{children}</AbsoluteFill>;
 
 // Отладочная рамка сейф-зоны (тексты должны быть внутри)
 const SafeGuide = () => {
@@ -53,11 +50,19 @@ const SafeGuide = () => {
 export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc = null, facePos = null, faceZoom = 1, audioSrc = null, musicSrc = null, musicGainDb = -17, musicFadeInSec = 0, musicFadeOutSec = 0, musicTrimBeforeFrames = 0, musicPlaybackRate = 1, videoTitle = 'ВИДЕО', debug = false }) => {
   const t = getTheme(theme);
   const { fps, durationInFrames } = useVideoConfig();
+  const timedScenes = scenes.map((scene) => ({
+    scene,
+    ...getSceneTiming(scene, fps),
+    audioMode: scene.brollMedia?.kind === 'video' ? scene.brollMedia.audioMode : null,
+  }));
   return (
     <ThemeContext.Provider value={t}>
       <AbsoluteFill style={{ background: t.colors.bg, fontFamily: t.fonts.body }}>
         <FontStyle />
-        {audioSrc && <Audio src={src(audioSrc)} />}
+        {audioSrc && <Audio
+          src={src(audioSrc)}
+          volume={(frame) => sourceVolumeForFrame({ frame, scenes: timedScenes, fps })}
+        />}
         {musicSrc && <Audio
           src={src(musicSrc)}
           {...getMusicPlaybackProps({
@@ -72,14 +77,13 @@ export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc =
             fadeOutSec: musicFadeOutSec,
           })}
         />}
-        {scenes.map((sc, i) => {
-          const { from, durationInFrames, sourceStartFrame } = getSceneTiming(sc, fps);
+        {timedScenes.map(({ scene: sc, from, durationInFrames: sceneDuration, sourceStartFrame }, i) => {
           const Comp = SCENES[sc.scene] || SCENES.fullscreen;
           return (
-            <Sequence key={i} from={from} durationInFrames={durationInFrames} layout="none">
-              <FadeIn dur={durationInFrames}>
-                <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} sourceStartFrame={sourceStartFrame} videoTitle={sc.videoTitle || videoTitle} />
-              </FadeIn>
+            <Sequence key={i} from={from} durationInFrames={sceneDuration} premountFor={Math.round(fps)}>
+              <SceneLayer>
+                <Comp {...sc} faceSrc={sc.faceSrc || faceSrc} facePos={sc.facePos || facePos} faceZoom={sc.faceZoom ?? faceZoom} sourceStartFrame={sourceStartFrame} durationInFrames={sceneDuration} videoTitle={sc.videoTitle || videoTitle} />
+              </SceneLayer>
             </Sequence>
           );
         })}

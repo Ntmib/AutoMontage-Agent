@@ -7,8 +7,9 @@
 //   automontage --help                      – помощь
 const path = require('path');
 const fs = require('fs');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { buildDemoArgs, ensureOutputDestination } = require('./project/cli-options');
+const { configureMediaToolPath } = require('./env');
 
 const ROOT = path.join(__dirname, '..');
 const argv = process.argv.slice(2);
@@ -20,6 +21,7 @@ function help() {
   automontage <видео.mp4> [опции]     смонтировать (результат в текущей папке)
   automontage demo                    собрать демо-ролик из примера (без ключей и whisper)
   automontage doctor                  проверить окружение (что доустановить)
+  automontage review --project-dir .  открыть локальную проверку монтажного листа
   automontage --help                  эта справка
 
 Частые опции:
@@ -48,10 +50,17 @@ function help() {
 Внешние темы подключаются по id через каталог THEMES_EXT.
 
 Сначала проверь окружение: automontage doctor
-Требуется: Node.js (>=20), Python 3, ffmpeg (Chromium только для пересборки картинок).`);
+Требуется: Node.js (>=20), Python 3, ffmpeg (libwebp нужен для загрузки фото в Review).`);
 }
 
 if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { help(); process.exit(0); }
+
+try {
+  configureMediaToolPath();
+} catch (error) {
+  console.error(`❌ ${error.message}`);
+  process.exit(1);
+}
 
 // проверка окружения: automontage doctor
 if (argv[0] === 'doctor') {
@@ -59,6 +68,43 @@ if (argv[0] === 'doctor') {
   catch (e) { process.exit(e.status || 1); }
   process.exit(0);
 }
+
+// локальная проверка проекта: аргументы review никогда не попадают в build.js
+if (argv[0] === 'review') {
+  const child = spawn(
+    process.execPath,
+    [path.join(ROOT, 'scripts', 'review', 'cli.js'), ...argv.slice(1)],
+    { stdio: 'inherit', cwd: process.cwd(), shell: false },
+  );
+  const signalExitCodes = { SIGINT: 130, SIGTERM: 143 };
+  let forwardedSignal = null;
+  let settled = false;
+  const handlers = {};
+  const restore = () => {
+    for (const signal of Object.keys(signalExitCodes)) {
+      process.removeListener(signal, handlers[signal]);
+    }
+  };
+  const finish = (code) => {
+    if (settled) return;
+    settled = true;
+    restore();
+    process.exit(code);
+  };
+  for (const signal of Object.keys(signalExitCodes)) {
+    handlers[signal] = () => {
+      if (forwardedSignal) return;
+      forwardedSignal = signal;
+      child.kill(signal);
+    };
+    process.on(signal, handlers[signal]);
+  }
+  child.once('error', () => finish(1));
+  child.once('exit', (code) => {
+    if (Number.isInteger(code)) finish(code);
+    else finish(forwardedSignal ? signalExitCodes[forwardedSignal] : 1);
+  });
+} else {
 
 const buildJs = path.join(ROOT, 'scripts', 'build.js');
 
@@ -85,4 +131,5 @@ try {
   execFileSync(process.execPath, [buildJs, ...forward], { stdio: 'inherit', cwd: process.cwd() });
 } catch (e) {
   process.exit(e.status || 1);
+}
 }

@@ -13,6 +13,7 @@
 //                       Осмысленно только с --scenario (блоки берутся из готового листа).
 //   --title "текст"   : заголовок видео для шаблона lesson (плашка сверху).
 const fs = require('fs');
+const { randomUUID } = require('node:crypto');
 const path = require('path');
 const {
   ROOT,
@@ -38,7 +39,6 @@ const { REMOTION_AUDIO_ADVANCE_MS } = require('./finish-audio');
 const {
   LESSON_DEFAULT_THEME,
   assertLessonOptions,
-  bindLessonSourceLease,
   buildGenBriefArgs,
   getLessonAction,
   prepareLessonRender,
@@ -47,11 +47,13 @@ const {
   copyOutputFile,
   createBuildContext,
 } = require('./project/build-context');
+const { claimAndRemoveOwnedPath } = require('./project/owned-removal');
 const {
-  recordBrief,
+  publishBriefRevision,
   runRenderLifecycle,
 } = require('./project/workspace');
 const { withPublicMediaLease } = require('./public-media');
+const { withRenderMediaBundle } = require('./render-media-bundle');
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -143,6 +145,46 @@ const runNodeCapture = (script, scriptArgs, stage = script) => captureTool(
   { cwd: ROOT, stage, maxBuffer: 16 * 1024 * 1024 },
 ).trim();
 const remotion = resolveRemotionCommand();
+
+function snapshotGeneratedTemp(filePath) {
+  try {
+    const before = fs.lstatSync(filePath, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink()) return null;
+    const bytes = fs.readFileSync(filePath);
+    const stat = fs.lstatSync(filePath, { bigint: true });
+    if (stat.dev !== before.dev || stat.ino !== before.ino
+      || stat.size !== before.size || stat.mtimeNs !== before.mtimeNs) {
+      throw new Error('generated lesson temporary file changed while recording ownership');
+    }
+    return {
+      filePath,
+      dev: stat.dev,
+      ino: stat.ino,
+      size: stat.size,
+      mtimeNs: stat.mtimeNs,
+      bytes,
+    };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function cleanupGeneratedTemps(snapshots) {
+  let identityError = null;
+  for (const snapshot of snapshots.filter(Boolean)) {
+    try {
+      if (!claimAndRemoveOwnedPath({
+        target: snapshot.filePath,
+        expected: snapshot,
+        fileSystem: fs,
+      })) identityError ||= new Error('generated lesson temporary file identity changed');
+    } catch (error) {
+      identityError ||= error;
+    }
+  }
+  if (identityError) throw identityError;
+}
 
 // ── ранние проверки (до тяжёлых шагов: транскрипции, рендера) ──
 // Ключ нужен только для нового ТЗ. Утверждённый brief рендерится без LLM.
@@ -261,12 +303,17 @@ if (lessonAction === 'plan') {
     sourceFps: FPS,
     aspect,
   });
-  const briefPath = buildContext.paths.briefJson;
-  const markdownPath = buildContext.paths.briefMarkdown;
+  const generationId = randomUUID();
+  const briefPath = buildContext.project
+    ? tmp(`automontage-${generationId}.lesson.json`)
+    : buildContext.paths.briefJson;
+  const markdownPath = buildContext.project
+    ? tmp(`automontage-${generationId}.lesson.md`)
+    : buildContext.paths.briefMarkdown;
   const publicBrollDir = path.join(ROOT, 'public/broll');
   const availableBroll = fs.existsSync(publicBrollDir)
     ? fs.readdirSync(publicBrollDir)
-      .filter((file) => /\.(avif|gif|jpe?g|mov|mp4|png|webp)$/i.test(file))
+      .filter((file) => /\.(avif|gif|jpe?g|png|webp)$/i.test(file))
       .map((file) => `broll/${file}`)
     : [];
   const genArgs = buildGenBriefArgs({
@@ -285,6 +332,8 @@ if (lessonAction === 'plan') {
   });
   fs.mkdirSync(path.dirname(briefPath), { recursive: true });
   log(`собираю черновик ТЗ из 7 готовых сцен (${geometry.width}x${geometry.height})…`);
+  let generationError = null;
+  let generatedTemps = [];
   try {
     runNodeTool(path.join(ROOT, 'scripts/gen-brief.js'), genArgs.map(String), {
       cwd: ROOT,
@@ -292,22 +341,45 @@ if (lessonAction === 'plan') {
       stage: 'gen-brief',
     });
   } catch (error) {
-    console.error(`❌ gen-brief не собрал ТЗ: ${error.message}`);
+    generationError = error;
+  } finally {
+    if (buildContext.project) {
+      generatedTemps = [snapshotGeneratedTemp(briefPath), snapshotGeneratedTemp(markdownPath)];
+    }
+  }
+  let publishedBrief = { jsonPath: briefPath, markdownPath };
+  try {
+    if (generationError) throw generationError;
+    if (buildContext.project) {
+      const generatedBrief = JSON.parse(fs.readFileSync(briefPath, 'utf8'));
+      const generatedMarkdown = fs.readFileSync(markdownPath, 'utf8');
+      publishedBrief = publishBriefRevision(buildContext.project, {
+        kind: 'lesson',
+        brief: generatedBrief,
+        markdown: generatedMarkdown,
+        status: 'draft',
+        theme,
+        aspect: geometry.aspect,
+      });
+    }
+  } catch (error) {
+    generationError = error;
+  } finally {
+    if (buildContext.project) {
+      try {
+        cleanupGeneratedTemps(generatedTemps);
+      } catch (cleanupError) {
+        generationError ||= cleanupError;
+      }
+    }
+  }
+  if (generationError) {
+    console.error(`❌ gen-brief не собрал ТЗ: ${generationError.message}`);
     process.exit(1);
   }
-  if (buildContext.project) {
-    recordBrief(buildContext.project, {
-      revision: buildContext.paths.briefRevision,
-      jsonPath: briefPath,
-      markdownPath,
-      status: 'draft',
-      theme,
-      aspect: geometry.aspect,
-    });
-  }
   console.log('\n⏸ Черновик готов. Покажи Markdown-ТЗ Дмитрию и дождись явного «утверждаю».');
-  console.log(`   ТЗ: ${markdownPath}`);
-  console.log(`   JSON: ${briefPath}`);
+  console.log(`   ТЗ: ${publishedBrief.markdownPath}`);
+  console.log(`   JSON: ${publishedBrief.jsonPath}`);
   console.log('   После утверждения смени status на approved и перезапусти с --brief <JSON>.');
   process.exit(0);
 }
@@ -357,32 +429,36 @@ if (lessonAction === 'render') {
     }
   }
 
-  const finalL = withPublicMediaLease({
-    root: ROOT,
-    sourcePath: srcVideo,
-    namespace: buildContext.project ? buildContext.project.manifest.slug : 'dynamic',
-  }, (lease) => {
-    bindLessonSourceLease(prepared.props, lease.publicPath);
-    const lessonPropsPath = buildContext.paths.props;
-    const rawMp4L = buildContext.paths.raw;
-    const outMp4L = buildContext.paths.final;
-    fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
-    fs.writeFileSync(lessonPropsPath, JSON.stringify(prepared.props, null, 2));
-    const lessonRender = buildContext.project
-      ? {
-        version: buildContext.paths.render.version,
-        label: buildContext.paths.render.label,
-        dir: buildContext.paths.render.dir,
-        briefPath,
-      }
-      : null;
-    let final = runRenderLifecycle(buildContext.project, lessonRender, () => {
+  const lessonPropsPath = buildContext.paths.props;
+  const rawMp4L = buildContext.paths.raw;
+  const outMp4L = buildContext.paths.final;
+  const lessonRender = buildContext.project
+    ? {
+      version: buildContext.paths.render.version,
+      label: buildContext.paths.render.label,
+      dir: buildContext.paths.render.dir,
+      briefPath,
+    }
+    : null;
+  let finalL = runRenderLifecycle(buildContext.project, lessonRender, () => (
+    withRenderMediaBundle({
+      root: ROOT,
+      workspace: buildContext.project,
+      props: prepared.props,
+      approvedBrief: prepared.approvedMedia.brief,
+      sourcePath: prepared.approvedMedia.sourcePath,
+      sourceAlias: prepared.approvedMedia.sourceAlias,
+      namespace: buildContext.project ? buildContext.project.manifest.slug : 'dynamic',
+    }, (lease) => {
+      fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
+      fs.writeFileSync(lessonPropsPath, JSON.stringify(lease.props, null, 2));
       log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
       const renderCommand = remotionRenderCommand(remotion, {
         entry: 'src/index.js',
         composition: prepared.composition,
         output: rawMp4L,
         props: lessonPropsPath,
+        publicDir: lease.publicDirectory,
       });
       runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'lesson render' });
 
@@ -409,18 +485,17 @@ if (lessonAction === 'render') {
         fs.unlinkSync(mixedMp4L);
       }
       return outMp4L;
+    })
+  ));
+  if (outDir) {
+    const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
+    finalL = copyOutputFile({
+      cwd: process.cwd(),
+      outdir: outDir,
+      outputName,
+      source: finalL,
     });
-    if (outDir) {
-      const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
-      final = copyOutputFile({
-        cwd: process.cwd(),
-        outdir: outDir,
-        outputName,
-        source: final,
-      });
-    }
-    return final;
-  });
+  }
   console.log(`\n✅ готово по утверждённому ТЗ: ${finalL}  (${prepared.props.width}x${prepared.props.height})`);
   console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] иначе Telegram сплющит вертикаль.');
   process.exit(0);
@@ -447,19 +522,22 @@ if (scenarioFile) {
   log(`лист из файла: ${blocks.length} блоков`);
 } else {
   blocks = draftScenario(CAPTIONS);
-  const draftPath = buildContext.paths.scenarioJson;
-  activeScenarioPath = draftPath;
-  fs.mkdirSync(path.dirname(draftPath), { recursive: true });
-  fs.writeFileSync(draftPath, JSON.stringify({ source: 'source.mp4', theme, beatZoom, beatSec, blocks }, null, 2));
+  const draftScenarioBrief = { source: 'source.mp4', theme, beatZoom, beatSec, blocks };
+  let draftPath = buildContext.paths.scenarioJson;
   if (buildContext.project) {
-    recordBrief(buildContext.project, {
-      revision: buildContext.paths.briefRevision,
-      jsonPath: draftPath,
+    const published = publishBriefRevision(buildContext.project, {
+      kind: 'scenario',
+      brief: draftScenarioBrief,
       status: 'draft',
       theme,
       aspect: 'source',
     });
+    draftPath = published.jsonPath;
+  } else {
+    fs.mkdirSync(path.dirname(draftPath), { recursive: true });
+    fs.writeFileSync(draftPath, JSON.stringify(draftScenarioBrief, null, 2));
   }
+  activeScenarioPath = draftPath;
   log(`черновой лист → ${draftPath} (${blocks.length} блоков, поправь и перезапусти с --scenario)`);
 }
 if (args.includes('--beat')) beatZoom = true;   // «ритмичный зум / режь динамику»

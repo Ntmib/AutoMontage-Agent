@@ -1,6 +1,6 @@
 # Архитектура AutoMontage-Agent
 
-Актуально на 2026-08-05. Документ описывает существующий код, а не будущую дорожную карту.
+Актуально на 2026-08-22. Документ описывает существующий код, а не будущую дорожную карту.
 
 ## 1. Назначение и границы
 
@@ -82,6 +82,17 @@ no-follow flags там, где платформа их поддерживает.
 синхронизируется и атомарно переименовывается; cleanup удаляет его только при совпадении
 file identity с созданным процессом.
 
+Все изменяющие project-операции используют один межпроцессный lease из
+`scripts/project/workspace.js`: Save, approval, регистрация brief и lifecycle render не могут
+одновременно менять один workspace, но чтения остаются доступными. Полный owner record
+публикуется атомарно; live owner и owner с другого host сохраняются. Lease умершего PID на том
+же host можно забрать через identity-проверенный recovery claim. Под lease manifest заново
+читается с диска, stale in-memory snapshot получает `PROJECT_MANIFEST_CONFLICT`, а замена
+`project.json` выполняется только после повторной проверки persisted file snapshot. Для
+существующего manifest даже низкоуровневый writer обязан передать expected snapshot; успешный
+`rename` является однозначной commit point и после него transaction не запускает fallible probe,
+который мог бы ошибочно откатить уже опубликованную историю.
+
 Containment защищает от вредоносного manifest и symlink, существующих на момент проверки.
 Соперничающий локальный процесс с правом записи в workspace или внешний `--outdir` может заменить предка между
 проверкой и файловой операцией; portable Node API не даёт для этого кроссплатформенный
@@ -110,14 +121,245 @@ flowchart LR
 `scripts/lesson/brief.js` валидирует данные и превращает approved brief в props.
 `schema/lesson-brief.schema.json` фиксирует контракт.
 
-Approval сначала готовит owned sibling temp для JSON, Markdown, нового manifest и rollback-копии.
-Commit идёт в порядке manifest, Markdown, JSON: renderable approved JSON появляется последним.
-Сбой до этого шага удаляет опубликованный Markdown, возвращает прежний manifest и очищает только
-owned temps. При рендере точный legacy `faceSrc: "source.mp4"` внутри сцены переводится на
-текущий source lease вместе с top-level `faceSrc` и `audioSrc`.
+Approval под project lease заново читает и полностью валидирует текущий persisted draft и
+manifest. Markdown и JSON публикуются первыми атомарными no-replace hard links, поэтому уже
+существующая историческая ревизия никогда не заменяется. `project.json` публикуется CAS-последним:
+reader либо видит прежний currentBrief, либо новый указатель на уже существующий JSON. Сбой до
+manifest удаляет только собственные опубликованные файлы; hard exit может оставить безопасный
+orphan, и следующая draft-ревизия пропускает занятое имя. При рендере точный legacy
+`faceSrc: "source.mp4"` внутри сцены переводится на
+текущий source lease вместе с top-level `faceSrc` и `audioSrc`. Другой approved
+`scene.faceSrc` разрешён только как canonical `assets/...` project video или web-relative
+repository-public video. Props обязаны сохранить точный исходный reference и scene type до
+bundle boundary; после проверки cloned scene получает отдельный `.automontage/...` snapshot,
+а top-level `audioSrc` не меняется.
+Канонический builder отдельно передаёт trusted source alias (`source.mp4`): top-level
+`faceSrc`/`audioSrc` обязаны совпасть с ним, поэтому forged props не превращают custom reference
+в alias главного видео. Same-inode dedup хранит полную source identity и SHA-256; ctime-only
+повтор требует стабильного полного rehash, любое другое расхождение отклоняется.
+
+Первичный lesson/scenario draft тоже использует этот contract: build context не резервирует
+номер заранее, генератор сначала создаёт временную no-replace пару, а `publishBriefRevision()`
+под lease выбирает свободную ревизию, публикует исторические файлы no-replace и обновляет
+manifest последним. Поэтому параллельный build или foreign destination не перезаписывается.
 
 Brief замораживает исходник, тему, аспект, размеры, FPS, длительность, сцены и проверенное
 кадрирование лица. Это защищает от ситуации, когда утверждали один монтаж, а рендерится другой.
+
+### 3.3 Review Workbench — локальная проверка до рендера
+
+Путь нового b-roll проходит через несколько границ; браузер никогда не получает project path
+или SHA-256:
+
+```mermaid
+flowchart LR
+  A["Файл в браузере"] --> B["POST /api/assets/import"]
+  B --> C["owned quarantine 0700"]
+  C --> D["ffprobe + полный decode + лимиты"]
+  D --> E["WebP или H.264/AAC master + WebM proxy"]
+  E --> F["immutable UUID bundle + asset.json"]
+  F --> G["opaque asset-N в Review"]
+  G --> H["allowlist command + /api/validate"]
+  H --> I["Save: brollMedia + SHA-256 в новом draft"]
+  I --> J["approve: повторный probe/hash/identity"]
+  J --> K["одноразовый render media bundle"]
+  K --> L["Remotion Img / OffthreadVideo"]
+```
+
+`scripts/review/server.js` поднимает loopback-сервер с непредсказуемым session token и отдаёт
+browser-safe модель: исходник, сцены, слова, разрешённые медиа и аудит таймингов. Реальные пути
+остаются на сервере; `/api/*` и `/media/*` требуют токен, а файловые ответы привязаны к snapshot
+regular-файла и закрываются при его подмене после старта.
+
+`GET /api/state` каждый раз заново читает текущие manifest, brief и transcript с диска. Opaque
+asset id сохраняется, пока совпадают server-side reference, device и inode; замена исходника или
+зарегистрированного медиа завершает старую сессию с `409`, а не привязывает прежний handle к
+новым байтам. Тот же identity gate действует перед validate/save. Для выбранного подменённого
+asset preview даёт `404`, а validate/save — `422`.
+
+По умолчанию сессия read-only и не имеет POST-маршрутов или edit controls. Флаг `--edit`
+открывает `POST /api/validate`, `POST /api/save` и отдельный потоковый
+`POST /api/assets/import`. Для protected edit-запроса token и Origin
+своей loopback-сессии проверяются до чтения body. Сам body сервер вычитывает с жёстким лимитом;
+лишь затем сверяет method, route, edit permission и точный content type. Только допущенный body
+разбирается как JSON. Validate заново читает
+зарегистрированный текущий brief и manifest, сверяет их hashes, воспроизводит allowlist-команды
+и возвращает browser-safe diff. Save повторяет эту проверку на свежем snapshot и через project
+workspace создаёт новую draft Markdown/JSON-ревизию и ровно одну manifest entry. Исходный draft,
+approved-файлы и render history не перезаписываются. Review не вызывает approval или Remotion.
+Перед повторным чтением CAS и выделением номера workspace берёт общий project mutation lease.
+Живой или foreign-host owner даёт прежний `409`, а lease завершившегося PID восстанавливается
+без удаления чужих байтов. Review публикует Markdown и канонический JSON через atomic
+no-replace, повторно сверяет старый manifest и лишь после этого атомарно публикует новый
+manifest. Поэтому `/api/state` продолжает видеть старую согласованную ревизию, пока оба файла
+новой пары не стали видимы. Orphan после hard exit не перезаписывается: allocator выбирает
+следующий свободный номер ревизии.
+
+Редактор принимает только `move-boundary`, `replace-broll`, `set-broll-fit`,
+`set-broll-video-start` и `set-broll-audio-mode` с непрозрачным `asset-N` из текущего allowlist.
+Первая команда меняет только `left.end` и `right.start`: это adjacent edit, а не global ripple.
+Остальные выбирают image/video, `contain|cover`, покадрово округлённый старт и
+`mute|mix|replace`; video default равен `contain`, frame 0, `mute`, image default — `cover`.
+Видео без аудиопотока допускает только `mute`. Все времена brief остаются абсолютными временами
+исходника; поздние сцены не сдвигаются. Undo/redo хранит команды только в памяти браузера;
+серверный validate заново строит registry, пробует/хэширует тот же открытый descriptor и остаётся
+источником геометрии, diff и timing audit. Текст, scene type, effects, keyframes, masks и прочие
+поля fail closed как unsupported diff.
+
+Позиция маленького video preview — локальное UI-состояние по паре scene/opaque asset: rerender
+после validate, настройки, Undo или Redo восстанавливает playhead, но не отправляет его в brief.
+Показанный used interval берёт подтверждённый `trimStartSec` и прибавляет текущую длительность
+сцены из server diff; отдельного end-handle нет. Во время validate workbench имеет
+`aria-busy=true`, сообщает о проверке и блокирует все мутации. Timing error подсвечивает только
+границы рядом с указанным сервером `sceneIndex`; обычная media/HTTP ошибка границы не красит.
+Ответ `201` фиксирует import независимо от следующего `GET /api/state`: если refresh падает,
+браузер честно сообщает, что файл уже добавлен и требуется reload, сохраняя команды и diff.
+Единственная доступная точка открытия file chooser — именованная кнопка «Добавить медиа»:
+скрытый native file input исключён из Tab-порядка и accessibility tree, но остаётся программной
+границей выбора файла. Enter/Space на кнопке вызывают тот же input и не обходят mutation lock.
+
+`POST /api/assets/import` доступен только в edit-сессии и принимает один raw body за раз.
+Заявленный размер, MIME и безопасное имя проверяются до обработки; поток пишется в отдельный
+owner-only quarantine с точным `Content-Length`, abort signal и фиксированным запасом диска.
+До создания quarantine импорт берёт тот же project mutation lease, что Save, approval и render,
+но чтения Review остаются доступными. Quarantine `0700` до upload публикует append-only `0600`
+owner journal с hard-link anchor; master/proxy inode создаются и фиксируются до запуска encoder.
+После hard exit следующий владелец lease удаляет только записи умершего local PID с совпавшими
+inode и ожидаемым набором детей. UUID, имя и возраст не доказывают ownership; malformed/foreign,
+symlink, replacement и неожиданный child сохраняются. Publication claim так же удаляет только
+identity-записанные stage/final paths, а валидный bundle с marker-last `asset.json` неизменяем.
+Если setup quarantine падает до появления durable owner journal, каждый уже созданный файл и
+каталог удаляется в обратном порядке только по сразу записанным identity и точным bytes. Корень
+удаляется только обычным non-recursive `rmdir`, когда он всё ещё тот же и пуст; неожиданный или
+заменённый child сохраняет и себя, и quarantine для диагностики.
+Preview stage, claim и canonical final получают private inode и owner-journal запись до первой
+записи bytes; identity final-каталога журналируется сразу после `mkdir`. Удаление сначала атомарно
+перемещает pathname в случайный `0700` tombstone, проверяет перенесённый inode/размер/mtime и лишь
+затем удаляет его; малые immutable owner/claim/temp-файлы дополнительно сверяются побайтово.
+Подмена исходного pathname, попавшая в claim-rename, сохраняется внутри tombstone. Node 20 не даёт
+unlink по descriptor или rename no-replace, поэтому это намеренная strongest-available граница,
+а не обещание абсолютной атомарности против процесса с тем же UID и открытым private pathname.
+Затем ffprobe и полный decode подтверждают реальный контейнер, codec, геометрию, длительность и
+аудио. Общий probe не выводит media duration из `format.duration`: canonical `durationSec`
+равен только длительности visual video stream, а `audioDurationSec` хранит отдельную длительность
+audio stream. Stream timing берётся из stream duration, `duration_ts × time_base` или stream
+`DURATION` tag; отсутствие проверяемой video/audio длительности закрывает импорт.
+Для video FPS сначала используется положительный `avg_frame_rate`; отсутствующее, `0/0` или
+другое невалидное среднее значение переключается на положительный `r_frame_rate`, а две
+невалидные величины сохраняют прежний fail-closed FPS error.
+
+Legacy project/public изображения используют тот же V1-предел 25 MiB, что browser upload.
+Размер проверяется до хеширования, SHA-256 читается из no-follow descriptor порциями не больше
+64 KiB, а полные path/descriptor identity до и после чтения закрывают mutation fail closed.
+
+Изображение нормализуется в WebP; видео – в H.264/yuv420p master с AAC 48 kHz stereo при
+наличии звука и отдельный VP8/Opus WebM proxy для браузера. После autorotate нечётные стороны
+дополняются до чётных максимум на один пиксель, поэтому encoder не требует crop и не искажает
+aspect ratio. Оба видео ограничены visual duration: длинный audio trim-ится, короткий остаётся
+коротким. Metadata удаляется. Публикация
+атомарно переносит один immutable UUID bundle в `assets/broll/images|video/` и proxy в
+`previews/broll/`; `asset.json` содержит параметры и hashes без путей, а фиксированные
+относительные ссылки сервер выводит из UUID и типа медиа. Metadata v2 требует
+`audioDurationSec`; legacy v1 image безопасно читается, legacy v1 video отклоняется для
+переимпорта, а не получает догадку из старого `durationSec`.
+
+После начального admission `4 × input + 512 MiB` импорт вычисляет BigInt output budgets из
+проверенных bytes/geometry/visual duration/FPS/audio. Hard caps равны 128 MiB для WebP,
+2 GiB для master и 512 MiB для proxy; `ffmpeg -fs`, bounded writer/copy и post-close size gate
+не позволяют encoder или publication превысить budget. `statfs` повторяется перед encode,
+master, proxy и каждой publication copy с учётом peak live copies, 4 MiB overhead и 512 MiB
+reserve. Любая граница возвращает стабильный `507`, а существующий owned cleanup/retry contract
+удаляет только доказанные partial paths.
+Импорт не отправляет `replace-broll`: после refresh новая карточка появляется в media lane, но
+пользователь обязан отдельно назначить её сцене.
+Browser upload нормализует общий MIME `.m4v` (`video/mp4`) в контрактный `video/x-m4v`, не задаёт
+`Content-Length` вручную и сохраняет XHR progress. Большая media lane прокручивается внутри
+панели и не создаёт горизонтальный overflow всей страницы.
+
+Project lesson planning использует уникальную JSON/Markdown temp-пару только как handoff от
+генератора к transactional publisher. После успеха и ошибки удаляются лишь заранее снятые inode;
+подмена сохраняется в private tombstone и завершает planning fail closed.
+
+SIGINT/SIGTERM Review сначала abort-ит активный import и начинает закрытие HTTP server, но процесс
+завершает только после всех tracked import-finalizers: quarantine cleanup, controller release и
+bounded retry shared lease release. Media child получает `SIGTERM`, а после ограниченного grace
+period — `SIGKILL`. Persistent release error остаётся явным и прикрепляется к исходной ошибке
+операции, не маскируя её. Публичный `automontage review` запускает Review неблокирующим child,
+пересылает каждый shutdown signal ровно один раз и принимает его exit code лишь после cleanup.
+
+Save не доверяет browser descriptor. Он повторно сканирует immutable bundle, открывает master
+без следования symlink и передаёт тот же read-only descriptor в bounded ffprobe через `pipe:0`.
+Общий `scripts/media-probe.js` задаёт один argv/timeout/buffer/error contract для Save и approval;
+живой host pathname в probe не передаётся. Затем Save хэширует те же открытые байты и только
+после повторной identity-проверки материализует канонический `brollMedia` в новый draft.
+Approval повторяет containment, probe, metadata/proxy/hash и clip-duration проверки, удерживает
+descriptors до commit boundary и публикует approved только если все identities сохранились.
+Один и тот же UUID можно использовать в нескольких сценах с разными start/fit/audio; удалить
+или заменить опубликованный asset на месте в V1 нельзя.
+
+Registry, Review state, Save/restart и approval переносят обе длительности без вычисления одной
+из другой. Для `mute` и `mix` trim обязан помещаться в visual duration. Для `replace` он обязан
+помещаться одновременно в visual и audio duration; короткий audio поэтому нельзя молча
+дополнить тишиной или растянуть до картинки.
+
+Filesystem capability сосредоточен в `scripts/filesystem-capabilities.js` и независимо описывает
+`noFollow`, `posixPermissions` и `directoryFsync`. POSIX сохраняет `O_NOFOLLOW`, точные private
+`0600/0700` и fsync каталога после изменения directory entries. На Windows Node не поддерживает
+используемую пару open-directory + `fsyncSync`, поэтому пропускается только этот directory-entry
+durability flush; это не следствие отсутствия POSIX mode bits. Regular-file fsync, containment,
+opened-handle/path identity, timestamps, size и SHA-256 barriers остаются обязательными. Поэтому
+replacement, append, overwrite и same-size byte change fail closed на всех трёх платформах.
+
+Внешний `409` синхронно переводит браузер в отдельное конфликтное состояние ещё до асинхронной
+перезагрузки: active/redo stacks очищаются, проверенный diff сбрасывается, а timeline, b-roll,
+undo/redo и Save блокируются. Ошибка `GET /api/state` сохраняет quarantine и не разрешает discard.
+Только успешно загруженный канонический state выставляет отдельный fresh-ready gate; после него
+явное удаление устаревших правок снимает блокировку. Никакого silent rebase нет, и следующая
+команда валидируется отдельно от свежей базы, поэтому дорефрешные команды не могут попасть в
+новый replay. Тот же порядок действует для `409` от validate и save.
+
+Asset registry публикует только browser-safe descriptors и capabilities. Изображения и
+нормализованные видео можно назначать b-roll; audio-only остаётся только preview-активом и не
+проходит командный/approval/render contract. Канонические ссылки, UUID, hashes и абсолютные пути
+остаются server-side. Drag может притянуть границу к слову; ArrowLeft/Down и ArrowRight/Up идут
+на соседний кадр, а Home/End — на первый/последний допустимый кадр внутри пары сцен. Slider ARIA
+публикует именно эти достижимые frame-inset min/max и пересчитывает их из server diff после
+validate/Undo/Redo. Timing audit использует нормализованные word timestamps и объясняет
+`reason: frame|word`.
+
+Token обычно передаётся только существующему browser-launch process. Для `--no-open` или ошибки
+launch сервер вместо URL в stdout создаёт в системной temp-папке exclusive regular URL-файл
+mode `0600`; stdout содержит лишь путь. Owned файл удаляется при закрытии сервера либо через
+10 минут, а collision, symlink или ошибка записи закрывают старт сервера. CLI обрабатывает
+обычные `SIGINT` и `SIGTERM`: close-listener удаляет owned handoff, а import-finalizer освобождает
+lease/quarantine до завершения прямого CLI или публичной wrapper-команды. Для не перехватываемого
+`SIGKILL` cleanup намеренно не обещается.
+
+`scripts/review/waveform.js` best-effort создаёт через argv-only ffmpeg изображение
+`previews/review-waveform-<fingerprint>.png`. Fingerprint включает workspace-relative identity,
+размер и временные метаданные исходника. Генерация идёт в непредсказуемый соседний temp,
+проверяет regular file и публикует его атомарным rename; symlink и dangling symlink отклоняются.
+Identity каталога `previews/` фиксируется до запуска ffmpeg и повторно сверяется через resolver,
+realpath, device и inode после процесса и непосредственно перед rename. Если parent подменён,
+публикация закрывается, а cleanup не следует по новому внешнему пути.
+Ошибка или отсутствие ffmpeg дают `waveform: null` и не меняют manifest, brief или render state.
+При успехе браузер видит только `{ url: "/media/waveform" }`, а timeline добавляет PNG внутрь
+существующей дорожки исходника без отдельной пустой панели.
+
+Workbench изолирован от OpenCut runtime/project format и Remotion Studio. Он не экспортирует
+видео в браузере, не меняет текст, не делает global ripple и не реализует effects registry,
+keyframes или masks. Канонический путь остаётся прежним: draft -> внешнее approval -> approved
+brief -> `scripts/build.js --brief` -> Remotion. Перед вызовом Remotion lesson build копирует
+source, approved custom scene face videos и все локальные legacy/structured b-roll в один
+immutable одноразовый owner-only `public` под системным temp, переписывает только clone props на
+безопасные `.automontage/...` basenames и передаёт каталог Remotion отдельным `--public-dir` argv.
+Repository `public` целиком не копируется; lesson fonts уже встроены в bundle, а remote legacy
+images остаются HTTPS. File Provider `ctime` может быть ограниченно re-pin-нут только до начала
+render callback после полного стабильного SHA-256 при неизменных
+`dev/ino/size/mtime/mode/nlink`. Baseline фиксируется до единственного Remotion render; после
+всего callback identity/hash сверяются строго без ctime re-pin, поэтому mutation + byte/mtime
+restore всё равно закрывает build. Owned temp-root удаляется после success/error. Approved JSON
+не меняется и не содержит host path.
 
 ## 4. Remotion-слой
 
@@ -130,6 +372,15 @@ Brief замораживает исходник, тему, аспект, раз�
 
 `SceneDirector.jsx` раскладывает сцены по глобальным таймкодам. Видео внутри каждой сцены
 получает `trimBefore`, равный глобальному стартовому кадру; единая аудиодорожка не сбрасывается.
+Сцены соединяются непрозрачным hard cut: fade-in без перекрытия запрещён, потому что он создавал
+пустой кадр на каждом стыке.
+
+`src/scenes/BrollMedia.jsx` сохраняет legacy image через `Img`, а structured video выводит через
+Remotion `OffthreadVideo`. `trimBefore = round(trimStartSec × fps)`, а длину ограничивает
+родительская scene `Sequence`. `mute` выключает только клип; `mix` оставляет исходный голос и
+подаёт клип с постоянным коэффициентом −18 dB; `replace` плавно меняет source/clip gain на
+границах сцены. Музыка остаётся отдельной root-level дорожкой. Отдельный loudness pass для
+каждого b-roll asset в V1 намеренно не выполняется.
 
 Официальные lesson-сцены находятся в `src/scenes/scenes.jsx`:
 
@@ -154,6 +405,7 @@ Brief замораживает исходник, тему, аспект, раз�
 | Папки и версии роликов | `scripts/project/workspace.js`, `scripts/project/build-context.js` |
 | Транскрипция и субтитры | `scripts/transcribe.py`, `scripts/build-captions.js` |
 | Lesson brief | `scripts/gen-brief.js`, `scripts/lesson/*` |
+| Локальная проверка | `scripts/review/*`, `review/*` |
 | Валидация и качество | `scripts/validate.js`, `scripts/quality-gate.js`, `scripts/dynamic-gate.js` |
 | Монтаж аудио/видео | `scripts/finish.js`, `scripts/finish-audio.js`, `scripts/mix-music.js`, `scripts/pack-tg.js` |
 | Длинные рендеры | `scripts/render-chunks.js` |
@@ -179,23 +431,29 @@ symlink; symlink прерывает построение cache key.
   `project.json`, один исходник, транскрипт, ревизии brief, активы, превью, версии рендера и финал.
 - `project.json` – журнал относительных project-путей, статусов brief и рендеров. Только
   `source.originalPath` хранит исторический абсолютный путь исходника.
+- `assets/broll/images|video/<uuid>/` – immutable normalized master и bounded `asset.json`;
+  `previews/broll/<uuid>.webm` – браузерный video proxy. Review показывает их только через
+  token-protected opaque routes.
 - `out/<id>.transcript.json` и `out/<id>.captions.js` – generated data legacy-режима;
   отслеживаемые `src/data/` остаются только историческими fixtures и не перезаписываются.
 - `props/` – входные props и сценарии для воспроизводимых рендеров.
-- `public/` – ресурсы, доступные Remotion. Личные `public/source*.mp4`, музыка и `public/efir/`
-  игнорируются. На время рендера исходник копируется в уникальный lease
-  `public/.automontage/<safe-namespace>-<uuid>/source.<ext>` и удаляется в `finally`.
+- `public/` – tracked/локальные статические ресурсы checkout, доступные legacy/Dynamic Remotion.
+  Личные `public/source*.mp4`, музыка и `public/efir/` игнорируются. Approved lesson ничего сюда
+  не пишет: source и утверждённые local scene media копируются в owner-only системный temp
+  `os.tmpdir()/automontage-render-*/public/.automontage/<safe-namespace>-<uuid>/media-N.<ext>`, а абсолютный
+  temp `public` передаётся Remotion отдельным `--public-dir` argv и не попадает в props.
 - `out/` – legacy/cache-путь для запуска без `--project` и `--project-dir`.
 - `tmp/` – промежуточные файлы.
 - `examples/` – небольшие публичные входы для проверки установки.
 
-Public source bridge изолирован: каждый build получает свой media lease, поэтому второй
-рендер не может подменить байты источника первого. Lease удаляется после успеха и ошибки;
-cleanup проверяет, что удаляет только свой настоящий каталог, а не symlink или общий base.
-Статические/pre-existing symlink и symlink в финальном компоненте lease отклоняются до удаления.
-Node не предоставляет portable descriptor-relative `unlinkat`/`openat`, поэтому соперничающий
-вредоносный локальный процесс всё ещё может заменить parent между проверкой и `rm`: такой TOCTOU
-вне модели угроз при одном доверенном build на checkout, а не дополнительная гарантия lease.
+Approved lesson bridge изолирован: каждый render получает отдельный unpredictable owner-only
+temp-root и собственный web-relative media lease. Cleanup сначала сверяет identity каталога и
+точный набор owned-файлов, переносит bundle в случайный owner-only tombstone, удаляет только
+записанные regular-file inode и затем выполняет `rmdir` пустых bundle, tombstone, `.automontage`,
+`public` и temp-root. Symlink, replacement или любой foreign entry оставляется нетронутым и
+закрывает cleanup ошибкой; recursive delete в production не используется. Node не предоставляет
+portable descriptor-relative `unlinkat`/`rmdirat`, поэтому между последней проверкой pathname и
+системным вызовом остаётся документированный same-UID syscall gap.
 Но `tmp/` и legacy-пути пока общие, поэтому один checkout по-прежнему допускает только одну
 активную сборку. Для параллельных рендеров нужны отдельные clone/worktree.
 
@@ -208,6 +466,7 @@ Node не предоставляет portable descriptor-relative `unlinkat`/`op
 | `ANTHROPIC_API_KEY` | одна из двух для создания lesson draft | LLM-проруф и раскладка сцен |
 | `OPENAI_API_KEY` | альтернатива Anthropic | LLM-проруф, lesson brief и слайды |
 | `THEMES_EXT` | опционально | корневая папка внешних тем `<id>/theme.json` |
+| `AUTOMONTAGE_FFMPEG_DIR` | опционально | каталог отдельной `ffmpeg` + `ffprobe`; CLI ставит его первым в дочерний `PATH` |
 
 Основной Dynamic-рендер и `automontage demo` работают без API-ключей.
 
@@ -215,8 +474,11 @@ Node не предоставляет portable descriptor-relative `unlinkat`/`op
 
 - Node.js 20+ и npm – CLI, тесты, Remotion.
 - Python 3 + пакеты из `requirements.txt` – Whisper/OpenCV-сценарии.
-- ffmpeg/ffprobe – анализ, аудио, сборка и контроль результата.
-- Chromium для Playwright – только если пересобирать PNG-моки скриптами `shot-*`.
+- ffmpeg/ffprobe – анализ, аудио, нормализация импорта, сборка и контроль результата. Для фото
+  в Review обязателен encoder `libwebp`; video import также использует `libx264`, `libvpx`,
+  `libopus` и AAC. `automontage doctor` проверяет WebP и объясняет выбор отдельной полной сборки.
+- Chromium для Playwright – browser regression tests и пересборка PNG-моков скриптами
+  `shot-*`; обычный Review открывается в установленном системном браузере.
 
 ## 9. Инварианты безопасности и качества
 

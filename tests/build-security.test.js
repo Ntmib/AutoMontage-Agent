@@ -101,15 +101,18 @@ test('build process builders keep hostile host paths as one absolute argv', () =
 
 test('Remotion keeps entry refs relative and host output paths absolute', () => {
   const resolved = { command: process.execPath, argsPrefix: ['/repo/remotion-cli.js'] };
+  const publicDir = path.resolve(ROOT, 'tmp/isolated public');
   const command = remotionRenderCommand(resolved, {
     entry: 'src/index.js',
     composition: 'Dynamic',
     output: HOSTILE,
     props: `${HOSTILE}.json`,
+    publicDir,
   });
   assert.equal(command.args[2], 'src/index.js');
   assert.equal(command.args[4], HOSTILE);
   assert.deepEqual(command.args.slice(5, 7), ['--props', `${HOSTILE}.json`]);
+  assert.deepEqual(command.args.slice(7, 9), ['--public-dir', publicDir]);
 });
 
 test('build rejects non-finite, out-of-range and injected numeric options', () => {

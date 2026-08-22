@@ -5,6 +5,153 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- Approved lesson снова поддерживает локальный custom `scene.faceSrc` из project `assets/...`
+  или repository `public/`: каждый video попадает в одноразовый render bundle, сохраняет
+  глобальный таймкод и не меняет main audio.
+- Review Workbench загружает AVIF/GIF/JPEG/PNG/WebP и MP4/MOV/M4V/WebM прямо в текущую
+  project-папку, показывает authenticated image/video preview и не назначает новый asset сцене
+  без отдельного выбора пользователя.
+- Video b-roll поддерживает `contain`/`cover`, покадровый старт и режимы `mute`, `mix` и
+  `replace`; один immutable ролик можно повторять в нескольких сценах с разными настройками.
+- Browser import нормализует image/video master и отдельный video proxy, а approval и lesson
+  render повторно проверяют hashes/identity и собирают один одноразовый media bundle перед
+  Remotion `Img`/`OffthreadVideo`.
+- `automontage doctor` проверяет `libwebp`; отдельную полную сборку ffmpeg можно безопасно
+  выбрать через `AUTOMONTAGE_FFMPEG_DIR`, не заменяя системные инструменты.
+- Реальный локальный acceptance проходит browser upload → Save → Approve → Render, полный
+  decode/ffprobe, контрольные кадры, аудиозамеры и проверку неизменности прежних brief/renders.
+- `check:release` разделяет обычную проверку development-дерева с pending `[Unreleased]` и
+  строгий режим публикации `--release`, где этот раздел обязан быть пустым.
+
+### Безопасность
+
+- Custom scene video сверяется с authoritative approved brief, открывается no-follow и проходит
+  identity/hash/TOCTOU/File Provider barriers до и после render callback; unsafe path, URL,
+  symlink, не-video extension и props mismatch отклоняются до Remotion.
+- Main-source alias больше не выводится из props: builder передаёт trusted alias, same-inode
+  dedup сверяет полную source identity + SHA-256, а owner-only isolated Remotion `--public-dir`
+  позволяет зафиксировать baseline до render callback и запрещает любой последующий ctime drift,
+  включая mutation + restore. Три последовательных real renders подтверждают отсутствие File
+  Provider false-fail и второго render/history entry.
+- Импорт потоково пишет только в owner-only quarantine, проверяет размер, тип, decode,
+  геометрию, длительность, свободное место и symlink/file identity; браузер получает только
+  opaque id и token-protected routes без project path или media SHA-256.
+- Import publication и orphan cleanup теперь держат общий project mutation lease. Durable
+  owner/publication records позволяют после hard exit удалить только identity-проверенные
+  quarantine/stage/claim bytes; live/foreign/malformed/replaced и name-only UUID остаются нетронуты.
+- Stage/claim/canonical identities теперь журналируются до записи bytes, cleanup переносит цель в
+  private tombstone до проверки и удаления, а shutdown abort-ит import с bounded SIGTERM→SIGKILL.
+- Прямой Review CLI и публичный `automontage review` теперь ждут tracked import-finalizers перед
+  exit 130/143; wrapper пересылает сигнал дочернему серверу и не оставляет lease/quarantine orphan.
+
+### Исправлено
+
+- Image и video master normalization полагаются на одинаково включённый по умолчанию
+  autorotation, поэтому импорт работает и с системным FFmpeg 6.1, и с более новыми версиями.
+- Video import предпочитает корректный `avg_frame_rate`, но безопасно использует
+  `r_frame_rate`, когда среднее значение отсутствует, равно `0/0` или невалидно.
+- Windows final publication открывает временную копию с правом записи для обязательного
+  regular-file `fsync`, не ослабляя последующий atomic rename; внутренний Review logger скрывает
+  абсолютный Windows path целиком, включая приватное имя файла после project root.
+- Linux Node/Chromium CI явно устанавливает и проверяет полный системный FFmpeg toolchain, а
+  Windows job запускает только переносимые media/filesystem cases без POSIX mode/umask/signal
+  предположений.
+- Legacy project/public изображения ограничены 25 MiB до потокового SHA-256; mutation во время
+  чтения и авария setup quarantine больше не приводят к доверию изменённым bytes или удалению
+  чужого дочернего файла.
+- Review сохраняет позицию video preview при validate/Undo/Redo, показывает вычисленный
+  используемый интервал и не сбрасывает плеер после выбора старта.
+- Границы получили достижимые frame-inset slider limits, ArrowUp/Down и Home/End, а также точную
+  `aria-invalid` подсветку по `sceneIndex`; pending validation объявляет `aria-busy` и блокирует
+  все мутации, а длинная media lane прокручивается на 360 px.
+- Успешный `201` больше не называется провалом импорта при ошибке следующего refresh: UI сообщает,
+  что файл уже добавлен. Browser `.m4v` отправляется как `video/x-m4v`; скрытый file input больше
+  не перехватывает Tab, а именованная кнопка сохраняет Enter/Space file chooser.
+- Media import теперь считает `durationSec` только по видеопотоку, хранит отдельный
+  `audioDurationSec`, обрезает длинный звук по картинке и не разрешает `replace` за концом
+  короткого audio; container duration больше не расширяет trim.
+- Нечётные и повёрнутые видео получают even padding без crop/distortion, а still image не
+  наследует video ceiling 120 FPS.
+- Encoder, output и publication copy ограничены рассчитанными budgets и absolute caps;
+  свободное место проверяется перед каждой фазой, quota/disk boundary возвращает `507` с
+  owned cleanup и безопасным retry.
+- Metadata v2 переносит visual/audio durations через registry, Save, restart, approval и render;
+  legacy v1 image остаётся совместимым, а неоднозначный v1 video требует переимпорта.
+- Save и approval теперь проверяют открытый immutable media descriptor через общий portable
+  `ffprobe pipe:0` adapter без `/dev/fd` или live pathname. Windows сохраняет identity/hash/
+  containment barriers без ложной зависимости от POSIX mode bits; отдельный CI job проверяет
+  реальные media fixtures и Windows filesystem behavior. Directory fsync имеет отдельную
+  capability: POSIX сохраняет directory-entry durability flush, а Windows пропускает только
+  неподдерживаемый Node open-directory + `fsyncSync` primitive.
+- Save, approval и render/brief manifest writers теперь используют один recoverable
+  project-wide lease: stale snapshot получает `409`, live/foreign owner не удаляется, а lease
+  завершившегося локального PID восстанавливается. Исторические Markdown/JSON публикуются
+  no-replace до manifest CAS, поэтому hard exit не оставляет `currentBrief` без JSON.
+- Manifest rename теперь имеет однозначный committed outcome без post-rename probe; initial
+  lesson/scenario draft выбирает ревизию под тем же lease, а raw manifest update требует expected
+  snapshot, поэтому stale writer и destination race не перезаписывают историю.
+- Project lesson planning очищает exact identity-pinned generated JSON/Markdown temp-пару после
+  успеха и ошибки; foreign replacement сохраняется и завершает операцию fail closed.
+- Transient lease-release ошибка повторяется ограниченно; persistent ошибка не маскирует исходный
+  import failure и больше не оставляет локальный import controller занятым.
+- Render bundle больше не принимает безопасное асинхронное обновление `ctime` от macOS iCloud
+  File Provider за подмену файла: новый `ctime` фиксируется только после повторной проверки всех
+  остальных identity-полей и стабильного полного SHA-256; digest при сдвиге `ctime` во время
+  чтения отбрасывается, а реальные same-size/append/overwrite изменения по-прежнему отклоняются.
+- AVIF с ISO-BMFF brand теперь распознаётся как изображение, а обычное AV1-видео, лишь
+  переименованное в `.avif`, по-прежнему отклоняется; непрозрачный GIF больше не считается
+  обязанным сохранить отсутствующий alpha-канал.
+- Acceptance проверяет вложенные поля server log на произвольные host paths и неожиданные
+  media/proxy SHA-256 и проходит реальный безопасно санитизированный ответ `500`.
+- Убрана прозрачность 0 на первом кадре сцены: прежний fade-in без перекрытия создавал пустой
+  тёмный кадр на каждом cut между b-roll-сценами.
+
+## [1.3.0] - 2026-08-20
+
+### Добавлено
+
+- Локальный Review Workbench открывает project lesson в read-only timeline с видео, словами,
+  сценами и timing audit; token-protected loopback API не вызывает Remotion и не рендерит draft.
+- Явный `--edit` разрешает только adjacent boundary и allowlisted b-roll, хранит undo/redo в
+  памяти и сохраняет правки новой draft-ревизией без изменения approved.
+- Локальный Review Workbench показывает необязательную waveform-дорожку исходника. PNG
+  кэшируется внутри project workspace с повторной проверкой identity каталога после ffmpeg;
+  отсутствие или ошибка ffmpeg не мешают открыть review.
+- Отдельный Chromium job проверяет Review browser flow независимо от обычного Node CI.
+
+### Безопасность
+
+- Все Review API/media routes требуют случайный session token, POST также проверяет loopback
+  Origin; traversal, symlink, oversized body, unknown command и stale session закрываются без
+  раскрытия host paths или token.
+- Review Save резервирует revision между процессами через exclusive no-follow lock; только один
+  конкурент публикует согласованную Markdown/JSON-пару и manifest entry.
+- `--no-open` и ошибка browser launch передают bearer URL через временный mode-`0600` файл,
+  печатают только путь и очищают owned файл при закрытии сервера, обычном `SIGINT`/`SIGTERM`
+  или через 10 минут.
+- State, preview, validate и save сверяют исходный device/inode media snapshot; подмена не
+  перепривязывает opaque handle к новым байтам.
+- Transitive `nanoid` обновлён в lockfile с 3.3.16 до исправленной совместимой 3.3.18; high
+  `GHSA-2v37-7h3g-55p8` устранён без direct dependency, override или обновления Remotion.
+
+### Исправлено
+
+- Save повторно проверяет manifest/base snapshot, блокирует controls на время commit и после
+  успеха принимает только серверную ревизию; validate/save conflict немедленно очищает
+  active/redo stacks и блокирует мутации до успешной загрузки fresh state и явного discard.
+  Ошибка reload сохраняет quarantine без silent rebase, auto-retry или stale replay.
+- Новая draft-ревизия публикуется как Markdown -> JSON -> manifest с повторным manifest CAS,
+  поэтому reader не видит ссылку на ещё не опубликованный JSON; rollback не изменяет approved
+  или исходный draft.
+- `/api/state` перечитывает внешнюю draft-ревизию с диска, сохраняя id неизменных assets; после
+  `409` браузер показывает свежую ревизию, а следующая команда не содержит устаревший replay.
+- B-roll capability ограничена поддерживаемыми renderer изображениями; аудио/видео отклоняются
+  API, approval и render validation, оставаясь доступными в общей preview lane.
+- Timing audit выдаёт отдельные frame/word suggestions, drag сохраняет word snap, а Arrow
+  накапливает покадровое движение и сохраняет focus/undo.
+
 ## [1.2.1] - 2026-08-05
 
 ### Исправлено

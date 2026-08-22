@@ -2,6 +2,7 @@ import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
 import { useTheme } from '../theme';
 import { tk, safeFor, safeWidth } from './safezone';
 import { SceneBg, FaceLayer, Chip, FitHeading, useRise } from './parts';
+import { BrollMedia } from './BrollMedia';
 import { clamp, countUp, fmt } from '../anim';
 
 const Bullets = ({ items = [], k, delay = 30, stagger = 7, delayForIndex = null, size = 38 }) => (
@@ -423,7 +424,7 @@ export const SceneBroll = (p) => {
     : { x: p.facePos?.x ?? 0.5, y: p.facePos?.y ?? 0.32 };
   return (
     <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
-      {p.brollSrc ? <FaceLayer faceSrc={p.brollSrc} image facePos={{ x: 0.5, y: 0.4 }} sourceStartFrame={p.sourceStartFrame} dark={0.85} />
+      {p.brollMedia || p.brollSrc ? <BrollMedia media={p.brollMedia} legacySrc={p.brollSrc} durationInFrames={p.durationInFrames} />
         : <AbsoluteFill style={{ background: 'repeating-linear-gradient(135deg,#241a12,#241a12 40px,#1d1610 40px,#1d1610 80px)' }}><AbsoluteFill style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6f5e49', fontFamily: k.fonts.mono, fontSize: 38 }}>[ B-ROLL ]</AbsoluteFill></AbsoluteFill>}
       <AbsoluteFill style={{ background: 'linear-gradient(180deg, transparent 45%, rgba(0,0,0,.8))' }} />
       <Chip text={p.videoTitle || 'ВИДЕО'} />

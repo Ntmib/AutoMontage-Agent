@@ -15,7 +15,7 @@ triggers are recorded below and accepted by `npm run check:release`.
 
 ## Temporary dependency exception
 
-As of 2026-08-05, `npm audit` reports five moderate findings that all describe one
+As of 2026-08-20, `npm audit` reports five moderate findings that all describe one
 transitive advisory. The installed path is:
 
 ```text
@@ -44,8 +44,8 @@ override, or downgrade to the incompatible 3.x line. Reassess immediately on an 
 node-vibrant/Jimp update, if severity becomes high, if direct untrusted-image input is
 introduced, at the next release, or no later than 2026-09-04.
 
-For release 1.2.1, the GitHub Security Advisory, npm registry metadata, and the installed
-transitive dependency chain were reviewed again on 2026-08-05. They still match the advisory,
+For release 1.3.0, the GitHub Security Advisory, npm registry metadata, and the installed
+transitive dependency chain were reviewed again on 2026-08-20. They still match the advisory,
 package path, and mitigation recorded below.
 
 The block below is the machine-readable release-gate record. Keep the prose and JSON in
@@ -76,8 +76,8 @@ it matches the dated section for `reviewedFor` and is not in the future.
     "direct untrusted-image input",
     "next release"
   ],
-  "reviewedAt": "2026-08-05",
-  "reviewedFor": "1.2.1",
+  "reviewedAt": "2026-08-20",
+  "reviewedFor": "1.3.0",
   "revisitBy": "2026-09-04"
 }
 ```

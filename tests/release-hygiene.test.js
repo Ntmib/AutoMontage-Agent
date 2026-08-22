@@ -219,6 +219,25 @@ test('missing base ref explains how to fetch history', () => {
   );
 });
 
+test('environment declarations ignore inherited PATH but still require product variables', () => {
+  const root = makeRepository();
+  const undeclared = ['AUTOMONTAGE', 'CUSTOM', 'TOOL'].join('_');
+  write(root, 'src/example.js', [
+    'const inherited = process.env.PATH;',
+    `const missing = process.env.${undeclared};`,
+    '',
+  ].join('\n'));
+  git(root, ['add', 'src/example.js']);
+  git(root, ['commit', '-qm', 'system and product environment variables']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+  const envIssues = result.issues.filter((entry) => entry.rule === 'env-declaration');
+
+  assert.deepEqual(envIssues.map((entry) => entry.message), [
+    `${undeclared} is used but absent from .env.example`,
+  ]);
+});
+
 test('release notes accept a current patch without 1.2.0-specific wording', () => {
   const root = makeRepository();
   updateReleaseVersion(root, {
@@ -252,6 +271,19 @@ test('release notes require the current version section to have a date', () => {
   assert.match(result.issues.find((entry) => entry.rule === 'release-notes').message, /dated/i);
 });
 
+test('development tree permits pending Unreleased notes before a version bump', () => {
+  const root = makeRepository();
+  const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8')
+    .replace('## [Unreleased]\n\n', '## [Unreleased]\n\n### Добавлено\n\n- Pending feature.\n\n');
+  write(root, 'CHANGELOG.md', changelog);
+  git(root, ['add', 'CHANGELOG.md']);
+  git(root, ['commit', '-qm', 'pending feature notes']);
+
+  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+
+  assert.equal(result.issues.some((entry) => entry.rule === 'release-notes'), false);
+});
+
 test('release notes require Unreleased to be whitespace-empty for a release candidate', () => {
   const root = makeRepository();
   updateReleaseVersion(root, {
@@ -262,7 +294,7 @@ test('release notes require Unreleased to be whitespace-empty for a release cand
   git(root, ['add', '.']);
   git(root, ['commit', '-qm', 'nonempty unreleased']);
 
-  const result = checkRelease({ cwd: root, tree: 'HEAD' });
+  const result = checkRelease({ cwd: root, tree: 'HEAD', release: true });
 
   assert.match(result.issues.find((entry) => entry.rule === 'release-notes').message, /Unreleased/);
 });

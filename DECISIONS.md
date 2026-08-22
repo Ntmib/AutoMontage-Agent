@@ -148,7 +148,7 @@ identity, поэтому два разных b-roll с одинаковыми б
 ## D-012 – Approved brief публикуется как rollback-транзакция
 
 **Дата:** 2026-08-06
-**Статус:** принято
+**Статус:** заменено D-015
 
 JSON, Markdown и `project.json` нельзя атомарно заменить одной portable filesystem-операцией.
 Поэтому approval сначала полностью записывает и синхронизирует непредсказуемые owned sibling
@@ -158,3 +158,232 @@ manifest и очищает temps по file identity.
 
 Отклонены прямые последовательные `writeFile` и порядок JSON до manifest: при ошибке они
 оставляют approved JSON, который можно передать рендеру без зарегистрированного approval.
+
+## D-013 – Review Workbench изолирован от renderer и редактирует только соседнюю границу
+
+**Дата:** 2026-08-20
+**Статус:** принято
+
+Для визуальной проверки lesson рассматривались три варианта:
+
+1. Fork OpenCut дал бы полноценный timeline, но принёс бы чужой project format, runtime,
+   renderer, effects registry и большую поверхность синхронизации и безопасности.
+2. Связка с Remotion Studio переиспользовала бы composition preview, но смешала бы проверку
+   draft с production props/renderer и ослабила правило «draft никогда не рендерится».
+3. Изолированный локальный Review Workbench читает browser-safe snapshot и отправляет только
+   узкий allowlist команд в существующий project workspace.
+
+Выбран третий вариант. Он оставляет approval и `scripts/build.js --brief` каноническими,
+не добавляет renderer или новый формат проекта и позволяет fail closed отклонить любое изменение,
+кроме общей границы двух соседних сцен и allowlisted b-roll. Read-only является default; Save
+создаёт новую draft-ревизию, а approved остаётся immutable.
+
+Boundary edit намеренно adjacent-only: меняются `left.end` и `right.start`, поздние сцены не
+сдвигаются. Global ripple мог бы незаметно разойтись с дословной речью, transcript и уже
+утверждёнными моментами. Brief хранит абсолютное время исходника, а Remotion использует этот
+глобальный source time как `trimBefore`; обнуление времени на каждой сцене вернуло бы старый
+рассинхрон из D-007. Свободный текст, scene conversion, effects, keyframes, masks, browser export
+и OpenCut runtime отложены до отдельных решений и спецификаций.
+
+Asset allowlist разделён на широкую preview capability и узкую renderer capability: назначить
+в b-roll можно только форматы изображений, которые уже умеет показывать `SceneBroll`. Добавлять
+video renderer в security-fix означало бы менять production-композицию, поэтому audio/video
+остаются только в media lane и fail closed на API, approval и render boundary.
+
+Opaque handles считаются lease на конкретные device/inode, а не на имя файла. Fresh state
+сохраняет id неизменного lease, но любая подмена source/registered asset завершает старую сессию.
+Конкурентные Save сериализуются fixed exclusive no-follow reservation: manifest CAS сам по себе
+не закрывал окно между проверкой и overwrite-capable rename.
+
+После внешнего `409` silent rebase отклонён: команда границы или b-roll была сформирована от уже
+устаревшей геометрии и может иметь другой смысл на новой ревизии. Браузер поэтому загружает
+канонический state, но сначала синхронно очищает active/redo stacks и блокирует мутации. Ошибка
+reload не возвращает старый stack и не разрешает discard. Отдельный fresh-ready gate открывается
+только после успешной загрузки; следующий validate получает лишь команды, созданные оператором
+после явного discard уже от свежей базы.
+
+Review Save публикует Markdown и канонический JSON до manifest и повторяет manifest CAS прямо
+перед последним rename. Manifest является visibility boundary: reader либо видит прежнюю полную
+ревизию, либо новую запись, чья Markdown/JSON-пара уже существует. Это отличается от approval
+транзакции D-012: draft JSON сам по себе не renderable approved capability, а частичный manifest
+сломал бы даже read-only `/api/state`.
+
+Bearer URL не выводится в обычный stdout. Если автоматический browser launch не используется
+или падает, выбран временный exclusive regular-файл mode `0600` с bounded TTL; stdout показывает
+только путь. Это сохраняет ручной запуск, не расширяя token exposure за browser-launch contract.
+Обычные `SIGINT`/`SIGTERM` начинают штатное закрытие сервера, но exit ждёт tracked import-finalizers,
+чтобы lease/quarantine исчезли до кода 130/143. Публичный wrapper использует asynchronous child,
+пересылает сигнал ровно один раз и ждёт тот же cleanup outcome; синхронный `execFileSync` отвергнут,
+потому что сигнал завершал wrapper и оставлял Review child жить отдельно. Неперехватываемый
+`SIGKILL` вне этого обещания.
+
+## D-014 – Video b-roll импортируется как immutable normalized asset
+
+**Дата:** 2026-08-21
+**Статус:** принято
+
+Ограничение D-013 «renderer принимает только изображения» заменено: изоляция Review, внешний
+approval и канонический lesson renderer остаются, но `broll` теперь принимает нормализованные
+image/video assets. Рассматривались прямой рендер пользовательского файла, browser proxy как
+master и заранее нормализованный master плюс отдельный proxy. Выбран третий вариант.
+
+Произвольный AVIF/GIF/JPEG/PNG/WebP превращается в WebP master. MP4/MOV/M4V/WebM превращается
+в H.264/yuv420p master с нормализованной геометрией/FPS и AAC 48 kHz stereo при наличии звука;
+отдельный VP8/Opus WebM нужен только для предсказуемого браузерного preview. Это удваивает часть
+работы и расход диска, зато approval/Remotion получают один проверяемый контракт независимо от
+входного codec/container, а браузер никогда не становится источником render bytes.
+
+Каждый import создаёт новый UUID bundle. Bundle, metadata и proxy после публикации неизменяемы;
+удаление, overwrite и reuse id в V1 отклонены, потому что они ломают persisted SHA-256,
+approval identity и воспроизводимость старых brief. Для замены пользователь загружает новый
+файл. Один semaphore допускает только одну нормализацию на project-сессию: параллельные
+транскоды резко повышают CPU/disk pressure и усложняют abort/cleanup без пользовательской пользы.
+
+Review показывает opaque `asset-N`, а Save материализует server-side reference и hash только
+после повторного descriptor probe. Approval ещё раз сверяет master/metadata/proxy и clip/audio,
+после чего lesson build копирует source и все approved b-roll в один одноразовый immutable
+render bundle. Так рендер не читает живой project path и repeated asset копируется один раз.
+
+На macOS каталог может находиться внутри iCloud File Provider: после безопасной записи сервис
+асинхронно меняет только `ctime` файла из-за своих metadata, не меняя байты или `mtime`. Полностью
+игнорировать `ctime` или ждать фиксированный timeout нельзя. Поэтому render bundle принимает
+только `ctime`-only drift: `dev/ino/size/mtime/mode/nlink` обязаны совпасть, открытый no-follow
+descriptor и pathname обязаны указывать на тот же regular file, а SHA-256 всех байтов считается
+заново. Hash принимается только при неизменной identity от начала до конца чтения: если за это
+время сдвинулся даже один `ctime`, digest отбрасывается и выполняется полный повтор. Лишь после
+стабильного совпавшего hash новый `ctime` становится baseline; число rehash/repin-циклов
+ограничено. Любая другая identity-разница, непрерывный drift или изменение bytes остаются
+fail-closed до Remotion callback.
+
+Для V1 выбран Remotion `OffthreadVideo`, а не собственный browser renderer, OpenCut runtime или
+ручная покадровая декомпозиция. Родительская `Sequence` ограничивает сцену, `trimBefore` задаёт
+старт. `mute` оставляет source voice, `mix` добавляет clip на фиксированных −18 dB, `replace`
+делает клип основным и приглушает source только в интервале сцены. Отдельный per-asset loudness
+pass отклонён: он увеличил бы импорт и мог бы неожиданно менять авторский скринкаст; громкость
+входного клипа в V1 является ответственностью подготовки медиа.
+
+## D-015 – Project mutations используют общий recoverable lease и manifest-last CAS
+
+**Дата:** 2026-08-22
+**Статус:** принято; заменяет D-012
+
+JSON, Markdown и `project.json` нельзя опубликовать одной portable filesystem-операцией, а
+несколько процессов могут одновременно вызвать Save, approval или render lifecycle. Поэтому
+все manifest mutations используют один project-wide lease с полным owner record. Чтения не
+блокируются. Live owner и owner другого host сохраняются; reclaim разрешён только когда PID
+того же host отвечает `ESRCH`, и recovery claim привязан к identity старого lease.
+
+Под lease операция заново читает persisted manifest и сравнивает его с ожидаемым snapshot.
+Draft/approved Markdown и JSON публикуются atomic no-replace hard links до manifest. Только после
+их появления `project.json` заменяется с повторной проверкой прежних identity и bytes. Поэтому
+`currentBrief` никогда не указывает на отсутствующий JSON, foreign destination остаётся
+byte-identical, а crash-orphan не перезаписывается: новая draft получает следующий свободный
+номер. Approval дополнительно всегда запускает полный `validateLessonBrief()` над заново
+прочитанным текущим draft.
+
+Уточнение после failure injection: успешный atomic rename manifest является commit point. После
+него writer не делает fallible read/lstat для определения результата; следующий commit в той же
+transaction использует identity и bytes уже синхронизированного staged inode. Initial draft
+allocation также происходит только внутри lease через `publishBriefRevision()`, а прямое
+обновление существующего manifest без expected snapshot запрещено.
+
+D-012 заменено: прежний порядок manifest до approved JSON создавал crash-окно с битым
+`currentBrief`, а rollback после publication не мог защитить от hard exit. Отклонены отдельные
+locks для Review/approval/render: они сериализовали каждый путь сам с собой, но не закрывали
+межпроцессную гонку разных writers одного `project.json`.
+
+## D-016 – Media import и recovery разделяют project mutation lease
+
+**Дата:** 2026-08-22
+**Статус:** принято
+
+Import publication и startup/refresh cleanup являются project mutations, поэтому используют
+lease из D-015, а не второй lock. Долгий import сериализует Save/approval/render, зато второй
+процесс не может удалить live quarantine или частично опубликованные bytes; обычные GET/HEAD
+lease не берут. Crash recovery доверяет только append-only owner/publication records и точным
+inode, никогда UUID или TTL. Encoder outputs создаются как private owned inode заранее, чтобы
+hard exit во время записи оставался доказуемым. Marker-last сохраняет committed bundle, а
+неподтверждённые replacement/unexpected children намеренно остаются для ручной диагностики.
+
+Node 20 не предоставляет `renameat2(RENAME_NOREPLACE)` или unlink по открытому descriptor. Поэтому
+cleanup не обещает невозможной абсолютной same-UID syscall-атомарности: pathname сначала переносится
+в непредсказуемый `0700` tombstone, и удаляется уже совпавший перенесённый объект; малые immutable
+records сверяются и по bytes. Если в claim-rename исходного pathname попал другой inode, он
+сохраняется в tombstone. Процесс с тем же UID, который уже узнал private pathname, остаётся за
+границей гарантии Node 20. Отвергнут прежний `lstat → unlink`, потому что race между этими syscall
+мог удалить foreign bytes.
+
+## D-017 – Opened-media probe использует portable stdin transport
+
+**Дата:** 2026-08-22
+**Статус:** принято
+
+Save и approval обязаны проверять те же открытые immutable bytes, которые затем хэшируют. Реальные
+PNG, JPEG, WebP, H.264 MP4 с metadata в конце и WebM подтвердили, что ffprobe распознаёт нужный
+контракт через descriptor, подключённый к child stdin, и вход `pipe:0`. Поэтому выбран один общий
+adapter: argv array, `shell:false`, timeout 30 секунд, bounded stdout/stderr и pathless canonical
+error. `/dev/fd/*`, live pathname и временный copy/hardlink snapshot не нужны.
+
+Filesystem-различия вынесены в один capability module с независимыми `noFollow`,
+`posixPermissions` и `directoryFsync`. POSIX продолжает требовать `O_NOFOLLOW`, private
+`0600/0700` и fsync каталога после изменения directory entries. На Windows первые две гарантии не
+симулируются через бессмысленные mode bits, а directory fsync выключен отдельно: Node не
+поддерживает используемую пару open-directory + `fsyncSync`. Это убирает только directory-entry
+durability flush, не regular-file fsync. Обязательными остаются containment/realpath, regular-file,
+opened-handle/path identity до и после probe/hash, size/timestamps и SHA-256. Отклонены pathname
+fallback и простое отключение identity-проверок: первое возвращает race, второе разрешает
+same-size подмену.
+
+## D-018 – Длительность медиа принадлежит потоку, а выход ограничен по фазам
+
+**Дата:** 2026-08-22
+**Статус:** принято
+
+Контейнер MP4/MOV/WebM может сообщать максимум из нескольких потоков. Если считать его
+`durationSec`, ролик с video 1 s/audio 3 s разрешает двухсекундный визуальный trim, а ролик с
+video 3 s/audio 1 s разрешает `replace` без существующего звука. Поэтому metadata v2 задаёт
+два независимых значения: `durationSec` только для visual video stream и `audioDurationSec`
+только для audio stream. Fallback к container duration отвергнут. Legacy v1 image остаётся
+однозначным, а legacy v1 video требует переимпорта.
+
+Master и proxy завершаются по visual duration. Это обрезает длинный звук, но не растягивает
+короткий. `mute`/`mix` проверяются по visual duration, `replace` одновременно по visual/audio.
+Нечётную геометрию после autorotate дополняет `pad` до ближайшего чётного размера: crop терял бы
+край, а scale менял бы геометрию и соотношение сторон.
+
+Одной проверки свободного места до upload недостаточно: encoder способен разрастись, а во время
+publication одновременно живут stage и copy. Поэтому budgets считаются безопасной BigInt
+арифметикой из проверенных probe/input параметров, ограничиваются абсолютными caps и применяются
+в `ffmpeg -fs`, bounded copies и post-close gate. `statfs` повторяется перед каждой дорогой фазой
+по peak live bytes плюс reserve. Любая quota/disk boundary имеет стабильный `507` и использует
+тот же identity-only cleanup/retry, что прерванный импорт.
+
+## D-019 - Custom scene video использует тот же immutable render bundle
+
+**Дата:** 2026-08-22
+**Статус:** принято
+
+Старые approved lesson могли задавать локальный `scene.faceSrc`, но прямое чтение live project
+или public pathname во время Remotion возвращало TOCTOU и host path в props. Полный запрет ломал
+совместимость. Поэтому approved brief остаётся authoritative: render props обязаны иметь тот же
+scene type и точный исходный `faceSrc`, после чего разрешён только canonical project `assets/...`
+или repository-public video. Он проходит существующие trusted-chain, no-follow, identity,
+bounded copy, SHA-256, File Provider repin и owned cleanup barriers и получает одноразовое имя.
+
+Source alias не выводится из входных props: канонический lesson builder явно передаёт
+`source.mp4`, а top-level `faceSrc`/`audioSrc` обязаны точно ему соответствовать. Только exact
+scene match с этим trusted alias переиспользует main snapshot. Same-inode dedup хранит полную
+identity первого source и SHA-256: exact reuse разрешён, ctime-only drift требует стабильного
+полного rehash, остальные изменения отклоняются. Совместимыми остаются только video role и
+одинаковое extension.
+
+Repository находится под macOS File Provider, а браузерное чтение его `public` само меняет
+`ctime`, поэтому lesson snapshots обслуживаются из owner-only системного temp через официальный
+Remotion `--public-dir`. В этот каталог попадает только утверждённый owned bundle: весь repository
+`public` и ignored/private media не копируются. Baseline фиксируется до единственного реального
+render, а после всего callback выполняется strict identity/hash check без ctime re-pin. Поэтому
+mutation + byte/mtime restore во время Remotion остаётся заметной, а номинальное чтение больше не
+вызывает File Provider drift; второго output или manifest/history entry нет. Top-level
+`audioSrc` всегда указывает на main source, custom `OffthreadVideo` muted и использует глобальный
+`sourceStartFrame`. Отклонены live pathname, отдельное custom audio, post-render baseline и новый
+resolver: они возвращали бы race/path leak или ослабляли уже проверенный security boundary.

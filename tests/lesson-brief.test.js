@@ -115,6 +115,190 @@ test('approved brief becomes ReelScenes props with one audio source', () => {
   });
 });
 
+test('audio and video b-roll cannot cross the approval or render boundary', () => {
+  for (const brollSrc of ['broll/voice.mp3', 'broll/clip.mp4']) {
+    const brief = makeBrief({
+      status: 'approved',
+      scenes: [{
+        scene: 'broll',
+        start: 0,
+        end: 8,
+        brollSrc,
+        headCream: 'НЕПОДДЕРЖИВАЕМОЕ',
+        headOrange: 'МЕДИА',
+      }],
+    });
+
+    const validation = validateLessonBrief(brief);
+    assert.equal(validation.ok, false);
+    assert.match(validation.errors.join('\n'), /b-roll|изображен/i);
+    assert.throws(
+      () => buildReelScenesProps({ brief, theme: 'lesson-neutral' }),
+      /b-roll|изображен/i,
+    );
+  }
+});
+
+function makeBrollScene(overrides = {}) {
+  return {
+    scene: 'broll',
+    start: 0,
+    end: 8,
+    headCream: 'ПРИМЕР',
+    headOrange: 'B-ROLL',
+    ...overrides,
+  };
+}
+
+function makeImageBrollMedia(overrides = {}) {
+  return {
+    kind: 'image',
+    src: 'assets/broll/images/4af36be4-0b26-4e6f-bd48-8bdd2215a4f1/media.webp',
+    sha256: 'b'.repeat(64),
+    fit: 'cover',
+    ...overrides,
+  };
+}
+
+function makeVideoBrollMedia(overrides = {}) {
+  return {
+    kind: 'video',
+    src: 'assets/broll/video/4af36be4-0b26-4e6f-bd48-8bdd2215a4f1/media.mp4',
+    sha256: 'a'.repeat(64),
+    trimStartSec: 12.4,
+    fit: 'contain',
+    audioMode: 'replace',
+    ...overrides,
+  };
+}
+
+test('legacy image b-roll remains valid without changing its serialized bytes', () => {
+  const brief = makeBrief({
+    scenes: [makeBrollScene({ brollSrc: 'broll/growth.png' })],
+  });
+  const serialized = JSON.stringify(brief);
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+  assert.equal(JSON.stringify(brief), serialized);
+});
+
+test('strict persisted image b-roll media is valid', () => {
+  const brief = makeBrief({
+    scenes: [makeBrollScene({ brollMedia: makeImageBrollMedia() })],
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+});
+
+test('strict persisted video b-roll media is valid', () => {
+  const brief = makeBrief({
+    scenes: [makeBrollScene({ brollMedia: makeVideoBrollMedia() })],
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+});
+
+test('b-roll requires exactly one legacy or persisted media reference', () => {
+  const missing = makeBrief({ scenes: [makeBrollScene()] });
+  const both = makeBrief({
+    scenes: [makeBrollScene({
+      brollSrc: 'broll/growth.png',
+      brollMedia: makeImageBrollMedia(),
+    })],
+  });
+
+  assert.equal(validateLessonBrief(missing).ok, false);
+  assert.equal(validateLessonBrief(both).ok, false);
+});
+
+test('persisted b-roll media rejects extra keys and image-only violations', () => {
+  for (const media of [
+    makeImageBrollMedia({ unexpected: true }),
+    makeImageBrollMedia({ trimStartSec: 0 }),
+    makeImageBrollMedia({ audioMode: 'mute' }),
+  ]) {
+    const result = validateLessonBrief(makeBrief({
+      scenes: [makeBrollScene({ brollMedia: media })],
+    }));
+    assert.equal(result.ok, false);
+  }
+});
+
+test('persisted video b-roll rejects invalid starts and enum values', () => {
+  for (const media of [
+    makeVideoBrollMedia({ trimStartSec: -0.1 }),
+    makeVideoBrollMedia({ trimStartSec: Infinity }),
+    makeVideoBrollMedia({ fit: 'stretch' }),
+    makeVideoBrollMedia({ audioMode: 'voice' }),
+  ]) {
+    const result = validateLessonBrief(makeBrief({
+      scenes: [makeBrollScene({ brollMedia: media })],
+    }));
+    assert.equal(result.ok, false);
+  }
+});
+
+test('persisted b-roll media permits only canonical relative references', () => {
+  for (const src of [
+    '/private/media.webp',
+    'https://example.test/media.webp',
+    'assets\\broll\\images\\media.webp',
+    'assets/./broll/images/media.webp',
+    'assets/broll/../images/media.webp',
+    '/media/assets/asset-1',
+    'media/assets/asset-1',
+    'asset-0',
+    'asset-01',
+    'asset-1',
+  ]) {
+    const result = validateLessonBrief(makeBrief({
+      scenes: [makeBrollScene({
+        brollMedia: makeImageBrollMedia({ src }),
+      })],
+    }));
+    assert.equal(result.ok, false, src);
+  }
+});
+
+test('persisted b-roll media requires a lowercase SHA-256 digest', () => {
+  for (const sha256 of [
+    'a'.repeat(63),
+    'A'.repeat(64),
+    'g'.repeat(64),
+  ]) {
+    const result = validateLessonBrief(makeBrief({
+      scenes: [makeBrollScene({
+        brollMedia: makeImageBrollMedia({ sha256 }),
+      })],
+    }));
+    assert.equal(result.ok, false, sha256);
+  }
+});
+
+test('frameSnapSeconds rounds to a frame and rejects invalid inputs', () => {
+  const {
+    frameSnapSeconds,
+    sceneDurationFrames,
+    videoEndFrame,
+  } = require('../scripts/lesson/broll-media');
+
+  assert.equal(frameSnapSeconds(12.419, 25), 12.4);
+  assert.equal(sceneDurationFrames({ start: 0, end: 0.01 }, 25), 1);
+  assert.equal(videoEndFrame({
+    trimStartSec: 1,
+    scene: { start: 0, end: 0.01 },
+    fps: 25,
+  }), 26);
+  for (const [seconds, fps] of [
+    [-1, 25],
+    [Infinity, 25],
+    [12.4, 0],
+    [12.4, Infinity],
+  ]) {
+    assert.throws(() => frameSnapSeconds(seconds, fps), /b-roll frame time is invalid/);
+  }
+});
+
 test('approved speaker crop is preserved in render props', () => {
   const brief = makeBrief({
     status: 'approved',
@@ -270,6 +454,24 @@ test('markdown brief shows scenes and proofread corrections', () => {
   assert.match(markdown, /split-top/);
   assert.match(markdown, /нейроагенда/);
   assert.match(markdown, /нейроагента/);
+});
+
+test('markdown scene summaries use the selected persisted b-roll reference', () => {
+  const media = makeVideoBrollMedia();
+  const markdown = formatBriefMarkdown(makeBrief({
+    scenes: [makeBrollScene({ brollMedia: media })],
+  }));
+
+  assert.match(markdown, new RegExp(media.src));
+  assert.doesNotMatch(markdown, /undefined/);
+});
+
+test('markdown legacy b-roll scene summary remains unchanged', () => {
+  const markdown = formatBriefMarkdown(makeBrief({
+    scenes: [makeBrollScene({ brollSrc: 'broll/growth.png' })],
+  }));
+
+  assert.match(markdown, /ПРИМЕР B-ROLL \(broll\/growth\.png\)/);
 });
 
 test('markdown brief reflects an approved status from its brief object', () => {

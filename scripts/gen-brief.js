@@ -11,6 +11,7 @@ const {
   validateLessonBrief,
 } = require('./lesson/brief');
 const { LESSON_DEFAULT_THEME } = require('./lesson/workflow');
+const { writeFilesNoReplace } = require('./project/workspace');
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -292,6 +293,26 @@ function parseBriefOptions(args) {
   };
 }
 
+function writeGeneratedBriefOutputs({
+  brief,
+  outputPath,
+  markdownPath,
+  fileSystem = fs,
+  temporaryId,
+}) {
+  fileSystem.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });
+  fileSystem.mkdirSync(path.dirname(path.resolve(markdownPath)), { recursive: true });
+  writeFilesNoReplace([
+    { destination: markdownPath, data: formatBriefMarkdown(brief), purpose: 'gen-brief-markdown' },
+    {
+      destination: outputPath,
+      data: `${JSON.stringify(brief, null, 2)}\n`,
+      purpose: 'gen-brief-json',
+    },
+  ], { fileSystem, ...(temporaryId ? { temporaryId } : {}) });
+  return { outputPath, markdownPath };
+}
+
 function printHelp() {
   console.log(`gen-brief.js <transcript.json> <brief.json> [options]
 
@@ -374,11 +395,8 @@ async function main() {
     faceZoom: faceZoom == null ? null : Number(faceZoom),
   });
 
-  fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });
-  fs.writeFileSync(outputPath, `${JSON.stringify(brief, null, 2)}\n`);
   const markdownPath = option(args, 'markdown', outputPath.replace(/\.json$/i, '.md'));
-  fs.mkdirSync(path.dirname(path.resolve(markdownPath)), { recursive: true });
-  fs.writeFileSync(markdownPath, formatBriefMarkdown(brief));
+  writeGeneratedBriefOutputs({ brief, outputPath, markdownPath });
   console.log(`черновик ТЗ: ${outputPath}`);
   console.log(`читаемое ТЗ: ${markdownPath}`);
 }
@@ -389,6 +407,7 @@ module.exports = {
   normalizeGeneratedBrief,
   parseBriefOptions,
   parseJsonResponse,
+  writeGeneratedBriefOutputs,
 };
 
 if (require.main === module) {

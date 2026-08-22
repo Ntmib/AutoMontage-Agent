@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Локальная проверка монтажного листа AutoMontage">
+    <title>Проверка монтажа · AutoMontage</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="tool-header">
+      <a class="tool-mark" href="#workspace" aria-label="К рабочей области">
+        <span class="tool-mark__signal" aria-hidden="true"></span>
+        <span>AutoMontage</span>
+      </a>
+      <p class="mode-badge">Только просмотр</p>
+    </header>
+
+    <main id="workspace" class="workspace">
+      <header class="project-heading">
+        <div>
+          <p class="eyebrow">Контроль перед рендером</p>
+          <h1>Проверка монтажа</h1>
+          <p class="project-heading__title" data-project-title>Загрузка монтажного листа…</p>
+        </div>
+        <dl class="project-facts" aria-label="Параметры ролика">
+          <div>
+            <dt>Статус</dt>
+            <dd data-brief-status>—</dd>
+          </div>
+          <div>
+            <dt>Хронометраж</dt>
+            <dd data-duration>—</dd>
+          </div>
+          <div>
+            <dt>Формат</dt>
+            <dd data-output>—</dd>
+          </div>
+        </dl>
+      </header>
+
+      <div class="review-layout">
+        <section class="panel player-panel" aria-labelledby="source-title">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Источник</p>
+              <h2 id="source-title">Исходное видео</h2>
+            </div>
+            <output class="timecode" data-timecode aria-live="off">00:00.000</output>
+          </div>
+          <div class="video-frame">
+            <video controls preload="metadata" aria-label="Исходное видео"></video>
+          </div>
+          <p class="player-note">Клик по сцене или слову переводит видео к точному таймкоду.</p>
+        </section>
+
+        <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Технический контроль</p>
+              <h2 id="diagnostics-title">Диагностика</h2>
+            </div>
+            <span class="health-light" data-health-light aria-hidden="true"></span>
+          </div>
+          <div class="diagnostic-summary" data-diagnostic-summary>Проверяем тайминги…</div>
+          <ul class="diagnostic-list" data-diagnostics></ul>
+        </section>
+      </div>
+
+      <section class="panel timeline-panel" aria-labelledby="timeline-title">
+        <div class="panel-heading timeline-heading">
+          <div>
+            <p class="panel-kicker">Монтажный лист</p>
+            <h2 id="timeline-title">Таймлайн</h2>
+          </div>
+          <p class="timeline-legend"><span aria-hidden="true"></span>Текущая позиция</p>
+        </div>
+
+        <div class="timeline-viewport" data-timeline-root>
+          <div class="timeline-canvas">
+            <div class="playhead-region" aria-hidden="true">
+              <div class="playhead" data-playhead data-time="0"></div>
+            </div>
+
+            <section class="timeline-lane" data-lane="source" aria-labelledby="source-lane-title">
+              <h3 id="source-lane-title">Видео</h3>
+              <div class="lane-track source-track" data-source-track></div>
+            </section>
+
+            <section class="timeline-lane" data-lane="scenes" aria-labelledby="scenes-lane-title">
+              <h3 id="scenes-lane-title">Сцены</h3>
+              <div class="lane-track scene-track" data-scenes-track></div>
+            </section>
+
+            <section class="timeline-lane transcript-lane" data-lane="transcript" aria-labelledby="transcript-lane-title">
+              <h3 id="transcript-lane-title">Речь</h3>
+              <ol class="lane-track transcript-track" data-transcript></ol>
+            </section>
+
+            <section class="timeline-lane asset-lane" data-lane="assets" aria-labelledby="assets-lane-title">
+              <h3 id="assets-lane-title">Медиа</h3>
+              <ol class="asset-list" data-assets></ol>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel error-panel" data-error-panel aria-labelledby="error-title" hidden>
+        <p class="panel-kicker">Сессия недоступна</p>
+        <h2 id="error-title">Не удалось открыть проверку</h2>
+        <p data-error-message>Перезапустите локальную команду review и откройте новую ссылку.</p>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
