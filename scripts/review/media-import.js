@@ -804,7 +804,7 @@ function imageInvocation(owned, signal, quota) {
   return {
     command: 'ffmpeg',
     args: [
-      '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', owned.uploadPath,
+      '-hide_banner', '-loglevel', 'error', '-i', owned.uploadPath,
       '-map', '0:v:0', '-map_metadata', '-1', '-frames:v', '1',
       '-vf', 'format=rgba', '-c:v', 'libwebp', '-quality', '90', '-pix_fmt', 'yuva420p',
       '-fs', String(quota),
@@ -820,7 +820,7 @@ function imageInvocation(owned, signal, quota) {
 
 function videoMasterInvocation(owned, source, outputFps, signal, quota) {
   const args = [
-    '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', owned.uploadPath,
+    '-hide_banner', '-loglevel', 'error', '-i', owned.uploadPath,
     '-map', '0:v:0',
   ];
   if (source.hasAudio) args.push('-map', '0:a:0');

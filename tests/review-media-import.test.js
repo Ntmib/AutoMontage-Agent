@@ -628,7 +628,7 @@ test('authoritative probe rejects content disagreement and exact media ceilings'
   }
 });
 
-test('video process argv is exact and metadata is the asset-last publication marker', async (t) => {
+test('video process argv relies on cross-version default autorotation and metadata is the asset-last publication marker', async (t) => {
   const projectDir = tempProject(t);
   const calls = [];
   const publicationOrder = [];
@@ -662,7 +662,7 @@ test('video process argv is exact and metadata is the asset-last publication mar
     durationSec: 1, fps: 24, hasAudio: true,
   });
   assert.deepEqual(master.args, [
-    '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', uploadPath,
+    '-hide_banner', '-loglevel', 'error', '-i', uploadPath,
     '-map', '0:v:0', '-map', '0:a:0',
     '-map_metadata', '-1', '-metadata:s:v:0', 'rotate=0',
     '-vf', 'fps=24,pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0',
@@ -714,7 +714,7 @@ test('video process argv is exact and metadata is the asset-last publication mar
   assert.equal(fs.existsSync(result.previewPath), true);
 });
 
-test('image normalization argv is exact, single-frame, oriented, metadata-free, and alpha-capable', async (t) => {
+test('image normalization relies on cross-version default autorotation and remains single-frame, metadata-free, and alpha-capable', async (t) => {
   const calls = [];
   await importReviewMedia({
     request: Readable.from([Buffer.from('x')]), projectDir: tempProject(t), outputFps: 25,
@@ -731,7 +731,7 @@ test('image normalization argv is exact, single-frame, oriented, metadata-free, 
     mediaKind: 'image', inputBytes: 1, width: 320, height: 180,
   }).image;
   assert.deepEqual(encode.args, [
-    '-hide_banner', '-loglevel', 'error', '-autorotate', '-i', uploadPath,
+    '-hide_banner', '-loglevel', 'error', '-i', uploadPath,
     '-map', '0:v:0', '-map_metadata', '-1', '-frames:v', '1',
     '-vf', 'format=rgba', '-c:v', 'libwebp', '-quality', '90', '-pix_fmt', 'yuva420p',
     '-fs', String(imageBudget),
