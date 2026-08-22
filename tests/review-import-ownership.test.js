@@ -13,6 +13,7 @@ const {
 } = require('../scripts/review/media-import');
 const { cleanupOrphanImportedStages } = require('../scripts/review/imported-assets');
 const { acquireProjectMutationLease } = require('../scripts/project/workspace');
+const { claimAndRemoveOwnedPath } = require('../scripts/project/owned-removal');
 
 const FIRST_ID = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1';
 const SECOND_ID = '7c0f5b6a-a921-4a51-8787-467a3a5c7c20';
@@ -234,6 +235,45 @@ test('clean setup failure removes the empty owned quarantine and releases retry'
   await importImage(projectDir, SECOND_ID);
 });
 
+test('simulated Windows setup cleanup retries transient owner tombstone removal and removes the empty quarantine', async (t) => {
+  for (const code of ['EPERM', 'EBUSY', 'ENOTEMPTY']) {
+    await t.test(code, async (subtest) => {
+      const projectDir = tempProject(subtest);
+      const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+      const fileSystem = Object.create(fs);
+      Object.defineProperty(fileSystem, 'platform', { value: 'win32' });
+      fileSystem.linkSync = (source, target) => {
+        if (target === path.join(quarantinePath, 'owner.anchor')) {
+          const error = new Error('injected owner anchor failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.linkSync(source, target);
+      };
+      let transientFailures = 2;
+      fileSystem.rmdirSync = (target) => {
+        if (transientFailures > 0
+          && path.basename(target).startsWith('.owner.jsonl.remove-')) {
+          transientFailures -= 1;
+          const error = new Error(`injected transient ${code}`);
+          error.code = code;
+          throw error;
+        }
+        return fs.rmdirSync(target);
+      };
+
+      await assert.rejects(importImage(projectDir, FIRST_ID, {
+        fileSystem,
+        platform: 'win32',
+      }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+      assert.equal(transientFailures, 0);
+      assert.equal(fs.existsSync(quarantinePath), false);
+      assert.deepEqual(fs.readdirSync(path.dirname(quarantinePath)), []);
+      await importImage(projectDir, SECOND_ID);
+    });
+  }
+});
+
 test('setup cleanup retains a child that replaced an owned placeholder', async (t) => {
   const projectDir = tempProject(t);
   const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
@@ -420,6 +460,276 @@ importReviewMedia({
   cleanupOrphanImportQuarantines({ projectDir });
   assert.equal(fs.existsSync(quarantinePath), false);
   assert.deepEqual(fs.readdirSync(path.dirname(quarantinePath)), []);
+});
+
+test('owned removal preserves an unrelated empty tombstone without a claimed entry', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const foreignTombstone = path.join(projectDir, '.target.remove-foreign');
+  fs.mkdirSync(target);
+  fs.mkdirSync(foreignTombstone);
+  const targetStat = fs.lstatSync(target, { bigint: true });
+
+  assert.equal(claimAndRemoveOwnedPath({
+    target,
+    expected: { dev: targetStat.dev, ino: targetStat.ino },
+    kind: 'directory',
+    temporaryId: () => 'owned',
+  }), true);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(foreignTombstone), true);
+  assert.deepEqual(fs.readdirSync(foreignTombstone), []);
+});
+
+test('exhausted Windows tombstone retries stay fail-closed on the next absent-target call', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  fs.mkdirSync(target);
+  const targetStat = fs.lstatSync(target, { bigint: true });
+  const expected = { dev: targetStat.dev, ino: targetStat.ino };
+  const fileSystem = Object.create(fs);
+  let transientFailures = 3;
+  fileSystem.rmdirSync = (candidate) => {
+    if (candidate === tombstone && transientFailures > 0) {
+      transientFailures -= 1;
+      const error = new Error('injected exhausted EPERM');
+      error.code = 'EPERM';
+      throw error;
+    }
+    return fs.rmdirSync(candidate);
+  };
+
+  assert.throws(() => claimAndRemoveOwnedPath({
+    target,
+    expected,
+    kind: 'directory',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'win32',
+  }), (error) => error?.code === 'EPERM');
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(tombstone), true);
+  assert.deepEqual(fs.readdirSync(tombstone), []);
+
+  assert.equal(claimAndRemoveOwnedPath({
+    target,
+    expected,
+    kind: 'directory',
+    fileSystem,
+    temporaryId: () => 'next',
+    platform: 'win32',
+  }), false);
+  assert.equal(fs.existsSync(tombstone), true);
+  assert.deepEqual(fs.readdirSync(tombstone), []);
+});
+
+test('Windows reconciles a tombstone rmdir that completed before reporting EPERM', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  fs.mkdirSync(target);
+  const targetStat = fs.lstatSync(target, { bigint: true });
+  const fileSystem = Object.create(fs);
+  let injected = false;
+  fileSystem.rmdirSync = (candidate) => {
+    if (!injected && candidate === tombstone) {
+      injected = true;
+      fs.rmdirSync(candidate);
+      const error = new Error('injected post-rmdir EPERM');
+      error.code = 'EPERM';
+      throw error;
+    }
+    return fs.rmdirSync(candidate);
+  };
+
+  assert.equal(claimAndRemoveOwnedPath({
+    target,
+    expected: { dev: targetStat.dev, ino: targetStat.ino },
+    kind: 'directory',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'win32',
+  }), true);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(tombstone), false);
+});
+
+test('resume finds an exact retained claim regardless of a foreign mismatch order', async (t) => {
+  for (const order of ['foreign-first', 'exact-first']) {
+    await t.test(order, (subtest) => {
+      const projectDir = tempProject(subtest);
+      const target = path.join(projectDir, 'target');
+      const foreignTombstone = path.join(projectDir, '.target.remove-foreign');
+      const exactTombstone = path.join(projectDir, '.target.remove-exact');
+      fs.mkdirSync(target);
+      const targetStat = fs.lstatSync(target, { bigint: true });
+      fs.mkdirSync(foreignTombstone);
+      fs.mkdirSync(path.join(foreignTombstone, 'claimed'));
+      fs.mkdirSync(exactTombstone);
+      fs.renameSync(target, path.join(exactTombstone, 'claimed'));
+
+      const fileSystem = Object.create(fs);
+      fileSystem.readdirSync = (directory, options) => {
+        const entries = fs.readdirSync(directory, options);
+        if (path.resolve(directory) !== path.resolve(projectDir) || !options?.withFileTypes) {
+          return entries;
+        }
+        const first = order === 'foreign-first' ? 'foreign' : 'exact';
+        return entries.sort((left, right) => (
+          Number(!left.name.endsWith(first)) - Number(!right.name.endsWith(first))
+        ));
+      };
+
+      assert.equal(claimAndRemoveOwnedPath({
+        target,
+        expected: { dev: targetStat.dev, ino: targetStat.ino },
+        kind: 'directory',
+        fileSystem,
+        temporaryId: () => 'unused',
+      }), true);
+      assert.equal(fs.existsSync(target), false);
+      assert.equal(fs.existsSync(exactTombstone), false);
+      assert.equal(fs.existsSync(foreignTombstone), true);
+      assert.equal(fs.existsSync(path.join(foreignTombstone, 'claimed')), true);
+    });
+  }
+});
+
+test('POSIX tombstone removal is one-shot on a transient Windows-style error', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  fs.mkdirSync(target);
+  const targetStat = fs.lstatSync(target, { bigint: true });
+  const fileSystem = Object.create(fs);
+  let injected = false;
+  fileSystem.rmdirSync = (candidate) => {
+    if (!injected && candidate === tombstone) {
+      injected = true;
+      const error = new Error('injected POSIX EPERM');
+      error.code = 'EPERM';
+      throw error;
+    }
+    return fs.rmdirSync(candidate);
+  };
+
+  assert.throws(() => claimAndRemoveOwnedPath({
+    target,
+    expected: { dev: targetStat.dev, ino: targetStat.ino },
+    kind: 'directory',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'linux',
+  }), (error) => error?.code === 'EPERM');
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(tombstone), true);
+  assert.deepEqual(fs.readdirSync(tombstone), []);
+});
+
+test('bigint tombstone identity rejects adjacent unsafe inodes after container replacement', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  const originalContainer = path.join(projectDir, 'original-container-backup');
+  const claimed = path.join(tombstone, 'claimed');
+  fs.mkdirSync(target);
+  const targetStat = fs.lstatSync(target, { bigint: true });
+  const fileSystem = Object.create(fs);
+  let replaced = false;
+  fileSystem.lstatSync = (candidate, options) => {
+    const stat = fs.lstatSync(candidate, options);
+    if (candidate !== tombstone) return stat;
+    const inode = replaced ? 9007199254740993n : 9007199254740992n;
+    const bigint = options?.bigint === true;
+    return {
+      dev: bigint ? 7n : 7,
+      ino: bigint ? inode : Number(inode),
+      isDirectory: () => stat.isDirectory(),
+      isSymbolicLink: () => stat.isSymbolicLink(),
+    };
+  };
+  fileSystem.renameSync = (source, destination) => {
+    fs.renameSync(source, destination);
+    if (source === target && destination === claimed) {
+      fs.renameSync(tombstone, originalContainer);
+      fs.mkdirSync(tombstone);
+      fs.renameSync(path.join(originalContainer, 'claimed'), claimed);
+      replaced = true;
+    }
+  };
+
+  assert.equal(claimAndRemoveOwnedPath({
+    target,
+    expected: { dev: targetStat.dev, ino: targetStat.ino },
+    kind: 'directory',
+    fileSystem,
+    temporaryId: () => 'owned',
+  }), false);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(tombstone), true);
+  assert.deepEqual(fs.readdirSync(tombstone), []);
+});
+
+test('absent target ignores a proven foreign mismatching claim and preserves it', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const expectedBackup = path.join(projectDir, 'expected-backup');
+  const foreignTombstone = path.join(projectDir, '.target.remove-foreign');
+  const foreignClaimed = path.join(foreignTombstone, 'claimed');
+  fs.mkdirSync(target);
+  const targetStat = fs.lstatSync(target, { bigint: true });
+  fs.renameSync(target, expectedBackup);
+  fs.mkdirSync(foreignTombstone);
+  fs.mkdirSync(foreignClaimed);
+
+  assert.equal(claimAndRemoveOwnedPath({
+    target,
+    expected: { dev: targetStat.dev, ino: targetStat.ino },
+    kind: 'directory',
+    temporaryId: () => 'unused',
+  }), true);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(expectedBackup), true);
+  assert.equal(fs.existsSync(foreignTombstone), true);
+  assert.equal(fs.existsSync(foreignClaimed), true);
+});
+
+test('primary rename failure survives exhausted Windows tombstone cleanup retries', (t) => {
+  const projectDir = tempProject(t);
+  const target = path.join(projectDir, 'target');
+  const tombstone = path.join(projectDir, '.target.remove-owned');
+  fs.mkdirSync(target);
+  const targetStat = fs.lstatSync(target, { bigint: true });
+  const fileSystem = Object.create(fs);
+  fileSystem.renameSync = (source, destination) => {
+    if (source === target && destination === path.join(tombstone, 'claimed')) {
+      const error = new Error('injected primary rename failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.renameSync(source, destination);
+  };
+  fileSystem.rmdirSync = (candidate) => {
+    if (candidate === tombstone) {
+      const error = new Error('injected cleanup EPERM');
+      error.code = 'EPERM';
+      throw error;
+    }
+    return fs.rmdirSync(candidate);
+  };
+
+  assert.throws(() => claimAndRemoveOwnedPath({
+    target,
+    expected: { dev: targetStat.dev, ino: targetStat.ino },
+    kind: 'directory',
+    fileSystem,
+    temporaryId: () => 'owned',
+    platform: 'win32',
+  }), (error) => error?.code === 'EIO' && error.cleanupError?.code === 'EPERM');
+  assert.equal(fs.existsSync(target), true);
+  assert.equal(fs.existsSync(tombstone), true);
+  assert.deepEqual(fs.readdirSync(tombstone), []);
 });
 
 test('quarantine cleanup never deletes a foreign file swapped at the final removal syscall', async (t) => {

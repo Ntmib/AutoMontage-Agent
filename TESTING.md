@@ -131,8 +131,10 @@ owner-файлы probe/filesystem/render bundle и точные Windows/real-med
 recovery, handoff, final publication и безопасного логирования. Отдельные шаги сохраняют
 переносимые подмножества duration/geometry, project transaction и import ownership. POSIX-only
 mode/umask, signal/hard-exit границы и rename открытого файла намеренно не выдаются за
-Windows-проверку. Локально проверяются команды и YAML; hosted Windows run остаётся обязательным
-pre-merge gate.
+Windows-проверку. Import ownership отдельно воспроизводит временные `EPERM`/`EBUSY`/`ENOTEMPTY`:
+повтор разрешён только для identity-проверенного пустого tombstone, а чужой или недоказанный
+остаток должен сохраниться. Локально проверяются команды и YAML; hosted Windows run остаётся
+обязательным pre-merge gate.
 
 Статический guard для `scripts/build.js` запрещает `execSync` и `shell: true`. Опции
 `--frames`, `--max`, `--beatSec`, `--brandLock` и `--reframe` проверяются до ffprobe.

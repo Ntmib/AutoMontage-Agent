@@ -4,6 +4,10 @@ const { randomUUID } = require('node:crypto');
 const { setPrivatePathMode } = require('../filesystem-capabilities');
 
 const SAFE_TOKEN = /^[A-Za-z0-9_-]+$/;
+const WIN32_TOMBSTONE_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
+const TOMBSTONE_RETRY_DELAYS_MS = [10, 20];
+const TOMBSTONE_RETRY_WAIT = new Int32Array(new SharedArrayBuffer(4));
+const UNPROVEN_RETAINED_CLAIM = Symbol('unproven-retained-claim');
 
 function absent(fileSystem, target) {
   try {
@@ -39,15 +43,67 @@ function matchesBytes(fileSystem, claimedPath, expected, kind) {
   }
 }
 
-function removeEmptyTombstone(fileSystem, tombstoneDirectory) {
+function captureTombstoneIdentity(fileSystem, tombstoneDirectory) {
   try {
-    fileSystem.rmdirSync(tombstoneDirectory);
-  } catch (_) {
-    // A retained claimed object is evidence of a race and must remain recoverable.
+    const stat = fileSystem.lstatSync(tombstoneDirectory, { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+    return { dev: stat.dev, ino: stat.ino };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    throw error;
   }
 }
 
-function resumeRetainedClaim(fileSystem, target, expected, kind) {
+function removeOwnedEmptyTombstone(
+  fileSystem,
+  tombstoneDirectory,
+  expected,
+  platform,
+) {
+  const attempts = platform === 'win32' ? 3 : 1;
+  let removalUncertain = false;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let stat;
+    try {
+      stat = fileSystem.lstatSync(tombstoneDirectory, { bigint: true });
+    } catch (error) {
+      if (error?.code === 'ENOENT' && removalUncertain) return true;
+      throw error;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()
+      || String(stat.dev) !== String(expected.dev)
+      || String(stat.ino) !== String(expected.ino)) return false;
+    if (fileSystem.readdirSync(tombstoneDirectory).length !== 0) return false;
+    try {
+      fileSystem.rmdirSync(tombstoneDirectory);
+      return true;
+    } catch (error) {
+      const retryable = platform === 'win32'
+        && WIN32_TOMBSTONE_RETRY_CODES.has(error?.code)
+        && attempt < attempts;
+      if (!retryable) throw error;
+      removalUncertain = true;
+      if (attempt === attempts - 1) {
+        let reconciled;
+        try {
+          reconciled = fileSystem.lstatSync(tombstoneDirectory, { bigint: true });
+        } catch (reconcileError) {
+          if (reconcileError?.code === 'ENOENT') return true;
+          throw reconcileError;
+        }
+        if (!reconciled.isDirectory() || reconciled.isSymbolicLink()
+          || String(reconciled.dev) !== String(expected.dev)
+          || String(reconciled.ino) !== String(expected.ino)
+          || fileSystem.readdirSync(tombstoneDirectory).length !== 0) return false;
+        throw error;
+      }
+      Atomics.wait(TOMBSTONE_RETRY_WAIT, 0, 0, TOMBSTONE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  return false;
+}
+
+function resumeRetainedClaim(fileSystem, target, expected, kind, platform) {
   const parent = path.dirname(target);
   const prefix = `.${path.basename(target)}.remove-`;
   let entries;
@@ -56,6 +112,7 @@ function resumeRetainedClaim(fileSystem, target, expected, kind) {
   } catch (_) {
     return null;
   }
+  let sawUnproven = false;
   for (const entry of entries) {
     if (!entry.name.startsWith(prefix) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
     const tombstoneDirectory = path.join(parent, entry.name);
@@ -65,19 +122,24 @@ function resumeRetainedClaim(fileSystem, target, expected, kind) {
       claimed = fileSystem.lstatSync(claimedPath, { bigint: true });
     } catch (error) {
       if (error && error.code === 'ENOENT') {
-        removeEmptyTombstone(fileSystem, tombstoneDirectory);
+        sawUnproven = true;
         continue;
       }
       return false;
     }
     if (!matchesIdentity(claimed, expected, kind)
-      || !matchesBytes(fileSystem, claimedPath, expected, kind)) return false;
+      || !matchesBytes(fileSystem, claimedPath, expected, kind)) {
+      continue;
+    }
+    const tombstoneIdentity = captureTombstoneIdentity(fileSystem, tombstoneDirectory);
+    if (!tombstoneIdentity) return false;
     if (kind === 'directory') fileSystem.rmdirSync(claimedPath);
     else fileSystem.unlinkSync(claimedPath);
-    removeEmptyTombstone(fileSystem, tombstoneDirectory);
-    return true;
+    return removeOwnedEmptyTombstone(
+      fileSystem, tombstoneDirectory, tombstoneIdentity, platform,
+    );
   }
-  return null;
+  return sawUnproven ? UNPROVEN_RETAINED_CLAIM : null;
 }
 
 function claimAndRemoveOwnedPath({
@@ -91,8 +153,9 @@ function claimAndRemoveOwnedPath({
   if (!target) return true;
   if (!['file', 'mutable-file', 'directory'].includes(kind)) return false;
   if (expected) {
-    const resumed = resumeRetainedClaim(fileSystem, target, expected, kind);
+    const resumed = resumeRetainedClaim(fileSystem, target, expected, kind, platform);
     if (resumed === false) return false;
+    if (absent(fileSystem, target)) return resumed !== UNPROVEN_RETAINED_CLAIM;
   }
   if (absent(fileSystem, target)) return true;
   if (!expected) return false;
@@ -103,13 +166,23 @@ function claimAndRemoveOwnedPath({
     `.${path.basename(target)}.remove-${token}`,
   );
   fileSystem.mkdirSync(tombstoneDirectory, { mode: 0o700 });
+  const tombstoneIdentity = captureTombstoneIdentity(fileSystem, tombstoneDirectory);
+  if (!tombstoneIdentity) throw new Error('owned removal tombstone is unsafe');
   setPrivatePathMode(fileSystem, tombstoneDirectory, 0o700, platform);
   const claimedPath = path.join(tombstoneDirectory, 'claimed');
   try {
     fileSystem.renameSync(target, claimedPath);
   } catch (error) {
-    removeEmptyTombstone(fileSystem, tombstoneDirectory);
-    if (error && error.code === 'ENOENT') return true;
+    let removed;
+    try {
+      removed = removeOwnedEmptyTombstone(
+        fileSystem, tombstoneDirectory, tombstoneIdentity, platform,
+      );
+    } catch (cleanupError) {
+      try { error.cleanupError = cleanupError; } catch (_) { /* keep the primary error */ }
+      throw error;
+    }
+    if (error && error.code === 'ENOENT') return removed;
     throw error;
   }
   let claimed;
@@ -138,8 +211,9 @@ function claimAndRemoveOwnedPath({
     }
     throw removalError;
   }
-  removeEmptyTombstone(fileSystem, tombstoneDirectory);
-  return true;
+  return removeOwnedEmptyTombstone(
+    fileSystem, tombstoneDirectory, tombstoneIdentity, platform,
+  );
 }
 
 module.exports = { claimAndRemoveOwnedPath };
