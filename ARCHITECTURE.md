@@ -245,11 +245,13 @@ descriptors до commit boundary и публикует approved только е�
 Один и тот же UUID можно использовать в нескольких сценах с разными start/fit/audio; удалить
 или заменить опубликованный asset на месте в V1 нельзя.
 
-Filesystem capability сосредоточен в `scripts/filesystem-capabilities.js`. POSIX сохраняет
-`O_NOFOLLOW` и точные private `0600/0700`; Windows не трактует POSIX mode bits как доказательство,
-но не ослабляет regular-file, containment, opened-handle/path identity, timestamps, size и
-SHA-256 barriers. Поэтому replacement, append, overwrite и same-size byte change остаются
-fail closed на всех трёх платформах.
+Filesystem capability сосредоточен в `scripts/filesystem-capabilities.js` и независимо описывает
+`noFollow`, `posixPermissions` и `directoryFsync`. POSIX сохраняет `O_NOFOLLOW`, точные private
+`0600/0700` и fsync каталога после изменения directory entries. На Windows Node не поддерживает
+используемую пару open-directory + `fsyncSync`, поэтому пропускается только этот directory-entry
+durability flush; это не следствие отсутствия POSIX mode bits. Regular-file fsync, containment,
+opened-handle/path identity, timestamps, size и SHA-256 barriers остаются обязательными. Поэтому
+replacement, append, overwrite и same-size byte change fail closed на всех трёх платформах.
 
 Внешний `409` синхронно переводит браузер в отдельное конфликтное состояние ещё до асинхронной
 перезагрузки: active/redo stacks очищаются, проверенный diff сбрасывается, а timeline, b-roll,

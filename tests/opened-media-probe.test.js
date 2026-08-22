@@ -137,10 +137,12 @@ test('opened-media probe exposes one portable descriptor transport', () => {
   assert.deepEqual(mediaProbe.fileSystemCapabilities('win32'), {
     noFollow: false,
     posixPermissions: false,
+    directoryFsync: false,
   });
   assert.deepEqual(mediaProbe.fileSystemCapabilities('linux'), {
     noFollow: true,
     posixPermissions: true,
+    directoryFsync: true,
   });
 });
 

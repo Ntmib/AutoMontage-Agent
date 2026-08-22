@@ -15,6 +15,7 @@ const { acquireProjectMutationLease } = require('../project/workspace');
 const { claimAndRemoveOwnedPath } = require('../project/owned-removal');
 const {
   fileSystemCapabilities,
+  fsyncDirectoryIfSupported,
   openReadOnlyFlags,
   privateModeMatches,
   setPrivateDescriptorMode,
@@ -416,7 +417,9 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
       );
     }
     appendOwnerRecord(owned, fileSystem);
-    fsyncDirectoryIfSupported(fileSystem, quarantinePath, platform);
+    fsyncDirectoryIfSupported(
+      fileSystem, quarantinePath, fileSystemCapabilities(platform),
+    );
     return owned;
   } catch (error) {
     if (owned?.uploadFd !== null && owned?.uploadFd !== undefined) {
@@ -859,29 +862,17 @@ function writePublicationClaimState(owned, fileSystem) {
   assertOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
 }
 
-function fsyncDirectoryIfSupported(fileSystem, directory, platform = process.platform) {
-  if (!fileSystemCapabilities(platform).posixPermissions) return;
-  const constants = fileSystem.constants || fs.constants;
-  let descriptor = null;
-  try {
-    descriptor = fileSystem.openSync(directory, constants.O_RDONLY);
-    const stat = fileSystem.fstatSync(descriptor);
-    if (!stat.isDirectory()) throw unsafeFilesystem();
-    fileSystem.fsyncSync(descriptor);
-  } catch (error) {
-    if (!['EINVAL', 'ENOTSUP', 'EBADF'].includes(error.code)) throw error;
-  } finally {
-    if (descriptor !== null) fileSystem.closeSync(descriptor);
-  }
-}
-
 function openPublicationClaim(owned, fileSystem) {
   assertOwnedFile(fileSystem, owned.claimPrivatePath, owned.claimIdentity);
   fileSystem.linkSync(owned.claimPrivatePath, owned.claimPath);
   assertOwnedFile(fileSystem, owned.claimPath, owned.claimIdentity);
-  fsyncDirectoryIfSupported(fileSystem, owned.assetParent, owned.platform);
+  fsyncDirectoryIfSupported(
+    fileSystem, owned.assetParent, fileSystemCapabilities(owned.platform),
+  );
   writePublicationClaimState(owned, fileSystem);
-  fsyncDirectoryIfSupported(fileSystem, owned.assetParent, owned.platform);
+  fsyncDirectoryIfSupported(
+    fileSystem, owned.assetParent, fileSystemCapabilities(owned.platform),
+  );
   appendOwnerRecord(owned, fileSystem);
 }
 

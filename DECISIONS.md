@@ -324,8 +324,12 @@ PNG, JPEG, WebP, H.264 MP4 с metadata в конце и WebM подтверди�
 adapter: argv array, `shell:false`, timeout 30 секунд, bounded stdout/stderr и pathless canonical
 error. `/dev/fd/*`, live pathname и временный copy/hardlink snapshot не нужны.
 
-Filesystem-различия вынесены в один capability module. POSIX продолжает требовать `O_NOFOLLOW` и
-private `0600/0700`. На Windows эти две POSIX-гарантии не симулируются через бессмысленные mode
-bits; вместо них обязательны существующие containment/realpath, regular-file, opened-handle/path
-identity до и после probe/hash, size/timestamps и SHA-256. Отклонены pathname fallback и простое
-отключение identity-проверок: первое возвращает race, второе разрешает same-size подмену.
+Filesystem-различия вынесены в один capability module с независимыми `noFollow`,
+`posixPermissions` и `directoryFsync`. POSIX продолжает требовать `O_NOFOLLOW`, private
+`0600/0700` и fsync каталога после изменения directory entries. На Windows первые две гарантии не
+симулируются через бессмысленные mode bits, а directory fsync выключен отдельно: Node не
+поддерживает используемую пару open-directory + `fsyncSync`. Это убирает только directory-entry
+durability flush, не regular-file fsync. Обязательными остаются containment/realpath, regular-file,
+opened-handle/path identity до и после probe/hash, size/timestamps и SHA-256. Отклонены pathname
+fallback и простое отключение identity-проверок: первое возвращает race, второе разрешает
+same-size подмену.

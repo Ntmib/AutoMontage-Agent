@@ -55,6 +55,8 @@ npm test
 - portable opened-media probe: реальные PNG/JPEG/WebP, H.264 MP4 с `moov` в конце и WebM идут
   через opened descriptor + `pipe:0` без host path; Windows-mode filesystem отвергает POSIX
   flags/modes, но всё равно требует regular type, containment, identity и совпадающие bytes;
+  отдельный behavioral test доказывает, что directory fsync управляется собственной capability,
+  а не `posixPermissions`, и на Windows пропускается только неподдерживаемый directory-handle fsync;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;
@@ -73,7 +75,8 @@ npm test
 ```bash
 node --test tests/review-waveform.test.js tests/process-security.test.js
 node --test tests/project-mutation-transaction.test.js
-node --test tests/opened-media-probe.test.js tests/project-workspace.test.js \
+node --test tests/filesystem-capabilities.test.js tests/opened-media-probe.test.js \
+  tests/project-workspace.test.js \
   tests/review-draft-save.test.js
 node --test tests/review-import-ownership.test.js tests/review-media-import.test.js \
   tests/review-imported-assets.test.js tests/review-server-security.test.js
