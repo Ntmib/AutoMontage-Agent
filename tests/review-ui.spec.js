@@ -1142,8 +1142,8 @@ test('boundary slider exposes frame-snapped accessible values and marks only the
     const first = page.locator('[data-boundary="0"]');
     const second = page.locator('[data-boundary="1"]');
     await expect(first).toHaveAttribute('role', 'slider');
-    await expect(first).toHaveAttribute('aria-valuemin', '0');
-    await expect(first).toHaveAttribute('aria-valuemax', '4');
+    await expect(first).toHaveAttribute('aria-valuemin', '0.04');
+    await expect(first).toHaveAttribute('aria-valuemax', '3.96');
     await expect(first).toHaveAttribute('aria-valuenow', '2');
     await expect(first).toHaveAttribute('aria-valuetext', '00:02.000');
 
@@ -1157,8 +1157,91 @@ test('boundary slider exposes frame-snapped accessible values and marks only the
     await expect(first).toHaveAttribute('aria-valuenow', '2.04');
     await expect(first).toHaveAttribute('aria-valuetext', '00:02.040');
     await expect(first).toHaveAttribute('data-invalid', 'true');
+    await expect(first).toHaveAttribute('aria-invalid', 'true');
     await expect(second).not.toHaveAttribute('data-invalid', 'true');
+    await expect(second).not.toHaveAttribute('aria-invalid', 'true');
     await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+  });
+});
+
+test('boundary slider keyboard exposes attainable frame limits and preserves cumulative validated state', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true }, async (session) => {
+    const validationBodies = [];
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/validate')) validationBodies.push(request.postDataJSON());
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+
+    const first = page.locator('[data-boundary="0"]');
+    const second = page.locator('[data-boundary="1"]');
+    const pressAndValidate = async (key) => {
+      const validated = page.waitForResponse((response) => (
+        response.url().endsWith('/api/validate') && response.status() === 200
+      ));
+      await first.press(key);
+      await validated;
+      await expect(first).toBeFocused();
+    };
+
+    await first.focus();
+    await pressAndValidate('ArrowUp');
+    await expect(first).toHaveAttribute('aria-valuenow', '2.04');
+    await expect(first).toHaveAttribute('aria-valuetext', '00:02.040');
+
+    await pressAndValidate('ArrowDown');
+    await expect(first).toHaveAttribute('aria-valuenow', '2');
+    await expect(first).toHaveAttribute('aria-valuetext', '00:02.000');
+    await expect(first).toHaveAttribute('aria-valuemin', '0.04');
+    await expect(first).toHaveAttribute('aria-valuemax', '3.96');
+    await expect(second).toHaveAttribute('aria-valuemin', '2.04');
+    await expect(second).toHaveAttribute('aria-valuemax', '5.96');
+
+    await pressAndValidate('Home');
+    await expect(first).toHaveAttribute('aria-valuenow', '0.04');
+    await expect(first).toHaveAttribute('aria-valuetext', '00:00.040');
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '0.04');
+    await expect(page.locator('[data-scene="1"]')).toHaveAttribute('data-start', '0.04');
+
+    const undone = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await undone;
+    await expect(first).toHaveAttribute('aria-valuemin', '0.04');
+    await expect(first).toHaveAttribute('aria-valuemax', '3.96');
+    await expect(first).toHaveAttribute('aria-valuenow', '2');
+    await expect(first).toHaveAttribute('aria-valuetext', '00:02.000');
+    await expect(second).toHaveAttribute('aria-valuemin', '2.04');
+    await expect(second).toHaveAttribute('aria-valuemax', '5.96');
+
+    const redone = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await page.getByRole('button', { name: /^повторить$/i }).click();
+    await redone;
+    await expect(first).toHaveAttribute('aria-valuemin', '0.04');
+    await expect(first).toHaveAttribute('aria-valuemax', '3.96');
+    await expect(first).toHaveAttribute('aria-valuenow', '0.04');
+    await expect(first).toHaveAttribute('aria-valuetext', '00:00.040');
+    await expect(second).toHaveAttribute('aria-valuemin', '0.08');
+    await expect(second).toHaveAttribute('aria-valuemax', '5.96');
+
+    await first.focus();
+    await pressAndValidate('End');
+    await expect(first).toHaveAttribute('aria-valuenow', '3.96');
+    await expect(first).toHaveAttribute('aria-valuetext', '00:03.960');
+    await expect(second).toHaveAttribute('aria-valuemin', '4');
+    await expect(second).toHaveAttribute('aria-valuemax', '5.96');
+    await expect(page.locator('[data-scene="0"]')).toHaveAttribute('data-end', '3.96');
+    await expect(page.locator('[data-scene="1"]')).toHaveAttribute('data-start', '3.96');
+
+    expect(validationBodies.at(-1).commands).toEqual([
+      { type: 'move-boundary', leftSceneIndex: 0, seconds: 2.04 },
+      { type: 'move-boundary', leftSceneIndex: 0, seconds: 2 },
+      { type: 'move-boundary', leftSceneIndex: 0, seconds: 0.04 },
+      { type: 'move-boundary', leftSceneIndex: 0, seconds: 3.96 },
+    ]);
   });
 });
 

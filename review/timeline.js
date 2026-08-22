@@ -220,14 +220,26 @@ function renderBoundaries({
     const leftTimes = sceneTimes(scenes[index], index, diff);
     const rightTimes = sceneTimes(scenes[index + 1], index + 1, diff);
     if (leftTimes.end !== rightTimes.start) continue;
+    const boundaryRange = {
+      start: leftTimes.start,
+      end: rightTimes.end,
+      fps,
+      words: [],
+      allowWordSnap: false,
+    };
+    const minimum = snapBoundary(leftTimes.start, boundaryRange).seconds;
+    const maximum = snapBoundary(rightTimes.end, boundaryRange).seconds;
     const handle = button(`Граница сцен ${index + 1} и ${index + 2}`, 'boundary-handle');
     handle.dataset.boundary = String(index);
     handle.setAttribute('role', 'slider');
-    handle.setAttribute('aria-valuemin', String(leftTimes.start));
-    handle.setAttribute('aria-valuemax', String(rightTimes.end));
+    handle.setAttribute('aria-valuemin', String(minimum));
+    handle.setAttribute('aria-valuemax', String(maximum));
     handle.disabled = Boolean(locked);
     handle.dataset.snapReason = lastSnap && lastSnap.index === index ? lastSnap.reason : '';
-    if (invalidBoundaries.has(index)) handle.dataset.invalid = 'true';
+    if (invalidBoundaries.has(index)) {
+      handle.dataset.invalid = 'true';
+      handle.setAttribute('aria-invalid', 'true');
+    }
     const snapLabel = document.createElement('span');
     snapLabel.className = 'boundary-snap-label';
     snapLabel.textContent = lastSnap && lastSnap.index === index
@@ -310,12 +322,19 @@ function renderBoundaries({
     };
     const keyboardMove = (event) => {
       if (locked) return;
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const supportedKeys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
+      if (!supportedKeys.includes(event.key)) return;
       event.preventDefault();
       const step = Number.isFinite(fps) && fps > 0 ? 1 / fps : 0.001;
       const left = sceneButtons[index];
       const right = sceneButtons[index + 1];
-      const snapped = snapBoundary(Number(left.dataset.end) + (event.key === 'ArrowLeft' ? -step : step), {
+      const direction = event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 1;
+      const target = event.key === 'Home'
+        ? Number(left.dataset.start)
+        : event.key === 'End'
+          ? Number(right.dataset.end)
+          : Number(left.dataset.end) + (direction * step);
+      const snapped = snapBoundary(target, {
         start: Number(left.dataset.start),
         end: Number(right.dataset.end),
         fps,

@@ -50,8 +50,9 @@
 
 - Review сохраняет позицию video preview при validate/Undo/Redo, показывает вычисленный
   используемый интервал и не сбрасывает плеер после выбора старта.
-- Границы получили доступные slider values и точную подсветку по `sceneIndex`; pending validation
-  объявляет `aria-busy` и блокирует все мутации, а длинная media lane прокручивается на 360 px.
+- Границы получили достижимые frame-inset slider limits, ArrowUp/Down и Home/End, а также точную
+  `aria-invalid` подсветку по `sceneIndex`; pending validation объявляет `aria-busy` и блокирует
+  все мутации, а длинная media lane прокручивается на 360 px.
 - Успешный `201` больше не называется провалом импорта при ошибке следующего refresh: UI сообщает,
   что файл уже добавлен. Browser `.m4v` отправляется как `video/x-m4v`.
 - Media import теперь считает `durationSec` только по видеопотоку, хранит отдельный

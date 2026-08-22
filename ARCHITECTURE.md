@@ -307,8 +307,11 @@ undo/redo и Save блокируются. Ошибка `GET /api/state` сохр
 Asset registry публикует только browser-safe descriptors и capabilities. Изображения и
 нормализованные видео можно назначать b-roll; audio-only остаётся только preview-активом и не
 проходит командный/approval/render contract. Канонические ссылки, UUID, hashes и абсолютные пути
-остаются server-side. Drag может притянуть границу к слову, Arrow — только к следующему кадру;
-timing audit использует нормализованные word timestamps и объясняет `reason: frame|word`.
+остаются server-side. Drag может притянуть границу к слову; ArrowLeft/Down и ArrowRight/Up идут
+на соседний кадр, а Home/End — на первый/последний допустимый кадр внутри пары сцен. Slider ARIA
+публикует именно эти достижимые frame-inset min/max и пересчитывает их из server diff после
+validate/Undo/Redo. Timing audit использует нормализованные word timestamps и объясняет
+`reason: frame|word`.
 
 Token обычно передаётся только существующему browser-launch process. Для `--no-open` или ошибки
 launch сервер вместо URL в stdout создаёт в системной temp-папке exclusive regular URL-файл

@@ -95,10 +95,11 @@ foreign destination collision, stale snapshot conflict и сохранность
 manifest update и ошибки `readFileSync`/`lstatSync` сразу после manifest rename.
 
 Chromium suite поднимает настоящий loopback-сервер и проверяет read-only/edit DOM, token/origin,
-waveform fallback, word-snap drag, накопительное frame-only Arrow movement, реальные
+waveform fallback, word-snap drag, накопительное frame-only Arrow movement, Home/End и достижимые
+frame-inset slider limits после validate/Undo/Redo, реальные
 JPEG/MP4/MOV/M4V/WebM uploads, authenticated proxy playback, отсутствие auto-select, русские
 fit/start/audio controls, сохранение preview playhead, derived used interval, silent-video
-ограничения, slider ARIA, точную invalid-boundary подсветку, pending `aria-busy`, 360px media
+ограничения, точную `aria-invalid` boundary-подсветку, pending `aria-busy`, 360px media
 scroll, undo/redo, save confirmation, committed-201 refresh failure и внешний `409` с настоящей
 перезагрузкой/блокировкой мутаций. Browser DOM дополнительно проверяется на отсутствие project
 path, canonical media reference и SHA-256.
