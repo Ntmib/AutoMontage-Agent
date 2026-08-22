@@ -190,6 +190,8 @@ function createEditControls() {
   importButton.dataset.mediaImport = '';
   const mediaInput = element('input', 'visually-hidden');
   mediaInput.type = 'file';
+  mediaInput.tabIndex = -1;
+  mediaInput.setAttribute('aria-hidden', 'true');
   mediaInput.accept = '.avif,.gif,.jpeg,.jpg,.png,.webp,.mp4,.mov,.m4v,.webm';
   mediaInput.dataset.mediaInput = '';
   const abortImport = element('button', 'edit-button media-import__abort', 'Отменить загрузку');

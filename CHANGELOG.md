@@ -54,7 +54,8 @@
   `aria-invalid` подсветку по `sceneIndex`; pending validation объявляет `aria-busy` и блокирует
   все мутации, а длинная media lane прокручивается на 360 px.
 - Успешный `201` больше не называется провалом импорта при ошибке следующего refresh: UI сообщает,
-  что файл уже добавлен. Browser `.m4v` отправляется как `video/x-m4v`.
+  что файл уже добавлен. Browser `.m4v` отправляется как `video/x-m4v`; скрытый file input больше
+  не перехватывает Tab, а именованная кнопка сохраняет Enter/Space file chooser.
 - Media import теперь считает `durationSec` только по видеопотоку, хранит отдельный
   `audioDurationSec`, обрезает длинный звук по картинке и не разрешает `replace` за концом
   короткого audio; container duration больше не расширяет trim.

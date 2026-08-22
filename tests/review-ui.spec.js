@@ -1265,6 +1265,8 @@ test('pending validation announces busy state and locks every mutation control',
     await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
     await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
     await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeDisabled();
+    await expect(page.locator('[data-media-input]')).toBeDisabled();
+    await expect(page.locator('[data-media-input]')).toHaveAttribute('aria-hidden', 'true');
     await expect(page.locator('[data-edit-controls]')).toHaveAttribute('aria-busy', 'false');
   });
 });
@@ -1425,6 +1427,53 @@ test('media import control is edit-only and keeps the read-only surface inert', 
       'accept',
       '.avif,.gif,.jpeg,.jpg,.png,.webp,.mp4,.mov,.m4v,.webm',
     );
+  });
+});
+
+test('keyboard tab order skips the hidden media input and reaches the next named visible control', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+
+    const addMedia = page.getByRole('button', { name: /добавить медиа/i });
+    const mediaInput = page.locator('[data-media-input]');
+    const sceneMedia = page.getByRole('combobox', { name: 'Сцена 2' });
+    await addMedia.focus();
+    await page.keyboard.press('Tab');
+
+    await expect(mediaInput).not.toBeFocused();
+    await expect(sceneMedia).toBeFocused();
+    await expect(mediaInput).toHaveAttribute('tabindex', '-1');
+    await expect(mediaInput).toHaveAttribute('aria-hidden', 'true');
+    expect(await mediaInput.ariaSnapshot()).toBe('');
+  });
+});
+
+test('Enter and Space on the named Add media button complete real browser imports', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    const addMedia = page.getByRole('button', { name: /добавить медиа/i });
+
+    const importWithKey = async (key, filePath) => {
+      await addMedia.focus();
+      const chooserPromise = page.waitForEvent('filechooser');
+      await addMedia.press(key);
+      const chooser = await chooserPromise;
+      const responsePromise = page.waitForResponse((response) => (
+        response.url().endsWith('/api/assets/import')
+        && response.request().method() === 'POST'
+      ));
+      await chooser.setFiles(filePath);
+      expect((await responsePromise).status()).toBe(201);
+      await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'success');
+      await expect(page.locator('[data-asset-label]', { hasText: path.basename(filePath) })).toBeVisible();
+    };
+
+    await importWithKey('Enter', media.mp4);
+    await importWithKey('Space', media.webm);
   });
 });
 
@@ -1627,6 +1676,7 @@ test('media import owns the mutation lock, blocks a second import and abort rest
     await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
     await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
     await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeDisabled();
+    await expect(page.locator('[data-media-input]')).toBeDisabled();
     await page.locator('[data-media-input]').evaluate((input) => {
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });

@@ -99,8 +99,9 @@ waveform fallback, word-snap drag, накопительное frame-only Arrow m
 frame-inset slider limits после validate/Undo/Redo, реальные
 JPEG/MP4/MOV/M4V/WebM uploads, authenticated proxy playback, отсутствие auto-select, русские
 fit/start/audio controls, сохранение preview playhead, derived used interval, silent-video
-ограничения, точную `aria-invalid` boundary-подсветку, pending `aria-busy`, 360px media
-scroll, undo/redo, save confirmation, committed-201 refresh failure и внешний `409` с настоящей
+ограничения, keyboard Tab-order без скрытого file input, реальные Enter/Space file chooser
+imports, точную `aria-invalid` boundary-подсветку, pending `aria-busy`, 360px media scroll,
+undo/redo, save confirmation, committed-201 refresh failure и внешний `409` с настоящей
 перезагрузкой/блокировкой мутаций. Browser DOM дополнительно проверяется на отсутствие project
 path, canonical media reference и SHA-256.
 Она не заменяет `npm test`: browser и Node suites обязательны отдельно.
