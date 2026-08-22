@@ -945,7 +945,7 @@ function sanitizeInternalMessage(error, sensitiveValues) {
     if (typeof value === 'string' && value.length > 0) message = message.replaceAll(value, '[redacted]');
   }
   return message
-    .replace(/(?:[A-Za-z]:\\|\/)[^\s]*/g, '[redacted-path]')
+    .replace(/(?:[A-Za-z]:[\\/]|[\\/])[^\s]*/g, '[redacted-path]')
     .slice(0, 300);
 }
 

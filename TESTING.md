@@ -127,10 +127,12 @@ npm run demo
 ffprobe/JSON-результатов с явным `maxBuffer`.
 
 Job `portable-media-windows` на настоящем `windows-latest` дополнительно запускает переносимые
-подмножества владельцев duration/geometry, project transaction и import ownership. POSIX-only
-signal/hard-exit границы и rename открытого файла намеренно не выдаются за Windows-проверку.
-Локально проверяются команды и YAML; сам hosted Windows run остаётся внешним pre-merge gate до
-push/PR этой ветки.
+owner-файлы probe/filesystem/render bundle и точные Windows/real-media подмножества import,
+recovery, handoff, final publication и безопасного логирования. Отдельные шаги сохраняют
+переносимые подмножества duration/geometry, project transaction и import ownership. POSIX-only
+mode/umask, signal/hard-exit границы и rename открытого файла намеренно не выдаются за
+Windows-проверку. Локально проверяются команды и YAML; hosted Windows run остаётся обязательным
+pre-merge gate.
 
 Статический guard для `scripts/build.js` запрещает `execSync` и `shell: true`. Опции
 `--frames`, `--max`, `--beatSec`, `--brandLock` и `--reframe` проверяются до ffprobe.
@@ -303,10 +305,13 @@ project-папке. Старые артефакты в `out/` при мигра�
 
 `.github/workflows/ci.yml` сохраняет обычный Node 20 job с `npm ci`, `npm test` и
 `npm run check:release` на pull request и push в `main`. Отдельный browser job выполняет
-`npm ci --no-audit --no-fund`, устанавливает только Playwright Chromium с системными
-зависимостями и запускает `npm run test:review-ui`. Поэтому browser setup не может скрыть
-обычную Node-регрессию. Windows job ставит фиксированный FFmpeg 7.1.1 с обязательной проверкой
-checksum и без изменения команды запускает portable probe/import/recovery/Save/approval tests.
+`npm ci --no-audit --no-fund`, устанавливает Playwright Chromium и запускает
+`npm run test:review-ui`. Оба Linux job явно устанавливают системный FFmpeg, проверяют
+`ffmpeg`, `ffprobe`, `libwebp`, `libx264`, `libvpx`, `libopus` и AAC до тестов: отсутствие
+реального media toolchain является ошибкой окружения, а не скрытым skip. Поэтому browser setup
+не может скрыть обычную Node-регрессию. Windows job ставит фиксированный FFmpeg 7.1.1 с
+обязательной проверкой checksum и запускает только переносимые probe/import/recovery/Save/
+approval/final-publication tests; полный POSIX-контракт остаётся в Linux `npm test`.
 Release-checker проверяет committed current tree без base и работает с shallow checkout.
 Отдельный job Gitleaks сканирует полную Git-историю на секреты.
 Полные рендеры в CI не запускаются: им нужны тяжёлые медиа, ffmpeg/Whisper-модели и

@@ -1434,7 +1434,7 @@ function publishFinal(workspace, renderFinalPath, {
   fileSystem.mkdirSync(path.dirname(destination), { recursive: true });
   try {
     fileSystem.copyFileSync(sourcePath, temporaryPath);
-    temporaryHandle = fileSystem.openSync(temporaryPath, 'r');
+    temporaryHandle = fileSystem.openSync(temporaryPath, 'r+');
     fileSystem.fsyncSync(temporaryHandle);
     fileSystem.closeSync(temporaryHandle);
     temporaryHandle = null;

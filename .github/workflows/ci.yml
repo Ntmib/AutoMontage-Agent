@@ -36,6 +36,23 @@ jobs:
       - name: Установить зависимости
         run: npm ci --no-audit --no-fund
 
+      - name: Установить системный FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
+      - name: Проверить FFmpeg, FFprobe и обязательные кодеры
+        run: |
+          ffmpeg -version
+          ffprobe -version
+          encoders="$(ffmpeg -hide_banner -encoders 2>&1)"
+          for encoder in libwebp libx264 libvpx libopus aac; do
+            if ! grep -Eq "[[:space:]]${encoder}[[:space:]]" <<<"${encoders}"; then
+              echo "::error::Системный FFmpeg не содержит обязательный кодер ${encoder}"
+              exit 1
+            fi
+          done
+
       - name: Проверить high/critical уязвимости зависимостей
         run: npm audit --audit-level=high
 
@@ -65,7 +82,8 @@ jobs:
         shell: pwsh
         run: |
           ffprobe -version
-          node --test tests/opened-media-probe.test.js tests/render-media-bundle-windows.test.js tests/review-media-import.test.js tests/review-imported-assets.test.js tests/review-server-security.test.js tests/project-workspace.test.js tests/review-draft-save.test.js
+          node --test tests/filesystem-capabilities.test.js tests/media-probe.test.js tests/opened-media-probe.test.js tests/render-media-bundle-windows.test.js
+          node --test --test-name-pattern='import publishes video when ffprobe average FPS is 0/0|Windows-mode import requires identity and bytes|real tiny images and videos normalize|Windows-mode claim recovery ignores POSIX mode bits|Windows-mode handoff stays exclusive|review save returns a fixed 500|publish final fsyncs through a write-capable handle' tests/review-media-import.test.js tests/review-imported-assets.test.js tests/review-server-security.test.js tests/project-workspace.test.js
 
       - name: Проверить portable duration и geometry
         shell: pwsh
@@ -91,6 +109,23 @@ jobs:
 
       - name: Установить зависимости
         run: npm ci --no-audit --no-fund
+
+      - name: Установить системный FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
+      - name: Проверить FFmpeg, FFprobe и обязательные кодеры
+        run: |
+          ffmpeg -version
+          ffprobe -version
+          encoders="$(ffmpeg -hide_banner -encoders 2>&1)"
+          for encoder in libwebp libx264 libvpx libopus aac; do
+            if ! grep -Eq "[[:space:]]${encoder}[[:space:]]" <<<"${encoders}"; then
+              echo "::error::Системный FFmpeg не содержит обязательный кодер ${encoder}"
+              exit 1
+            fi
+          done
 
       - name: Установить Chromium
         run: npx playwright install --with-deps chromium

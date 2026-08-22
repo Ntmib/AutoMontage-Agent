@@ -1245,6 +1245,49 @@ test('render versions keep history and publish one canonical final', (t) => {
   assert.equal(manifest.final, 'final/versioned-render.mp4');
 });
 
+test('publish final fsyncs through a write-capable handle on Windows', (t) => {
+  const fixture = makeFixture(t);
+  const workspace = createOrOpenProject({
+    baseDir: path.join(fixture.dir, 'projects'),
+    name: 'Windows durable final',
+    sourcePath: fixture.sourcePath,
+    now: new Date('2026-08-05T12:00:00Z'),
+  });
+  const render = nextRenderPaths(workspace, 'Portable publish');
+  fs.writeFileSync(render.finalPath, 'windows-final');
+  const writeCapable = new Set();
+  const windowsFileSystem = {
+    ...fs,
+    openSync(target, flags, mode) {
+      const descriptor = fs.openSync(target, flags, mode);
+      if (flags === 'r+' || flags === 'w+' || flags === 'a+') writeCapable.add(descriptor);
+      return descriptor;
+    },
+    fsyncSync(descriptor) {
+      if (!writeCapable.has(descriptor)) {
+        const error = new Error('EPERM: operation not permitted, fsync');
+        error.code = 'EPERM';
+        throw error;
+      }
+      return fs.fsyncSync(descriptor);
+    },
+    closeSync(descriptor) {
+      writeCapable.delete(descriptor);
+      return fs.closeSync(descriptor);
+    },
+  };
+
+  const canonicalFinal = publishFinal(workspace, render.finalPath, {
+    fileSystem: windowsFileSystem,
+  });
+
+  assert.equal(fs.readFileSync(canonicalFinal, 'utf8'), 'windows-final');
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(canonicalFinal)).filter((name) => name.includes('.tmp-')),
+    [],
+  );
+});
+
 test('render status updates one manifest entry instead of duplicating a version', (t) => {
   const fixture = makeFixture(t);
   const workspace = createOrOpenProject({

@@ -50,6 +50,12 @@
 
 - Video import предпочитает корректный `avg_frame_rate`, но безопасно использует
   `r_frame_rate`, когда среднее значение отсутствует, равно `0/0` или невалидно.
+- Windows final publication открывает временную копию с правом записи для обязательного
+  regular-file `fsync`, не ослабляя последующий atomic rename; внутренний Review logger скрывает
+  абсолютный Windows path целиком, включая приватное имя файла после project root.
+- Linux Node/Chromium CI явно устанавливает и проверяет полный системный FFmpeg toolchain, а
+  Windows job запускает только переносимые media/filesystem cases без POSIX mode/umask/signal
+  предположений.
 - Legacy project/public изображения ограничены 25 MiB до потокового SHA-256; mutation во время
   чтения и авария setup quarantine больше не приводят к доверию изменённым bytes или удалению
   чужого дочернего файла.

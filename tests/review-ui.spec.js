@@ -2,7 +2,6 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 
 const { test, expect } = require('playwright/test');
 
@@ -124,12 +123,11 @@ async function makeBrowserReviewSession({
   }
 
   const sourcePath = path.join(fixture.workspace.dir, 'input', 'source.webm');
-  const ffmpeg = spawnSync('ffmpeg', [
+  runTool('ffmpeg', [
     '-y', '-loglevel', 'error',
     '-f', 'lavfi', '-i', `color=c=#15171a:s=160x90:r=5:d=${duration}`,
     '-c:v', 'libvpx', '-b:v', '30k', '-an', sourcePath,
-  ], { encoding: 'utf8' });
-  if (ffmpeg.status !== 0) throw new Error('Unable to create the browser video fixture');
+  ], fixture.workspace.dir);
   const manifestPath = path.join(fixture.workspace.dir, 'project.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   manifest.source.localPath = 'input/source.webm';

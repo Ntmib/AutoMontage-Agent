@@ -1455,9 +1455,9 @@ test('review distinguishes unavailable registered assets from unknown ids', asyn
     workspace.manifest.currentBrief);
 });
 
-test('review save returns a fixed 500 and preserves state on an injected filesystem failure', async (t) => {
+test('review save returns a fixed 500, preserves state, and redacts Windows paths', async (t) => {
   const { projectDir } = makeReviewProject(t);
-  const internalPath = path.join(projectDir, 'private-save-target.json');
+  const internalPath = `${projectDir}\\private-save-target.json`;
   const logs = [];
   const failingFileSystem = {
     ...fs,
@@ -1489,6 +1489,8 @@ test('review save returns a fixed 500 and preserves state on an injected filesys
   const afterStateResponse = await request(session, '/api/state', { token: session.token });
   assert.deepEqual(JSON.parse(afterStateResponse.body.toString('utf8')).session, beforeState.session);
   assert.equal(logs.length, 1);
+  assert.equal(logs[0][1].name, 'Error');
+  assert.equal(logs[0][1].code, 'INTERNAL_ERROR');
   const logged = JSON.stringify(logs);
   assert.match(logged, /simulated save failure/);
   assert.doesNotMatch(logged, new RegExp(session.token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
