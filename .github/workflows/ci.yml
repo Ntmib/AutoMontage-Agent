@@ -65,7 +65,7 @@ jobs:
         shell: pwsh
         run: |
           ffprobe -version
-          node --test tests/opened-media-probe.test.js tests/review-media-import.test.js tests/review-imported-assets.test.js tests/review-server-security.test.js tests/project-workspace.test.js tests/review-draft-save.test.js
+          node --test tests/opened-media-probe.test.js tests/render-media-bundle-windows.test.js tests/review-media-import.test.js tests/review-imported-assets.test.js tests/review-server-security.test.js tests/project-workspace.test.js tests/review-draft-save.test.js
 
   review-ui:
     name: Node 20 · Review Chromium tests

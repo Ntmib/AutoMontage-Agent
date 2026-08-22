@@ -408,20 +408,23 @@ symlink; symlink прерывает построение cache key.
 - `out/<id>.transcript.json` и `out/<id>.captions.js` – generated data legacy-режима;
   отслеживаемые `src/data/` остаются только историческими fixtures и не перезаписываются.
 - `props/` – входные props и сценарии для воспроизводимых рендеров.
-- `public/` – ресурсы, доступные Remotion. Личные `public/source*.mp4`, музыка и `public/efir/`
-  игнорируются. На время рендера исходник копируется в уникальный lease
-  `public/.automontage/<safe-namespace>-<uuid>/source.<ext>` и удаляется в `finally`.
+- `public/` – tracked/локальные статические ресурсы checkout, доступные legacy/Dynamic Remotion.
+  Личные `public/source*.mp4`, музыка и `public/efir/` игнорируются. Approved lesson ничего сюда
+  не пишет: source и утверждённые local scene media копируются в owner-only системный temp
+  `os.tmpdir()/automontage-render-*/public/.automontage/<safe-namespace>-<uuid>/media-N.<ext>`, а абсолютный
+  temp `public` передаётся Remotion отдельным `--public-dir` argv и не попадает в props.
 - `out/` – legacy/cache-путь для запуска без `--project` и `--project-dir`.
 - `tmp/` – промежуточные файлы.
 - `examples/` – небольшие публичные входы для проверки установки.
 
-Public source bridge изолирован: каждый build получает свой media lease, поэтому второй
-рендер не может подменить байты источника первого. Lease удаляется после успеха и ошибки;
-cleanup проверяет, что удаляет только свой настоящий каталог, а не symlink или общий base.
-Статические/pre-existing symlink и symlink в финальном компоненте lease отклоняются до удаления.
-Node не предоставляет portable descriptor-relative `unlinkat`/`openat`, поэтому соперничающий
-вредоносный локальный процесс всё ещё может заменить parent между проверкой и `rm`: такой TOCTOU
-вне модели угроз при одном доверенном build на checkout, а не дополнительная гарантия lease.
+Approved lesson bridge изолирован: каждый render получает отдельный unpredictable owner-only
+temp-root и собственный web-relative media lease. Cleanup сначала сверяет identity каталога и
+точный набор owned-файлов, переносит bundle в случайный owner-only tombstone, удаляет только
+записанные regular-file inode и затем выполняет `rmdir` пустых bundle, tombstone, `.automontage`,
+`public` и temp-root. Symlink, replacement или любой foreign entry оставляется нетронутым и
+закрывает cleanup ошибкой; recursive delete в production не используется. Node не предоставляет
+portable descriptor-relative `unlinkat`/`rmdirat`, поэтому между последней проверкой pathname и
+системным вызовом остаётся документированный same-UID syscall gap.
 Но `tmp/` и legacy-пути пока общие, поэтому один checkout по-прежнему допускает только одну
 активную сборку. Для параллельных рендеров нужны отдельные clone/worktree.
 
