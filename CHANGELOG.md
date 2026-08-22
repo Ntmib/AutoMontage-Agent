@@ -37,6 +37,10 @@
 
 ### Исправлено
 
+- Save и approval теперь проверяют открытый immutable media descriptor через общий portable
+  `ffprobe pipe:0` adapter без `/dev/fd` или live pathname. Windows сохраняет identity/hash/
+  containment barriers без ложной зависимости от POSIX mode bits; отдельный CI job проверяет
+  реальные media fixtures и Windows filesystem behavior.
 - Save, approval и render/brief manifest writers теперь используют один recoverable
   project-wide lease: stale snapshot получает `409`, live/foreign owner не удаляется, а lease
   завершившегося локального PID восстанавливается. Исторические Markdown/JSON публикуются

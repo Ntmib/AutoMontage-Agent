@@ -15,6 +15,7 @@ const {
 const { listReviewAssetRecords, listReviewAssets } = require('../scripts/review/assets');
 const { startReviewServer } = require('../scripts/review/server');
 const { makeReviewProject } = require('./helpers/review-project');
+const { windowsFileSystem } = require('./helpers/windows-filesystem');
 
 const UUID = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1';
 const SHA = (value) => crypto.createHash('sha256').update(value).digest('hex');
@@ -431,6 +432,29 @@ test('orphan cleanup removes an exactly claimed crash remnant without asset.json
   for (const target of [previewPath, canonicalPath, mediaDirectory, claimPath]) {
     assert.equal(fs.existsSync(target), false, target);
   }
+});
+
+test('Windows-mode claim recovery ignores POSIX mode bits but preserves identity barriers', (t) => {
+  const projectDir = makeProject(t);
+  const mediaDirectory = path.join(projectDir, 'assets', 'broll', 'video', UUID);
+  const canonicalPath = path.join(mediaDirectory, 'media.mp4');
+  const previewPath = path.join(projectDir, 'previews', 'broll', `${UUID}.webm`);
+  fs.mkdirSync(mediaDirectory, { recursive: true });
+  fs.mkdirSync(path.dirname(previewPath), { recursive: true });
+  fs.writeFileSync(canonicalPath, 'canonical crash remnant');
+  fs.writeFileSync(previewPath, 'preview crash remnant');
+  const claimPath = writePublicationClaim(projectDir, {
+    mediaDirectory, canonicalPath, previewPath,
+  });
+
+  const removed = cleanupOrphanImportedStages({
+    projectDir,
+    fileSystem: windowsFileSystem(fs),
+    platform: 'win32',
+  });
+  assert.deepEqual(new Set(removed), new Set([
+    previewPath, canonicalPath, mediaDirectory, claimPath,
+  ]));
 });
 
 test('publication cleanup preserves foreign preview bytes swapped at final removal', (t) => {

@@ -6,6 +6,11 @@ const { isDeepStrictEqual } = require('node:util');
 const { URL } = require('node:url');
 const Ajv = require('ajv');
 
+const {
+  setPrivateDescriptorMode,
+  withNoFollow,
+} = require('../filesystem-capabilities');
+
 const projectSchema = require('../../schema/project.schema.json');
 const { formatBriefMarkdown, isRenderableBrollSource, validateLessonBrief } = require('../lesson/brief');
 const {
@@ -163,19 +168,23 @@ function stageOwnedSiblingFile(destination, data, {
   fileSystem = fs,
   temporaryId = randomUUID,
   purpose = 'write',
+  platform = process.platform,
 } = {}) {
   const bytes = Buffer.isBuffer(data) ? Buffer.from(data) : Buffer.from(data, 'utf8');
   const temporaryPath = `${destination}.tmp-${purpose}-${safeTemporaryId(temporaryId)}`;
   const constants = fileSystem.constants || fs.constants;
-  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-    | (constants.O_NOFOLLOW || 0);
+  const flags = withNoFollow(
+    fileSystem,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+    platform,
+  );
   let handle = null;
   let identity = null;
   try {
     handle = fileSystem.openSync(temporaryPath, flags, 0o600);
     identity = fileSystem.fstatSync(handle);
     if (!identity.isFile()) throw new Error('temporary project file must be regular');
-    if (typeof fileSystem.fchmodSync === 'function') fileSystem.fchmodSync(handle, 0o600);
+    setPrivateDescriptorMode(fileSystem, handle, 0o600, platform);
     fileSystem.writeFileSync(handle, data, { encoding: 'utf8' });
     fileSystem.fsyncSync(handle);
   } catch (error) {
@@ -689,6 +698,7 @@ function acquireProjectMutationLease(projectDir, {
   pid = process.pid,
   killProcess = process.kill,
   now = () => new Date(),
+  platform = process.platform,
 } = {}) {
   const resolvedProjectDir = path.resolve(projectDir);
   const leasePath = resolveProjectPath(resolvedProjectDir, PROJECT_MUTATION_LEASE, {
@@ -712,6 +722,7 @@ function acquireProjectMutationLease(projectDir, {
       fileSystem,
       temporaryId: () => token,
       purpose: 'project-mutation-owner',
+      platform,
     });
     try {
       fileSystem.linkSync(staged.path, leasePath);
@@ -799,9 +810,10 @@ function withProjectMutation(workspace, operation, {
   pid,
   killProcess,
   now,
+  platform = process.platform,
 } = {}) {
   const lease = mutationLease || acquireProjectMutationLease(workspace.dir, {
-    fileSystem, temporaryId, hostname, pid, killProcess, now,
+    fileSystem, temporaryId, hostname, pid, killProcess, now, platform,
   });
   const ownsLease = !mutationLease;
   let operationError = null;
@@ -833,6 +845,7 @@ function withProjectMutation(workspace, operation, {
           fileSystem,
           temporaryId,
           purpose,
+          platform,
         });
         let committed = false;
         try {
@@ -1161,6 +1174,7 @@ function approveBrief(workspace, draftJsonPath, {
   root = path.resolve(__dirname, '../..'),
   runToolImpl,
   mutationLease = null,
+  platform = process.platform,
 } = {}) {
   return withProjectMutation(workspace, (transaction) => {
     const persistedManifest = transaction.manifest;
@@ -1244,7 +1258,7 @@ function approveBrief(workspace, draftJsonPath, {
     nextManifest.currentBrief = entry.jsonPath;
     nextManifest.updatedAt = new Date().toISOString();
     const mediaVerification = verifyBriefBrollMedia({
-      root, workspace: persistedWorkspace, brief: draft, runToolImpl, fileSystem,
+      root, workspace: persistedWorkspace, brief: draft, runToolImpl, fileSystem, platform,
     });
     const stages = [];
     let markdownStage = null;
@@ -1256,13 +1270,14 @@ function approveBrief(workspace, draftJsonPath, {
           fileSystem,
           temporaryId,
           purpose: 'approval-markdown',
+          platform,
         });
         stages.push(markdownStage);
       }
       jsonStage = stageOwnedSiblingFile(
         approvedJsonPath,
         `${JSON.stringify(approvedBrief, null, 2)}\n`,
-        { fileSystem, temporaryId, purpose: 'approval-json' },
+        { fileSystem, temporaryId, purpose: 'approval-json', platform },
       );
       stages.push(jsonStage);
 
@@ -1314,6 +1329,7 @@ function approveBrief(workspace, draftJsonPath, {
     fileSystem,
     temporaryId,
     mutationLease,
+    platform,
   });
 }
 

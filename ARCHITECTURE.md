@@ -236,12 +236,20 @@ period — `SIGKILL`. Persistent release error остаётся явным и п
 пересылает каждый shutdown signal ровно один раз и принимает его exit code лишь после cleanup.
 
 Save не доверяет browser descriptor. Он повторно сканирует immutable bundle, открывает master
-без следования symlink, передаёт тот же descriptor в bounded ffprobe, хэширует те же байты и
-только после повторной identity-проверки материализует канонический `brollMedia` в новый draft.
+без следования symlink и передаёт тот же read-only descriptor в bounded ffprobe через `pipe:0`.
+Общий `scripts/media-probe.js` задаёт один argv/timeout/buffer/error contract для Save и approval;
+живой host pathname в probe не передаётся. Затем Save хэширует те же открытые байты и только
+после повторной identity-проверки материализует канонический `brollMedia` в новый draft.
 Approval повторяет containment, probe, metadata/proxy/hash и clip-duration проверки, удерживает
 descriptors до commit boundary и публикует approved только если все identities сохранились.
 Один и тот же UUID можно использовать в нескольких сценах с разными start/fit/audio; удалить
 или заменить опубликованный asset на месте в V1 нельзя.
+
+Filesystem capability сосредоточен в `scripts/filesystem-capabilities.js`. POSIX сохраняет
+`O_NOFOLLOW` и точные private `0600/0700`; Windows не трактует POSIX mode bits как доказательство,
+но не ослабляет regular-file, containment, opened-handle/path identity, timestamps, size и
+SHA-256 barriers. Поэтому replacement, append, overwrite и same-size byte change остаются
+fail closed на всех трёх платформах.
 
 Внешний `409` синхронно переводит браузер в отдельное конфликтное состояние ещё до асинхронной
 перезагрузки: active/redo stacks очищаются, проверенный diff сбрасывается, а timeline, b-roll,

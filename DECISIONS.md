@@ -312,3 +312,20 @@ records сверяются и по bytes. Если в claim-rename исходн�
 сохраняется в tombstone. Процесс с тем же UID, который уже узнал private pathname, остаётся за
 границей гарантии Node 20. Отвергнут прежний `lstat → unlink`, потому что race между этими syscall
 мог удалить foreign bytes.
+
+## D-017 – Opened-media probe использует portable stdin transport
+
+**Дата:** 2026-08-22
+**Статус:** принято
+
+Save и approval обязаны проверять те же открытые immutable bytes, которые затем хэшируют. Реальные
+PNG, JPEG, WebP, H.264 MP4 с metadata в конце и WebM подтвердили, что ffprobe распознаёт нужный
+контракт через descriptor, подключённый к child stdin, и вход `pipe:0`. Поэтому выбран один общий
+adapter: argv array, `shell:false`, timeout 30 секунд, bounded stdout/stderr и pathless canonical
+error. `/dev/fd/*`, live pathname и временный copy/hardlink snapshot не нужны.
+
+Filesystem-различия вынесены в один capability module. POSIX продолжает требовать `O_NOFOLLOW` и
+private `0600/0700`. На Windows эти две POSIX-гарантии не симулируются через бессмысленные mode
+bits; вместо них обязательны существующие containment/realpath, regular-file, opened-handle/path
+identity до и после probe/hash, size/timestamps и SHA-256. Отклонены pathname fallback и простое
+отключение identity-проверок: первое возвращает race, второе разрешает same-size подмену.

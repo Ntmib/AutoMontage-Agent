@@ -2,12 +2,16 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { execFile, spawnSync } = require('node:child_process');
+const { execFile } = require('node:child_process');
 const { createHash, randomBytes, timingSafeEqual } = require('node:crypto');
 
 const { validateLessonBrief } = require('../lesson/brief');
-const { parseMediaProbeJson } = require('../media-probe');
-const { assertProcessResult } = require('../process');
+const {
+  openReadOnlyFlags,
+  setPrivateDescriptorMode,
+  withNoFollow,
+} = require('../filesystem-capabilities');
+const { probeOpenedMedia } = require('../media-probe');
 const {
   acquireProjectMutationLease,
   nextBriefPaths,
@@ -233,8 +237,7 @@ function consumeLimitedBody(request, response) {
 function snapshotFile(filePath) {
   let descriptor = null;
   try {
-    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
-    descriptor = fs.openSync(filePath, flags);
+    descriptor = fs.openSync(filePath, openReadOnlyFlags(fs));
     const stat = fs.fstatSync(descriptor);
     const nanosecondStat = fs.fstatSync(descriptor, { bigint: true });
     if (!stat.isFile()) return null;
@@ -529,8 +532,7 @@ function serveFile(request, response, file) {
   let stat;
   try {
     if (!expected) throw new Error('missing file');
-    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
-    descriptor = fs.openSync(expected.filePath, flags);
+    descriptor = fs.openSync(expected.filePath, openReadOnlyFlags(fs));
     stat = fs.fstatSync(descriptor);
   } catch (_) {
     sendError(response, 404, request.method === 'HEAD');
@@ -761,26 +763,10 @@ function hashOpenedFile(descriptor, expected) {
 }
 
 function probeReviewMedia(target) {
-  if (!target || !Number.isInteger(target.fileDescriptor)
-    || target.probePath !== '/dev/fd/3') throw new Error('review media probe target is unsafe');
-  const command = 'ffprobe';
-  const args = [
-    '-v', 'error',
-    '-show_entries',
-    'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels:stream_tags=rotate:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration',
-    '-of', 'json',
-    target.probePath,
-  ];
-  const result = spawnSync(command, args, {
-    encoding: 'utf8',
-    killSignal: 'SIGTERM',
-    maxBuffer: 1024 * 1024,
-    shell: false,
-    stdio: ['ignore', 'pipe', 'pipe', target.fileDescriptor],
-    timeout: 30_000,
+  return probeOpenedMedia({
+    fileDescriptor: target?.fileDescriptor,
+    stage: 'review media probe',
   });
-  assertProcessResult(result, { command, stage: 'review media probe' });
-  return parseMediaProbeJson(result.stdout || '');
 }
 
 function probeMatchesRegistered(registered, probe) {
@@ -804,6 +790,8 @@ function currentMaterializationAsset({
   assetFiles,
   assetId,
   probeMediaImpl,
+  fileSystem = fs,
+  platform = process.platform,
 }) {
   const registered = assetFiles.get(assetId);
   if (!registered) return null;
@@ -817,16 +805,14 @@ function currentMaterializationAsset({
   }
   let descriptor = null;
   try {
-    descriptor = fs.openSync(
+    descriptor = fileSystem.openSync(
       registered.filePath,
-      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+      openReadOnlyFlags(fileSystem, platform),
     );
     const opened = openedFileSnapshot(descriptor);
     if (!sameSnapshotIdentity(registered, opened)) return null;
     const probe = probeMediaImpl({
       fileDescriptor: descriptor,
-      filePath: registered.filePath,
-      probePath: '/dev/fd/3',
     });
     if (!probeMatchesRegistered(registered, probe)) return null;
     const digest = hashOpenedFile(descriptor, opened);
@@ -850,7 +836,7 @@ function currentMaterializationAsset({
   } catch (_) {
     return null;
   } finally {
-    if (descriptor !== null) fs.closeSync(descriptor);
+    if (descriptor !== null) fileSystem.closeSync(descriptor);
   }
 }
 
@@ -861,6 +847,8 @@ function materializeReviewAssets({
   candidate,
   words,
   probeMediaImpl = probeReviewMedia,
+  fileSystem = fs,
+  platform = process.platform,
 }) {
   const materialized = structuredClone(candidate);
   for (const scene of materialized.scenes) {
@@ -868,7 +856,7 @@ function materializeReviewAssets({
     if (!scene.brollMedia) continue;
     const selected = scene.brollMedia;
     const verified = currentMaterializationAsset({
-      root, current, assetFiles, assetId: selected.assetId, probeMediaImpl,
+      root, current, assetFiles, assetId: selected.assetId, probeMediaImpl, fileSystem, platform,
     });
     if (!verified || verified.asset.mediaKind !== selected.kind) {
       rejectRequest(422, 'UNRESOLVED_REVIEW_ASSET');
@@ -987,6 +975,7 @@ function handleEditRoute({
       candidate: replay.candidate,
       words: runtime.state.transcript.words,
       probeMediaImpl: probeReviewMediaImpl,
+      fileSystem,
     });
     const stableAssets = stabilizeEditAssetFiles({ root, projectDir, replay });
     runtime.assetFiles = stableAssets.assetFiles;
@@ -1011,6 +1000,7 @@ function handleEditRoute({
     candidate: checked.candidate,
     words: runtime.state.transcript.words,
     probeMediaImpl: probeReviewMediaImpl,
+    fileSystem,
   });
   const stableAssets = stabilizeEditAssetFiles({ root, projectDir, replay: checked });
   const browserCandidate = buildReviewCandidateBase({
@@ -1294,15 +1284,17 @@ function createSessionHandoff({
   }
   const handoffPath = path.join(resolvedDirectory, `automontage-review-${id}.url`);
   const constants = fileSystem.constants || fs.constants;
-  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-    | (constants.O_NOFOLLOW || 0);
+  const platform = fileSystem.platform || process.platform;
+  const flags = withNoFollow(
+    fileSystem, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, platform,
+  );
   let handle = null;
   let identity = null;
   try {
     handle = fileSystem.openSync(handoffPath, flags, 0o600);
     identity = fileSystem.fstatSync(handle);
     if (!identity.isFile()) throw new Error('review handoff must be a regular file');
-    if (typeof fileSystem.fchmodSync === 'function') fileSystem.fchmodSync(handle, 0o600);
+    setPrivateDescriptorMode(fileSystem, handle, 0o600, platform);
     fileSystem.writeFileSync(handle, `${url}\n`, { encoding: 'utf8' });
     fileSystem.fsyncSync(handle);
     identity = fileSystem.fstatSync(handle);

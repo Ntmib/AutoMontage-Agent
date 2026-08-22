@@ -22,6 +22,7 @@ const {
   makeMediaFixtures,
   toolAvailable,
 } = require('./helpers/media-fixtures');
+const { windowsFileSystem } = require('./helpers/windows-filesystem');
 
 const UUID = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1';
 
@@ -863,6 +864,35 @@ test('restrictive umask still yields exact private directory and file modes', { 
   }
   assert.equal(fs.statSync(result.filePath).mode & 0o777, 0o600);
   assert.equal(fs.statSync(path.join(path.dirname(result.filePath), 'asset.json')).mode & 0o777, 0o600);
+});
+
+test('Windows-mode import requires identity and bytes without POSIX modes or O_NOFOLLOW', async (t) => {
+  const projectDir = tempProject(t);
+  const fileSystem = windowsFileSystem(fs);
+  const result = await importReviewMedia({
+    request: Readable.from([Buffer.from('x')]),
+    projectDir,
+    outputFps: 25,
+    headers: rawHeaders('windows.png', 'image/png', 1),
+    controller: createImportController(),
+    fileSystem,
+    platform: 'win32',
+    statfsImpl: () => ({ bavail: 10n ** 12n, bsize: 4096n }),
+    randomId: () => UUID,
+    runMediaProcessImpl: fakeProcessor({ source: probeJson({ kind: 'image' }) }),
+  });
+  assert.equal(result.reference, `assets/broll/images/${UUID}/media.webp`);
+  assert.equal(fs.readFileSync(result.filePath, 'utf8'), 'normalized:.webp');
+
+  const before = fs.readFileSync(result.filePath);
+  fs.writeFileSync(result.filePath, Buffer.alloc(before.length, 0x78));
+  assert.equal(fs.statSync(result.filePath).size, before.length);
+  assert.equal(require('../scripts/review/imported-assets').inspectImportedAssetBundle({
+    projectDir,
+    assetDirectory: path.dirname(result.filePath),
+    fileSystem,
+    platform: 'win32',
+  }), null);
 });
 
 test('real tiny images and videos normalize, decode, preserve alpha/first GIF frame, and expose expected streams', { timeout: 120000 }, async (t) => {

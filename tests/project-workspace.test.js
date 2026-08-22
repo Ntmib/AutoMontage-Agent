@@ -646,9 +646,10 @@ function monitorApprovalMediaDescriptors(asset) {
 function approvalProbe(metadata) {
   return (command, args, options) => {
     assert.equal(command, 'ffprobe');
-    assert.equal(args.at(-1), '/dev/fd/3');
+    assert.equal(args.at(-1), 'pipe:0');
     assert.equal(options.shell, false);
-    assert.equal(options.stdio[3] >= 0, true);
+    assert.equal(options.stdio.length, 3);
+    assert.equal(options.stdio[0] >= 0, true);
     const video = {
       codec_type: 'video',
       codec_name: metadata.mediaKind === 'image' ? 'webp' : 'h264',

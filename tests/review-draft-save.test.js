@@ -87,8 +87,10 @@ function writeImportedVideo(projectDir, {
 function approvalVideoProbe(metadata) {
   return (command, args, options) => {
     assert.equal(command, 'ffprobe');
-    assert.equal(args.at(-1), '/dev/fd/3');
+    assert.equal(args.at(-1), 'pipe:0');
     assert.equal(options.shell, false);
+    assert.equal(options.stdio.length, 3);
+    assert.equal(Number.isInteger(options.stdio[0]), true);
     return {
       status: 0,
       signal: null,
@@ -1138,7 +1140,7 @@ test('review materialization cannot probe swapped pathname bytes and hash a rest
         fs.renameSync(parkedPath, mediaPath);
       } else {
         assert.equal(typeof target.fileDescriptor, 'number');
-        assert.match(target.probePath, /^\/dev\/fd\/\d+$/);
+        assert.deepEqual(Object.keys(target), ['fileDescriptor']);
       }
       return {
         mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,
@@ -1179,7 +1181,7 @@ test('review materialization rejects a media ancestor renamed and replaced by a 
         fs.renameSync(parkedDirectory, brollDirectory);
       } else {
         assert.equal(typeof target.fileDescriptor, 'number');
-        assert.match(target.probePath, /^\/dev\/fd\/\d+$/);
+        assert.deepEqual(Object.keys(target), ['fileDescriptor']);
       }
       return {
         mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false,

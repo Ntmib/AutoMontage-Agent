@@ -1,4 +1,60 @@
-const { captureTool, hostPath } = require('./process');
+const { spawnSync } = require('node:child_process');
+
+const { assertProcessResult, captureTool, hostPath } = require('./process');
+const {
+  fileSystemCapabilities,
+  openReadOnlyFlags,
+} = require('./filesystem-capabilities');
+
+const OPENED_MEDIA_PROBE_ENTRIES = [
+  'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels',
+  'stream_tags=rotate',
+  'stream_disposition=attached_pic',
+  'stream_side_data=rotation',
+  'format=format_name,duration',
+].join(':');
+const OPENED_MEDIA_PROBE_MAX_BYTES = 1024 * 1024;
+
+function sameOpenedFileSnapshot(left, right, platform = process.platform) {
+  if (!left || !right || left.dev !== right.dev || left.ino !== right.ino
+    || left.size !== right.size || left.mtimeNs !== right.mtimeNs
+    || left.ctimeNs !== right.ctimeNs) return false;
+  return !fileSystemCapabilities(platform).posixPermissions
+    || (left.mode === right.mode && left.nlink === right.nlink);
+}
+
+function probeOpenedMedia({
+  fileDescriptor,
+  runToolImpl = spawnSync,
+  stage = 'media probe',
+} = {}) {
+  if (!Number.isInteger(fileDescriptor) || fileDescriptor < 0) {
+    throw new Error(`${stage}: opened media descriptor is invalid`);
+  }
+  const command = 'ffprobe';
+  const args = [
+    '-v', 'error',
+    '-show_entries', OPENED_MEDIA_PROBE_ENTRIES,
+    '-of', 'json',
+    'pipe:0',
+  ];
+  const result = runToolImpl(command, args, {
+    encoding: 'utf8',
+    killSignal: 'SIGTERM',
+    maxBuffer: OPENED_MEDIA_PROBE_MAX_BYTES,
+    shell: false,
+    stdio: [fileDescriptor, 'pipe', 'pipe'],
+    timeout: 30_000,
+  });
+  const stdout = typeof result === 'string'
+    ? result
+    : assertProcessResult(result || {}, { command, stage }).stdout;
+  if (typeof stdout !== 'string'
+    || Buffer.byteLength(stdout, 'utf8') > OPENED_MEDIA_PROBE_MAX_BYTES) {
+    throw new Error(`${stage}: ffprobe вернул недопустимое JSON`);
+  }
+  return parseMediaProbeJson(stdout);
+}
 
 function fail(stage, field) {
   throw new Error(`${stage}: ffprobe вернул недопустимое ${field}`);
@@ -154,8 +210,12 @@ function probeVideo(file, options = {}) {
 }
 
 module.exports = {
+  fileSystemCapabilities,
+  openReadOnlyFlags,
   parseMediaProbeJson,
   parseRate,
   parseVideoProbe,
+  probeOpenedMedia,
   probeVideo,
+  sameOpenedFileSnapshot,
 };

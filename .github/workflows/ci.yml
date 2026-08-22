@@ -45,6 +45,28 @@ jobs:
       - name: Проверить публичное release-дерево
         run: npm run check:release
 
+  portable-media-windows:
+    name: Windows · opened media and filesystem capabilities
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Установить зависимости
+        run: npm ci --no-audit --no-fund
+
+      - name: Установить проверенный FFmpeg
+        run: choco install ffmpeg --version=7.1.1 --yes --no-progress --require-checksums
+
+      - name: Проверить FFprobe и portable media lifecycle
+        shell: pwsh
+        run: |
+          ffprobe -version
+          node --test tests/opened-media-probe.test.js tests/review-media-import.test.js tests/review-imported-assets.test.js tests/review-server-security.test.js tests/project-workspace.test.js tests/review-draft-save.test.js
+
   review-ui:
     name: Node 20 · Review Chromium tests
     runs-on: ubuntu-latest

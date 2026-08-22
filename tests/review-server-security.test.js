@@ -12,6 +12,7 @@ const { startReviewServer } = require('../scripts/review/server');
 const { inspectImportedAssetBundle } = require('../scripts/review/imported-assets');
 const { mediaImportError } = require('../scripts/review/media-import');
 const { makeReviewProject, registerHigherBrief } = require('./helpers/review-project');
+const { windowsFileSystem } = require('./helpers/windows-filesystem');
 
 const IMPORT_UUID = '4af36be4-0b26-4e6f-bd48-8bdd2215a4f1';
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
@@ -281,6 +282,26 @@ test('no-open creates an exclusive 0600 session URL handoff and removes it on cl
 
   await closeServer(session.server);
   assert.equal(fs.existsSync(expectedPath), false);
+});
+
+test('Windows-mode handoff stays exclusive without POSIX modes or O_NOFOLLOW', async (t) => {
+  const { projectDir } = makeReviewProject(t);
+  const handoffDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-review-win-handoff-'));
+  t.after(() => fs.rmSync(handoffDirectory, { recursive: true, force: true }));
+  const session = await startTestReviewServer({
+    root: ROOT,
+    projectDir,
+    open: false,
+    handoffDirectory,
+    handoffId: () => 'windows-safe-id',
+    handoffFileSystem: windowsFileSystem(fs),
+  });
+  t.after(() => closeServer(session.server));
+
+  assert.equal(fs.lstatSync(session.handoffPath).isFile(), true);
+  assert.equal(fs.readFileSync(session.handoffPath, 'utf8'), `${session.url}\n`);
+  await closeServer(session.server);
+  assert.equal(fs.existsSync(session.handoffPath), false);
 });
 
 test('browser launch failure falls back to handoff while successful launch leaves no token file', async (t) => {
@@ -960,12 +981,15 @@ test('review b-roll commands accept images and normalized video but reject audio
     projectDir,
     editable: true,
     open: false,
-    probeReviewMediaImpl: (target) => path.extname(target.filePath) === '.mp4'
-      ? {
+    probeReviewMediaImpl: (target) => {
+      const bytes = Buffer.alloc(fs.fstatSync(target.fileDescriptor).size);
+      fs.readSync(target.fileDescriptor, bytes, 0, bytes.length, 0);
+      return bytes.equals(Buffer.from('canonical video')) ? {
         mediaKind: 'video', width: 1920, height: 1080, fps: 25,
         durationSec: 18.4, hasAudio: true,
       }
-      : { mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false },
+        : { mediaKind: 'image', width: 1, height: 1, fps: 0, durationSec: 0, hasAudio: false };
+    },
   });
   t.after(() => closeServer(session.server));
   const state = JSON.parse((await request(session, '/api/state', {

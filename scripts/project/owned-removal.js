@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { setPrivatePathMode } = require('../filesystem-capabilities');
 
 const SAFE_TOKEN = /^[A-Za-z0-9_-]+$/;
 
@@ -85,6 +86,7 @@ function claimAndRemoveOwnedPath({
   kind = 'file',
   fileSystem = fs,
   temporaryId = randomUUID,
+  platform = fileSystem.platform || process.platform,
 } = {}) {
   if (!target) return true;
   if (!['file', 'mutable-file', 'directory'].includes(kind)) return false;
@@ -101,7 +103,7 @@ function claimAndRemoveOwnedPath({
     `.${path.basename(target)}.remove-${token}`,
   );
   fileSystem.mkdirSync(tombstoneDirectory, { mode: 0o700 });
-  if (typeof fileSystem.chmodSync === 'function') fileSystem.chmodSync(tombstoneDirectory, 0o700);
+  setPrivatePathMode(fileSystem, tombstoneDirectory, 0o700, platform);
   const claimedPath = path.join(tombstoneDirectory, 'claimed');
   try {
     fileSystem.renameSync(target, claimedPath);

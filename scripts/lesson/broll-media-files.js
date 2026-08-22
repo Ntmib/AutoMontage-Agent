@@ -1,14 +1,16 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 
 const { isCanonicalBrollReference, videoEndFrame } = require('./broll-media');
-const { parseMediaProbeJson } = require('../media-probe');
+const {
+  openReadOnlyFlags,
+  probeOpenedMedia,
+  sameOpenedFileSnapshot,
+} = require('../media-probe');
 const { parseImportedAssetMetadata } = require('../review/imported-assets');
 
 const HASH_BUFFER_BYTES = 64 * 1024;
-const MAX_PROBE_BYTES = 1024 * 1024;
 const MAX_METADATA_BYTES = 16 * 1024;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const NORMALIZED_IMAGE = new RegExp(`^assets/broll/images/(${UUID})/media\\.webp$`);
@@ -59,10 +61,8 @@ function snapshot(fileSystem, descriptor) {
   };
 }
 
-function sameSnapshot(left, right) {
-  return left && right && left.dev === right.dev && left.ino === right.ino
-    && left.size === right.size && left.mtimeNs === right.mtimeNs
-    && left.ctimeNs === right.ctimeNs && left.mode === right.mode && left.nlink === right.nlink;
+function sameSnapshot(left, right, platform = process.platform) {
+  return sameOpenedFileSnapshot(left, right, platform);
 }
 
 function preflightBriefBrollMedia(brief) {
@@ -144,45 +144,20 @@ function resolvePersistedBrollMedia({ root, workspace, media, fileSystem = fs } 
   };
 }
 
-function defaultRunTool(command, args, options) {
-  return spawnSync(command, args, options);
-}
-
 function runOpenedProbe(descriptor, runToolImpl) {
-  let result;
   try {
-    result = runToolImpl('ffprobe', [
-      '-v', 'error',
-      '-show_entries',
-      'stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,pix_fmt,sample_rate,channels:stream_tags=rotate:stream_disposition=attached_pic:stream_side_data=rotation:format=format_name,duration',
-      '-of', 'json',
-      '/dev/fd/3',
-    ], {
-      encoding: 'utf8',
-      killSignal: 'SIGTERM',
-      maxBuffer: MAX_PROBE_BYTES,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe', descriptor],
-      timeout: 30_000,
+    return probeOpenedMedia({
+      fileDescriptor: descriptor,
+      ...(runToolImpl ? { runToolImpl } : {}),
+      stage: 'b-roll media probe',
     });
   } catch (_) {
     fail('BROLL_MEDIA_PROBE_FAILED');
   }
-  const stdout = typeof result === 'string' ? result : result?.stdout;
-  if (!result || (typeof result !== 'string'
-      && (result.error || result.signal || result.status !== 0))
-    || typeof stdout !== 'string'
-    || Buffer.byteLength(stdout, 'utf8') > MAX_PROBE_BYTES) {
-    fail('BROLL_MEDIA_PROBE_FAILED');
-  }
-  try {
-    return parseMediaProbeJson(stdout);
-  } catch (_) {
-    fail('BROLL_MEDIA_PROBE_FAILED');
-  }
 }
 
-function hashOpened(fileSystem, descriptor, expected, changedCode = 'BROLL_MEDIA_IDENTITY_CHANGED') {
+function hashOpened(fileSystem, descriptor, expected,
+  changedCode = 'BROLL_MEDIA_IDENTITY_CHANGED', platform = process.platform) {
   const hash = crypto.createHash('sha256');
   const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
   if (expected.size > BigInt(Number.MAX_SAFE_INTEGER)) fail(changedCode);
@@ -199,13 +174,13 @@ function hashOpened(fileSystem, descriptor, expected, changedCode = 'BROLL_MEDIA
     hash.update(buffer.subarray(0, count));
     position += count;
   }
-  if (!sameSnapshot(expected, snapshot(fileSystem, descriptor))) {
+  if (!sameSnapshot(expected, snapshot(fileSystem, descriptor), platform)) {
     fail(changedCode);
   }
   return hash.digest('hex');
 }
 
-function readOpenedBytes(fileSystem, descriptor, expected, maxBytes) {
+function readOpenedBytes(fileSystem, descriptor, expected, maxBytes, platform) {
   if (expected.size <= 0n || expected.size > BigInt(maxBytes)) {
     fail('BROLL_MEDIA_METADATA_INVALID');
   }
@@ -218,19 +193,23 @@ function readOpenedBytes(fileSystem, descriptor, expected, maxBytes) {
     if (count <= 0) fail('BROLL_MEDIA_METADATA_INVALID');
     position += count;
   }
-  if (!sameSnapshot(expected, snapshot(fileSystem, descriptor))) {
+  if (!sameSnapshot(expected, snapshot(fileSystem, descriptor), platform)) {
     fail('BROLL_MEDIA_IDENTITY_CHANGED');
   }
   return bytes;
 }
 
-function openTrackedFile({ resolved, fileSystem, missingCode = 'BROLL_MEDIA_MISSING' }) {
-  const constants = fileSystem.constants || fs.constants;
+function openTrackedFile({
+  resolved,
+  fileSystem,
+  missingCode = 'BROLL_MEDIA_MISSING',
+  platform = process.platform,
+}) {
   let descriptor;
   try {
     descriptor = fileSystem.openSync(
       resolved.filePath,
-      constants.O_RDONLY | (constants.O_NOFOLLOW || 0),
+      openReadOnlyFlags(fileSystem, platform),
     );
   } catch (error) {
     if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) fail(missingCode);
@@ -253,7 +232,9 @@ function openTrackedFile({ resolved, fileSystem, missingCode = 'BROLL_MEDIA_MISS
     fileSystem.closeSync(descriptor);
     fail('BROLL_MEDIA_IDENTITY_CHANGED');
   }
-  return { descriptor, identity, resolved, expectedHash: null, closed: false };
+  return {
+    descriptor, identity, resolved, expectedHash: null, closed: false, platform,
+  };
 }
 
 function assertTrackedIdentity(fileSystem, tracked) {
@@ -271,8 +252,8 @@ function assertTrackedIdentity(fileSystem, tracked) {
       nlink: pathStat.nlink,
     };
     if (pathStat.isSymbolicLink() || !pathStat.isFile()
-      || !sameSnapshot(tracked.identity, snapshot(fileSystem, tracked.descriptor))
-      || !sameSnapshot(tracked.identity, pathIdentity)) {
+      || !sameSnapshot(tracked.identity, snapshot(fileSystem, tracked.descriptor), tracked.platform)
+      || !sameSnapshot(tracked.identity, pathIdentity, tracked.platform)) {
       fail('BROLL_MEDIA_IDENTITY_CHANGED');
     }
   } catch (error) {
@@ -284,7 +265,8 @@ function assertTrackedIdentity(fileSystem, tracked) {
 function verifyTrackedContent(fileSystem, tracked) {
   assertTrackedIdentity(fileSystem, tracked);
   if (tracked.expectedHash
-    && hashOpened(fileSystem, tracked.descriptor, tracked.identity) !== tracked.expectedHash) {
+    && hashOpened(fileSystem, tracked.descriptor, tracked.identity,
+      'BROLL_MEDIA_IDENTITY_CHANGED', tracked.platform) !== tracked.expectedHash) {
     fail('BROLL_MEDIA_IDENTITY_CHANGED');
   }
   assertTrackedIdentity(fileSystem, tracked);
@@ -325,7 +307,7 @@ function normalizedBundle(media) {
   } : null;
 }
 
-function readBundleMetadata({ workspace, bundle, fileSystem, trackedFiles }) {
+function readBundleMetadata({ workspace, bundle, fileSystem, trackedFiles, platform }) {
   const resolved = resolveContainedFile({
     storageRoot: workspace.dir,
     storedReference: bundle.metadataReference,
@@ -333,10 +315,12 @@ function readBundleMetadata({ workspace, bundle, fileSystem, trackedFiles }) {
     missingCode: 'BROLL_MEDIA_METADATA_INVALID',
   });
   const tracked = openTrackedFile({
-    resolved, fileSystem, missingCode: 'BROLL_MEDIA_METADATA_INVALID',
+    resolved, fileSystem, missingCode: 'BROLL_MEDIA_METADATA_INVALID', platform,
   });
   trackedFiles.push(tracked);
-  const bytes = readOpenedBytes(fileSystem, tracked.descriptor, tracked.identity, MAX_METADATA_BYTES);
+  const bytes = readOpenedBytes(
+    fileSystem, tracked.descriptor, tracked.identity, MAX_METADATA_BYTES, platform,
+  );
   tracked.expectedHash = crypto.createHash('sha256').update(bytes).digest('hex');
   try {
     return parseImportedAssetMetadata({ bytes, expectedId: bundle.id });
@@ -363,8 +347,9 @@ function verifyOpenedBrollAsset({
   root,
   workspace,
   media,
-  runToolImpl = defaultRunTool,
+  runToolImpl,
   fileSystem = fs,
+  platform = process.platform,
 } = {}) {
   const resolved = resolvePersistedBrollMedia({
     root, workspace, media, fileSystem,
@@ -372,10 +357,10 @@ function verifyOpenedBrollAsset({
   const bundle = normalizedBundle(media);
   const trackedFiles = [];
   try {
-    const canonical = openTrackedFile({ resolved, fileSystem });
+    const canonical = openTrackedFile({ resolved, fileSystem, platform });
     trackedFiles.push(canonical);
     const metadata = bundle
-      ? readBundleMetadata({ workspace, bundle, fileSystem, trackedFiles })
+      ? readBundleMetadata({ workspace, bundle, fileSystem, trackedFiles, platform })
       : null;
     if (metadata && (metadata.mediaKind !== bundle.kind
       || metadata.mediaKind !== media.kind
@@ -387,7 +372,10 @@ function verifyOpenedBrollAsset({
     if (metadata && !probeMatchesMetadata(metadata, probe)) {
       fail('BROLL_MEDIA_METADATA_MISMATCH');
     }
-    const canonicalHash = hashOpened(fileSystem, canonical.descriptor, canonical.identity);
+    const canonicalHash = hashOpened(
+      fileSystem, canonical.descriptor, canonical.identity,
+      'BROLL_MEDIA_IDENTITY_CHANGED', platform,
+    );
     if (canonicalHash !== media.sha256) fail('BROLL_MEDIA_HASH_MISMATCH');
     canonical.expectedHash = canonicalHash;
 
@@ -396,15 +384,19 @@ function verifyOpenedBrollAsset({
         storageRoot: workspace.dir,
         storedReference: bundle.proxyReference,
         fileSystem,
-        missingCode: 'BROLL_MEDIA_PROXY_MISSING',
+        missingCode: 'BROLL_MEDIA_PROXY_MISSING', platform,
       });
       const proxy = openTrackedFile({
         resolved: proxyResolved,
         fileSystem,
         missingCode: 'BROLL_MEDIA_PROXY_MISSING',
+        platform,
       });
       trackedFiles.push(proxy);
-      const proxyHash = hashOpened(fileSystem, proxy.descriptor, proxy.identity);
+      const proxyHash = hashOpened(
+        fileSystem, proxy.descriptor, proxy.identity,
+        'BROLL_MEDIA_IDENTITY_CHANGED', platform,
+      );
       if (proxyHash !== metadata.previewSha256) fail('BROLL_MEDIA_PROXY_HASH_MISMATCH');
       proxy.expectedHash = proxyHash;
     }
@@ -481,10 +473,11 @@ function verifyPersistedBrollMedia({
   fps,
   runToolImpl,
   fileSystem = fs,
+  platform = process.platform,
 } = {}) {
   preflightBriefBrollMedia({ scenes: [scene] });
   const asset = verifyOpenedBrollAsset({
-    root, workspace, media: scene.brollMedia, runToolImpl, fileSystem,
+    root, workspace, media: scene.brollMedia, runToolImpl, fileSystem, platform,
   });
   try {
     verifySceneBrollMedia({ scene, fps, probe: asset.probe });
@@ -499,7 +492,14 @@ function verifyPersistedBrollMedia({
   }
 }
 
-function verifyBriefBrollMedia({ root, workspace, brief, runToolImpl, fileSystem = fs } = {}) {
+function verifyBriefBrollMedia({
+  root,
+  workspace,
+  brief,
+  runToolImpl,
+  fileSystem = fs,
+  platform = process.platform,
+} = {}) {
   preflightBriefBrollMedia(brief);
   const verifiedByKey = new Map();
   try {
@@ -509,7 +509,7 @@ function verifyBriefBrollMedia({ root, workspace, brief, runToolImpl, fileSystem
         let asset = verifiedByKey.get(key);
         if (!asset) {
           asset = verifyOpenedBrollAsset({
-            root, workspace, media: scene.brollMedia, runToolImpl, fileSystem,
+            root, workspace, media: scene.brollMedia, runToolImpl, fileSystem, platform,
           });
           verifiedByKey.set(key, asset);
         }

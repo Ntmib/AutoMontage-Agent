@@ -52,6 +52,9 @@ npm test
   repeated asset dedup, одноразовый render bundle, безопасный полный rehash при File Provider
   `ctime`-only drift, bounded retry при drift во время hash, fail-closed same-size/append/overwrite
   и `Img`/`OffthreadVideo` audio envelopes;
+- portable opened-media probe: реальные PNG/JPEG/WebP, H.264 MP4 с `moov` в конце и WebM идут
+  через opened descriptor + `pipe:0` без host path; Windows-mode filesystem отвергает POSIX
+  flags/modes, но всё равно требует regular type, containment, identity и совпадающие bytes;
 - fail-closed ошибки ENOENT, non-zero, signal и некорректный ffprobe JSON;
 - timing regression: NTSC `30000/1001` и `24000/1001` FPS не округляются, число кадров
   считается через `ceil`, а положительный целый `--frames` не превышает длину source;
@@ -70,6 +73,8 @@ npm test
 ```bash
 node --test tests/review-waveform.test.js tests/process-security.test.js
 node --test tests/project-mutation-transaction.test.js
+node --test tests/opened-media-probe.test.js tests/project-workspace.test.js \
+  tests/review-draft-save.test.js
 node --test tests/review-import-ownership.test.js tests/review-media-import.test.js \
   tests/review-imported-assets.test.js tests/review-server-security.test.js
 npm run test:review-ui
@@ -258,8 +263,10 @@ project-папке. Старые артефакты в `out/` при мигра�
 `npm run check:release` на pull request и push в `main`. Отдельный browser job выполняет
 `npm ci --no-audit --no-fund`, устанавливает только Playwright Chromium с системными
 зависимостями и запускает `npm run test:review-ui`. Поэтому browser setup не может скрыть
-обычную Node-регрессию. Release-checker проверяет committed current tree без base и работает
-с shallow checkout. Отдельный job Gitleaks сканирует полную Git-историю на секреты.
+обычную Node-регрессию. Windows job ставит фиксированный FFmpeg 7.1.1 с обязательной проверкой
+checksum и без изменения команды запускает portable probe/import/recovery/Save/approval tests.
+Release-checker проверяет committed current tree без base и работает с shallow checkout.
+Отдельный job Gitleaks сканирует полную Git-историю на секреты.
 Полные рендеры в CI не запускаются: им нужны тяжёлые медиа, ffmpeg/Whisper-модели и
 иногда приватные темы. Их проверяют локально по разделам выше.
 

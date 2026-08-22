@@ -3,6 +3,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
 const { claimAndRemoveOwnedPath } = require('../project/owned-removal');
+const {
+  openReadOnlyFlags,
+  privateModeMatches,
+} = require('../filesystem-capabilities');
 
 const REQUIRED_KEYS = [
   'version', 'id', 'label', 'mediaKind', 'canonicalSha256',
@@ -147,11 +151,10 @@ function parseImportedPublicationClaim({ bytes, expectedId, expectedMediaKind } 
   return latest;
 }
 
-function readOpenedMetadata(fileSystem, filePath) {
-  const constants = fileSystem.constants || fs.constants;
+function readOpenedMetadata(fileSystem, filePath, platform = process.platform) {
   let descriptor = null;
   try {
-    descriptor = fileSystem.openSync(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    descriptor = fileSystem.openSync(filePath, openReadOnlyFlags(fileSystem, platform));
     const stat = fileSystem.fstatSync(descriptor);
     const nanosecondStat = fileSystem.fstatSync(descriptor, { bigint: true });
     if (!stat.isFile() || stat.size <= 0 || stat.size > METADATA_MAX_BYTES) return null;
@@ -183,11 +186,10 @@ function readOpenedMetadata(fileSystem, filePath) {
   }
 }
 
-function hashOpenedFile(fileSystem, filePath) {
-  const constants = fileSystem.constants || fs.constants;
+function hashOpenedFile(fileSystem, filePath, platform = process.platform) {
   let descriptor = null;
   try {
-    descriptor = fileSystem.openSync(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    descriptor = fileSystem.openSync(filePath, openReadOnlyFlags(fileSystem, platform));
     const stat = fileSystem.fstatSync(descriptor);
     const nanosecondStat = fileSystem.fstatSync(descriptor, { bigint: true });
     if (!stat.isFile()) return null;
@@ -266,6 +268,7 @@ function verifyImportedAssetFiles({
   previewPath = null,
   metadata,
   fileSystem = fs,
+  platform = process.platform,
 } = {}) {
   if (!UUID.test(id) || !['image', 'video'].includes(mediaKind)
     || !metadata || metadata.id !== id || metadata.mediaKind !== mediaKind) return null;
@@ -276,11 +279,11 @@ function verifyImportedAssetFiles({
   }
   const expectedFilename = mediaKind === 'image' ? 'media.webp' : 'media.mp4';
   const filePath = path.join(assetDirectory, expectedFilename);
-  const canonical = hashOpenedFile(fileSystem, filePath);
+  const canonical = hashOpenedFile(fileSystem, filePath, platform);
   if (!canonical || canonical.sha256 !== metadata.canonicalSha256) return null;
   let preview = null;
   if (mediaKind === 'video') {
-    preview = hashOpenedFile(fileSystem, previewPath);
+    preview = hashOpenedFile(fileSystem, previewPath, platform);
     if (!preview || preview.sha256 !== metadata.previewSha256) return null;
   }
   return { metadata, filePath, previewPath, canonical, preview };
@@ -321,7 +324,12 @@ function buildImportedAssetRecord({ projectDir, mediaType, id, verified }) {
   };
 }
 
-function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = fs } = {}) {
+function inspectImportedAssetBundle({
+  projectDir,
+  assetDirectory,
+  fileSystem = fs,
+  platform = process.platform,
+} = {}) {
   if (typeof projectDir !== 'string' || typeof assetDirectory !== 'string') return null;
   const resolvedProject = path.resolve(projectDir);
   const resolvedDirectory = path.resolve(assetDirectory);
@@ -335,7 +343,9 @@ function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = f
     || path.dirname(resolvedDirectory) !== expectedParent || ownedAssetDirectory !== resolvedDirectory) {
     return null;
   }
-  const metadataFile = readOpenedMetadata(fileSystem, path.join(resolvedDirectory, 'asset.json'));
+  const metadataFile = readOpenedMetadata(
+    fileSystem, path.join(resolvedDirectory, 'asset.json'), platform,
+  );
   if (!metadataFile) return null;
   let metadata;
   try {
@@ -357,6 +367,7 @@ function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = f
     previewPath,
     metadata,
     fileSystem,
+    platform,
   });
   return verified ? buildImportedAssetRecord({
     projectDir: resolvedProject,
@@ -366,7 +377,11 @@ function inspectImportedAssetBundle({ projectDir, assetDirectory, fileSystem = f
   }) : null;
 }
 
-function listImportedAssetBundles({ projectDir, fileSystem = fs } = {}) {
+function listImportedAssetBundles({
+  projectDir,
+  fileSystem = fs,
+  platform = process.platform,
+} = {}) {
   if (typeof projectDir !== 'string') return [];
   const bundles = [];
   for (const mediaType of ['images', 'video']) {
@@ -384,6 +399,7 @@ function listImportedAssetBundles({ projectDir, fileSystem = fs } = {}) {
         projectDir,
         assetDirectory: path.join(parent, entry.name),
         fileSystem,
+        platform,
       });
       if (bundle) bundles.push(bundle);
     }
@@ -432,9 +448,10 @@ function cleanupPublicationClaim({
   id,
   claimPath,
   fileSystem,
+  platform,
 }) {
-  const claimFile = readOpenedMetadata(fileSystem, claimPath);
-  if (!claimFile || claimFile.mode !== 0o600) return [];
+  const claimFile = readOpenedMetadata(fileSystem, claimPath, platform);
+  if (!claimFile || !privateModeMatches(claimFile, 0o600, platform)) return [];
   const claim = parseImportedPublicationClaim({
     bytes: claimFile.bytes,
     expectedId: id,
@@ -478,7 +495,7 @@ function cleanupPublicationClaim({
       const markerStat = fileSystem.lstatSync(markerPath);
       markerExists = true;
       if (!markerStat.isFile() || markerStat.isSymbolicLink()) return [];
-      const markerFile = readOpenedMetadata(fileSystem, markerPath);
+      const markerFile = readOpenedMetadata(fileSystem, markerPath, platform);
       if (!markerFile) return [];
       committedMetadata = parseImportedAssetMetadata({ bytes: markerFile.bytes, expectedId: id });
     } catch (error) {
@@ -497,6 +514,7 @@ function cleanupPublicationClaim({
       projectDir,
       assetDirectory: mediaDirectory,
       fileSystem,
+      platform,
     });
     if (!published
       || !targetIdentityState(fileSystem, mediaDirectory, claim.directory, 'directory').matches
@@ -554,10 +572,11 @@ function cleanupOrphanImportedStages({
   projectDir,
   fileSystem = fs,
   mutationLease = null,
+  platform = process.platform,
 } = {}) {
   if (typeof projectDir !== 'string') return [];
   const lease = mutationLease || require('../project/workspace')
-    .acquireProjectMutationLease(projectDir, { fileSystem });
+    .acquireProjectMutationLease(projectDir, { fileSystem, platform });
   const ownsLease = !mutationLease;
   try {
   const resolvedProject = path.resolve(projectDir);
@@ -589,6 +608,7 @@ function cleanupOrphanImportedStages({
           id: claimMatch[1],
           claimPath: path.join(parent, entry.name),
           fileSystem,
+          platform,
         }));
       }
     }
