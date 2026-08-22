@@ -576,7 +576,9 @@ video {
   min-height: 3rem;
   margin: 0;
   padding: 0.35rem 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: stable;
   list-style: none;
 }
 
@@ -584,7 +586,7 @@ video {
   display: flex;
   gap: 0.5rem;
   align-items: center;
-  flex: 0 1 18rem;
+  flex: 0 0 min(18rem, calc(100vw - 3rem));
   min-width: 0;
   padding: 0.45rem 0.6rem;
   border: 1px solid hsl(var(--border));
@@ -823,6 +825,14 @@ video {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
+}
+
+.broll-used-interval {
+  color: hsl(var(--teal));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
 }
 
 .broll-select {

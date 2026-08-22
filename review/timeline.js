@@ -184,6 +184,8 @@ function snapBoundary(seconds, {
 function setBoundaryPosition(handle, seconds, duration) {
   const percent = Math.min(100, Math.max(0, (seconds / Math.max(duration, 0.001)) * 100));
   handle.style.setProperty('--boundary-position', `${percent}%`);
+  handle.setAttribute('aria-valuenow', String(seconds));
+  handle.setAttribute('aria-valuetext', formatTime(seconds, true));
 }
 
 function setSnapLabel(handle, reason) {
@@ -202,21 +204,30 @@ function renderBoundaries({
   diff,
   onBoundaryChange,
   lastSnap,
-  invalid,
+  invalidSceneIndexes,
   locked,
   focusBoundary,
   onBoundaryFocus,
 }) {
   const cleanups = [];
+  const invalidBoundaries = new Set();
+  for (const sceneIndex of invalidSceneIndexes || []) {
+    if (!Number.isInteger(sceneIndex)) continue;
+    if (sceneIndex > 0) invalidBoundaries.add(sceneIndex - 1);
+    if (sceneIndex < scenes.length - 1) invalidBoundaries.add(sceneIndex);
+  }
   for (let index = 0; index < scenes.length - 1; index += 1) {
     const leftTimes = sceneTimes(scenes[index], index, diff);
     const rightTimes = sceneTimes(scenes[index + 1], index + 1, diff);
     if (leftTimes.end !== rightTimes.start) continue;
     const handle = button(`Граница сцен ${index + 1} и ${index + 2}`, 'boundary-handle');
     handle.dataset.boundary = String(index);
+    handle.setAttribute('role', 'slider');
+    handle.setAttribute('aria-valuemin', String(leftTimes.start));
+    handle.setAttribute('aria-valuemax', String(rightTimes.end));
     handle.disabled = Boolean(locked);
     handle.dataset.snapReason = lastSnap && lastSnap.index === index ? lastSnap.reason : '';
-    if (invalid) handle.dataset.invalid = 'true';
+    if (invalidBoundaries.has(index)) handle.dataset.invalid = 'true';
     const snapLabel = document.createElement('span');
     snapLabel.className = 'boundary-snap-label';
     snapLabel.textContent = lastSnap && lastSnap.index === index
@@ -447,7 +458,7 @@ export function renderTimeline({
       diff,
       onBoundaryChange: edit.onBoundaryChange,
       lastSnap: edit.lastSnap,
-      invalid: edit.invalid,
+      invalidSceneIndexes: edit.invalidSceneIndexes,
       locked: edit.locked,
       focusBoundary: edit.focusBoundary,
       onBoundaryFocus: edit.onBoundaryFocus,

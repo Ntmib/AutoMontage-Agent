@@ -96,10 +96,12 @@ manifest update и ошибки `readFileSync`/`lstatSync` сразу после
 
 Chromium suite поднимает настоящий loopback-сервер и проверяет read-only/edit DOM, token/origin,
 waveform fallback, word-snap drag, накопительное frame-only Arrow movement, реальные
-JPEG/MP4/MOV/WebM uploads, authenticated proxy playback, отсутствие auto-select, русские
-fit/start/audio controls, silent-video ограничения, undo/redo, save confirmation, внешний `409`
-с настоящей перезагрузкой/блокировкой мутаций и неизменность approved. Browser DOM дополнительно
-проверяется на отсутствие project path, canonical media reference и SHA-256.
+JPEG/MP4/MOV/M4V/WebM uploads, authenticated proxy playback, отсутствие auto-select, русские
+fit/start/audio controls, сохранение preview playhead, derived used interval, silent-video
+ограничения, slider ARIA, точную invalid-boundary подсветку, pending `aria-busy`, 360px media
+scroll, undo/redo, save confirmation, committed-201 refresh failure и внешний `409` с настоящей
+перезагрузкой/блокировкой мутаций. Browser DOM дополнительно проверяется на отсутствие project
+path, canonical media reference и SHA-256.
 Она не заменяет `npm test`: browser и Node suites обязательны отдельно.
 
 Для золотого пути свежего клона отдельно проверь:
@@ -226,7 +228,8 @@ node --test \
   tests/scene-broll-media.test.js \
   tests/scene-media-sync.test.js
 
-npm run test:review-ui -- --grep "media import|video b-roll"
+npm run test:review-ui -- --grep \
+  "preview position|used interval|boundary slider|committed import|large media|pending validation|m4v|failed media import"
 node --test tests/video-broll-e2e.test.js
 AUTOMONTAGE_FFMPEG_DIR=/opt/homebrew/opt/ffmpeg-full/bin \
   node --test tests/custom-face-media-real.test.js

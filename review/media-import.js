@@ -18,6 +18,13 @@ function notify(callback, value) {
   }
 }
 
+function uploadMimeType(file) {
+  if (typeof file?.name === 'string' && file.name.toLowerCase().endsWith('.m4v')) {
+    return 'video/x-m4v';
+  }
+  return file.type || 'application/octet-stream';
+}
+
 export function createMediaImporter({
   endpoint,
   token,
@@ -39,7 +46,9 @@ export function createMediaImporter({
     try {
       await invoke(onSuccess, value);
       resolve(value);
-    } catch (error) {
+    } catch (_) {
+      const error = importError(201, 'MEDIA_IMPORT_COMMITTED_REFRESH_ERROR');
+      error.committed = true;
       reject(error);
     } finally {
       active = false;
@@ -77,7 +86,7 @@ export function createMediaImporter({
       xhr.open('POST', endpointUrl.pathname + endpointUrl.search);
       xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       xhr.setRequestHeader('X-Automontage-Filename', encodeURIComponent(file.name));
-      xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+      xhr.setRequestHeader('Content-Type', uploadMimeType(file));
       xhr.upload.onprogress = ({ loaded, total, lengthComputable }) => {
         notify(onProgress, {
           loaded,

@@ -55,6 +55,7 @@ async function makeBrowserReviewSession({
   logger,
   higherRevision,
   runMediaProcessImpl,
+  assetCount = 0,
 } = {}) {
   const fixture = makeReviewProject(
     { after: (cleanup) => cleanups.push(cleanup) },
@@ -137,6 +138,12 @@ async function makeBrowserReviewSession({
     path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
     path.join(fixture.workspace.dir, 'assets', 'broll', 'diagram.png'),
   );
+  for (let index = 1; index <= assetCount; index += 1) {
+    fs.copyFileSync(
+      path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
+      path.join(fixture.workspace.dir, 'assets', 'broll', `media-${String(index).padStart(2, '0')}.png`),
+    );
+  }
   if (broll) {
     fs.copyFileSync(
       path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
@@ -624,7 +631,7 @@ test('b-roll controls expose only eligible scenes and send an opaque asset id', 
   });
 });
 
-test('server-invalid edit marks a boundary red, disables save and reports a safe accessible error', async ({ page }) => {
+test('server-invalid non-timing edit leaves boundaries neutral, disables save and reports a safe accessible error', async ({ page }) => {
   await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
     await openReview(page, session.url);
     await waitForEditReady(page);
@@ -641,7 +648,8 @@ test('server-invalid edit marks a boundary red, disables save and reports a safe
     await select.selectOption(replacementId);
     await validationResponse;
 
-    await expect(page.locator('[data-boundary="0"]')).toHaveAttribute('data-invalid', 'true');
+    await expect(page.locator('[data-boundary="0"]')).not.toHaveAttribute('data-invalid', 'true');
+    await expect(page.locator('[data-boundary="1"]')).not.toHaveAttribute('data-invalid', 'true');
     await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
     const error = page.getByRole('alert');
     await expect(error).toContainText(/не удалось проверить/i);
@@ -790,7 +798,21 @@ test('Arrow keys accumulate frame commands, restore boundary focus and undo one 
       await handle.focus();
       await page.keyboard.press('ArrowRight');
       expect(await firstValidated).toBe(200);
+      await expect(page.locator('[data-boundary="1"]')).toBeDisabled();
+      await page.locator('[data-boundary="1"]').dispatchEvent('keydown', { key: 'ArrowRight' });
+      expect(validationBodies).toHaveLength(1);
+
+      const firstComplete = page.waitForResponse((response) => (
+        response.url().endsWith('/api/validate') && response.status() === 200
+      ));
+      releaseFirst();
+      await firstComplete;
+      await expect(page.locator('[data-boundary="1"]')).toBeFocused();
+      const secondComplete = page.waitForResponse((response) => (
+        response.url().endsWith('/api/validate') && response.status() === 200
+      ));
       await page.keyboard.press('ArrowRight');
+      await secondComplete;
 
       await expect(page.locator('[data-scene="1"]')).toHaveAttribute('data-end', '4.08');
       await expect(page.locator('[data-scene="2"]')).toHaveAttribute('data-start', '4.08');
@@ -801,7 +823,6 @@ test('Arrow keys accumulate frame commands, restore boundary focus and undo one 
         { type: 'move-boundary', leftSceneIndex: 1, seconds: 4.08 },
       ]);
 
-      releaseFirst();
       await page.getByRole('button', { name: /^отменить$/i }).click();
       await expect(page.locator('[data-scene="1"]')).toHaveAttribute('data-end', '4.04');
       await expect(page.locator('[data-scene="2"]')).toHaveAttribute('data-start', '4.04');
@@ -1104,6 +1125,207 @@ test('validate conflict locks immediately and resumes only from the loaded fresh
       leftSceneIndex: 0,
       seconds: 2.44,
     }]);
+  });
+});
+
+test('boundary slider exposes frame-snapped accessible values and marks only the reported scene edge invalid', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true }, async (session) => {
+    await page.route('**/api/validate', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.timing.errors = [{ sceneIndex: 0, message: 'Первая сцена содержит ошибку тайминга' }];
+      await route.fulfill({ response, json: body });
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+
+    const first = page.locator('[data-boundary="0"]');
+    const second = page.locator('[data-boundary="1"]');
+    await expect(first).toHaveAttribute('role', 'slider');
+    await expect(first).toHaveAttribute('aria-valuemin', '0');
+    await expect(first).toHaveAttribute('aria-valuemax', '4');
+    await expect(first).toHaveAttribute('aria-valuenow', '2');
+    await expect(first).toHaveAttribute('aria-valuetext', '00:02.000');
+
+    const validated = page.waitForResponse((response) => (
+      response.url().endsWith('/api/validate') && response.status() === 200
+    ));
+    await first.focus();
+    await first.press('ArrowRight');
+    await validated;
+    await expect(first).toBeFocused();
+    await expect(first).toHaveAttribute('aria-valuenow', '2.04');
+    await expect(first).toHaveAttribute('aria-valuetext', '00:02.040');
+    await expect(first).toHaveAttribute('data-invalid', 'true');
+    await expect(second).not.toHaveAttribute('data-invalid', 'true');
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+  });
+});
+
+test('pending validation announces busy state and locks every mutation control', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await page.route('**/api/validate', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await route.continue();
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    const request = page.waitForRequest((candidate) => candidate.url().endsWith('/api/validate'));
+    await page.locator('[data-boundary="0"]').press('ArrowRight');
+    await request;
+
+    await expect(page.locator('[data-edit-controls]')).toHaveAttribute('aria-busy', 'true');
+    await expect(page.locator('[data-edit-status]')).toContainText(/проверяем изменения/i);
+    await expect(page.locator('[data-boundary="0"]')).toBeDisabled();
+    await expect(page.locator('[data-broll-select]')).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^повторить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /^сохранить$/i })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeDisabled();
+    await expect(page.locator('[data-edit-controls]')).toHaveAttribute('aria-busy', 'false');
+  });
+});
+
+test('video preview position survives validation settings undo and redo rerenders', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await importFileFromBrowser(page, media.mp4);
+    const scene = page.locator('[data-broll-scene="1"]');
+    await scene.locator('[data-broll-select]').selectOption({ label: 'browser-with-audio.mp4' });
+    let preview = scene.locator('video[data-broll-video]');
+    await expect.poll(() => preview.evaluate((video) => video.readyState)).toBeGreaterThan(0);
+    await preview.evaluate((video) => { video.currentTime = 0.419; });
+    await expect.poll(() => preview.evaluate((video) => video.currentTime)).toBeCloseTo(0.419, 2);
+
+    const startValidated = page.waitForResponse((response) => response.url().endsWith('/api/validate'));
+    await scene.getByRole('button', { name: /начать с текущего места/i }).click();
+    await startValidated;
+    preview = scene.locator('video[data-broll-video]');
+    await expect.poll(() => preview.evaluate((video) => video.currentTime)).toBeCloseTo(0.419, 2);
+
+    const fitValidated = page.waitForResponse((response) => response.url().endsWith('/api/validate'));
+    await scene.locator('[data-broll-fit]').selectOption('cover');
+    await fitValidated;
+    await expect.poll(() => scene.locator('video[data-broll-video]').evaluate((video) => video.currentTime))
+      .toBeCloseTo(0.419, 2);
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect.poll(() => scene.locator('video[data-broll-video]').evaluate((video) => video.currentTime))
+      .toBeCloseTo(0.419, 2);
+    await page.getByRole('button', { name: /^повторить$/i }).click();
+    await expect.poll(() => scene.locator('video[data-broll-video]').evaluate((video) => video.currentTime))
+      .toBeCloseTo(0.419, 2);
+  });
+});
+
+test('video b-roll shows the server-confirmed used interval and updates it after boundary undo redo', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await importFileFromBrowser(page, media.mp4);
+    const scene = page.locator('[data-broll-scene="1"]');
+    await scene.locator('[data-broll-select]').selectOption({ label: 'browser-with-audio.mp4' });
+    const preview = scene.locator('video[data-broll-video]');
+    await expect.poll(() => preview.evaluate((video) => video.readyState)).toBeGreaterThan(0);
+    await preview.evaluate((video) => { video.currentTime = 0.419; });
+    await scene.getByRole('button', { name: /начать с текущего места/i }).click();
+    await expect(scene.locator('[data-broll-used-interval]')).toHaveText(
+      'Используется: 00:00.400–00:02.400',
+    );
+
+    await dragBoundary(page, 1, 4.4);
+    await expect(scene.locator('[data-broll-used-interval]')).toHaveText(
+      'Используется: 00:00.400–00:02.800',
+    );
+    await page.getByRole('button', { name: /^отменить$/i }).click();
+    await expect(scene.locator('[data-broll-used-interval]')).toHaveText(
+      'Используется: 00:00.400–00:02.400',
+    );
+    await page.getByRole('button', { name: /^повторить$/i }).click();
+    await expect(scene.locator('[data-broll-used-interval]')).toHaveText(
+      'Используется: 00:00.400–00:02.800',
+    );
+  });
+});
+
+test('committed import refresh failure reports the commit truth and preserves local edits', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await dragBoundary(page, 0, 2.1);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+    const selectedBefore = await page.locator('[data-broll-select]').inputValue();
+    await page.route('**/api/state', (route) => route.abort('failed'));
+    const committed = page.waitForResponse((response) => response.url().endsWith('/api/assets/import'));
+    await page.locator('[data-media-input]').setInputFiles(media.webm);
+    expect((await committed).status()).toBe(201);
+
+    const status = page.locator('[data-media-import-status]');
+    await expect(status).toHaveAttribute('data-phase', 'committed-refresh-error');
+    await expect(status).toContainText(/файл добавлен.*экран не обновился.*перезагрузите/i);
+    await expect(status).not.toContainText(/не удалось добавить|импорт не удался/i);
+    await expect(page.locator('[data-media-progress]')).toBeHidden();
+    await expect(page.locator('[data-broll-select]')).toHaveValue(selectedBefore);
+    await expect(page.locator('[data-server-diff]')).toContainText('Граница сцен 1–2');
+    await expect(page.getByRole('button', { name: /^отменить$/i })).toBeEnabled();
+    await expect(page.getByRole('button', { name: /добавить медиа/i })).toBeEnabled();
+    await page.unroute('**/api/state');
+  });
+});
+
+test('large media collection stays horizontally contained and the last asset is reachable at 360px', async ({ page }) => {
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true, assetCount: 20 }, async (session) => {
+    await page.setViewportSize({ width: 360, height: 900 });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    await expectNoPageOverflow(page);
+    await expect.poll(() => page.locator('[data-assets] .asset-chip').count()).toBeGreaterThanOrEqual(20);
+    const list = page.locator('[data-assets]');
+    const layout = await list.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { overflowX: style.overflowX, flexWrap: style.flexWrap };
+    });
+    expect(layout.overflowX === 'auto' || layout.overflowX === 'scroll' || layout.flexWrap === 'wrap').toBe(true);
+    const last = page.locator('[data-asset-label]', { hasText: 'media-20.png' });
+    await last.scrollIntoViewIfNeeded();
+    await expect(last).toBeVisible();
+    const reachable = await last.evaluate((element) => {
+      const item = element.closest('.asset-chip').getBoundingClientRect();
+      const lane = element.closest('[data-lane="assets"]').getBoundingClientRect();
+      return item.width >= 120 && item.left >= lane.left && item.right <= lane.right;
+    });
+    expect(reachable).toBe(true);
+  });
+});
+
+test('m4v browser file uses the server contract MIME and succeeds through the real route', async ({ page }) => {
+  test.setTimeout(120_000);
+  const media = makeBrowserImportFixtures();
+  await withBrowserReviewSession({ editable: true, threeScenes: true, broll: true }, async (session) => {
+    let uploadType = null;
+    page.on('request', (request) => {
+      if (request.url().endsWith('/api/assets/import')) uploadType = request.headers()['content-type'];
+    });
+    await openReview(page, session.url);
+    await waitForEditReady(page);
+    const response = page.waitForResponse((candidate) => (
+      candidate.url().endsWith('/api/assets/import') && candidate.request().method() === 'POST'
+    ));
+    await page.locator('[data-media-input]').setInputFiles({
+      name: 'browser-copy.m4v',
+      mimeType: 'video/mp4',
+      buffer: fs.readFileSync(media.mp4),
+    });
+    expect((await response).status()).toBe(201);
+    expect(uploadType).toBe('video/x-m4v');
+    await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'success');
   });
 });
 
@@ -1650,7 +1872,7 @@ test('busy import state refresh failure quarantines without erasing unsaved diff
   });
 });
 
-test('failed media import restores controls while 409 enters explicit stale conflict quarantine', async ({ page }) => {
+test('failed media import restores controls while committed import refresh enters explicit stale conflict quarantine', async ({ page }) => {
   test.setTimeout(120_000);
   const media = makeBrowserImportFixtures();
   const invalid = path.join(path.dirname(media.mp4), 'broken.mp4');
@@ -1676,25 +1898,43 @@ test('failed media import restores controls while 409 enters explicit stale conf
     const diagram = path.join(session.fixture.workspace.dir, 'assets', 'broll', 'diagram.png');
     const original = path.join(session.fixture.workspace.dir, 'assets', 'broll', 'diagram.original');
     const changed = path.join(session.fixture.workspace.dir, 'assets', 'broll', 'diagram.changed');
+    const fixtureBackup = path.join(
+      session.fixture.workspace.dir,
+      'assets',
+      'broll',
+      'diagram.fixture-backup',
+    );
+    fs.copyFileSync(diagram, original, fs.constants.COPYFILE_EXCL);
+    const fixtureBackupIdentity = fs.lstatSync(original, { bigint: true });
+    await saveExternalBoundary(session, 2.3);
+    let changedIdentity = null;
     let restored = false;
     await page.route('**/api/state', async (route) => {
       if (!restored) {
+        fs.renameSync(original, fixtureBackup);
+        fs.renameSync(diagram, original);
+        fs.writeFileSync(diagram, 'changed during intercepted state refresh');
+        changedIdentity = fs.lstatSync(diagram, { bigint: true });
         fs.renameSync(diagram, changed);
         fs.renameSync(original, diagram);
+        const backup = fs.lstatSync(fixtureBackup, { bigint: true });
+        expect({ dev: backup.dev, ino: backup.ino }).toEqual({
+          dev: fixtureBackupIdentity.dev,
+          ino: fixtureBackupIdentity.ino,
+        });
+        fs.unlinkSync(fixtureBackup);
         restored = true;
       }
       await route.continue();
     });
-    const conflictResponse = page.waitForResponse((response) => (
-      response.url().endsWith('/api/assets/import') && response.status() === 409
+    const committedResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/assets/import') && response.status() === 201
     ));
     await page.locator('[data-media-input]').setInputFiles(media.slow);
     await expect(page.locator('[data-media-import-status]')).toContainText(/проверяем/i);
-    await saveExternalBoundary(session, 2.3);
-    fs.renameSync(diagram, original);
-    fs.writeFileSync(diagram, 'changed while import is processing');
-    await conflictResponse;
+    await committedResponse;
     await expect(page.locator('[data-conflict]')).toContainText(/конфликт/i);
+    await expect(page.locator('[data-media-import-status]')).toHaveAttribute('data-phase', 'error');
     await expect(page.locator('[data-media-progress]')).toBeHidden();
     await expect(page.locator('[data-media-progress]')).not.toHaveAttribute('value');
     const discard = page.getByRole('button', {
@@ -1706,5 +1946,12 @@ test('failed media import restores controls while 409 enters explicit stale conf
     await discard.click();
     await expect(page.locator('[data-conflict]')).toBeHidden();
     await expect(page.locator('[data-boundary="0"]')).toBeEnabled();
+    const leftover = fs.lstatSync(changed, { bigint: true });
+    expect(changedIdentity).not.toBeNull();
+    expect({ dev: leftover.dev, ino: leftover.ino }).toEqual({
+      dev: changedIdentity.dev,
+      ino: changedIdentity.ino,
+    });
+    fs.unlinkSync(changed);
   });
 });

@@ -206,6 +206,15 @@ manifest. Поэтому `/api/state` продолжает видеть стар
 источником геометрии, diff и timing audit. Текст, scene type, effects, keyframes, masks и прочие
 поля fail closed как unsupported diff.
 
+Позиция маленького video preview — локальное UI-состояние по паре scene/opaque asset: rerender
+после validate, настройки, Undo или Redo восстанавливает playhead, но не отправляет его в brief.
+Показанный used interval берёт подтверждённый `trimStartSec` и прибавляет текущую длительность
+сцены из server diff; отдельного end-handle нет. Во время validate workbench имеет
+`aria-busy=true`, сообщает о проверке и блокирует все мутации. Timing error подсвечивает только
+границы рядом с указанным сервером `sceneIndex`; обычная media/HTTP ошибка границы не красит.
+Ответ `201` фиксирует import независимо от следующего `GET /api/state`: если refresh падает,
+браузер честно сообщает, что файл уже добавлен и требуется reload, сохраняя команды и diff.
+
 `POST /api/assets/import` доступен только в edit-сессии и принимает один raw body за раз.
 Заявленный размер, MIME и безопасное имя проверяются до обработки; поток пишется в отдельный
 owner-only quarantine с точным `Content-Length`, abort signal и фиксированным запасом диска.
@@ -249,6 +258,9 @@ reserve. Любая граница возвращает стабильный `50
 удаляет только доказанные partial paths.
 Импорт не отправляет `replace-broll`: после refresh новая карточка появляется в media lane, но
 пользователь обязан отдельно назначить её сцене.
+Browser upload нормализует общий MIME `.m4v` (`video/mp4`) в контрактный `video/x-m4v`, не задаёт
+`Content-Length` вручную и сохраняет XHR progress. Большая media lane прокручивается внутри
+панели и не создаёт горизонтальный overflow всей страницы.
 
 Project lesson planning использует уникальную JSON/Markdown temp-пару только как handoff от
 генератора к transactional publisher. После успеха и ошибки удаляются лишь заранее снятые inode;
