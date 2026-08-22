@@ -73,11 +73,11 @@ jobs:
 
       - name: Проверить portable project transactions
         shell: pwsh
-        run: node --test --test-name-pattern='approval rejects a stale|approval always runs|direct manifest update rejects|initial brief publication preserves' tests/project-mutation-transaction.test.js
+        run: node --test --test-name-pattern='a live process mutation lease blocks|two real processes racing Save|two real processes racing approval|two real processes racing initial brief|approval rejects a stale|approval always runs|direct manifest update rejects|initial brief publication preserves' tests/project-mutation-transaction.test.js
 
       - name: Проверить portable import ownership setup
         shell: pwsh
-        run: node --test --test-name-pattern='setup failure removes only|clean setup failure removes|orphan cleanup never treats' tests/review-import-ownership.test.js
+        run: node --test --test-name-pattern='a real import process keeps a second process out|setup failure removes only|clean setup failure removes|orphan cleanup never treats' tests/review-import-ownership.test.js
 
   review-ui:
     name: Node 20 · Review Chromium tests
