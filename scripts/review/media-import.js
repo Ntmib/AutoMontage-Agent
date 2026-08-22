@@ -405,24 +405,59 @@ function setupFileIdentity(fileSystem, target) {
   return openedFileIdentity(stat, nanosecondStat);
 }
 
-function removeOwnedEmptySetupRoot(fileSystem, target, expected) {
-  try {
-    const stat = fileSystem.lstatSync(target);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || !sameIdentity(stat, expected)) return false;
-    if (fileSystem.readdirSync(target).length !== 0) return false;
-    fileSystem.rmdirSync(target);
-    return true;
-  } catch (_) {
-    return false;
+const WIN32_SETUP_ROOT_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
+const SETUP_ROOT_RETRY_DELAYS_MS = [10, 20];
+const SETUP_ROOT_RETRY_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+function removeOwnedEmptySetupRoot(fileSystem, target, expected, platform) {
+  const attempts = platform === 'win32' ? 3 : 1;
+  let removalUncertain = false;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let stat;
+    try {
+      stat = fileSystem.lstatSync(target, { bigint: true });
+    } catch (error) {
+      if (error?.code === 'ENOENT' && removalUncertain) return true;
+      return false;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()
+      || String(stat.dev) !== String(expected?.dev)
+      || String(stat.ino) !== String(expected?.ino)) return false;
+    try {
+      if (fileSystem.readdirSync(target).length !== 0) return false;
+    } catch (_) {
+      return false;
+    }
+    try {
+      fileSystem.rmdirSync(target);
+      return true;
+    } catch (error) {
+      if (platform !== 'win32' || !WIN32_SETUP_ROOT_RETRY_CODES.has(error?.code)) return false;
+      removalUncertain = true;
+      if (attempt === attempts - 1) {
+        try {
+          const reconciled = fileSystem.lstatSync(target, { bigint: true });
+          if (!reconciled.isDirectory() || reconciled.isSymbolicLink()
+            || String(reconciled.dev) !== String(expected?.dev)
+            || String(reconciled.ino) !== String(expected?.ino)
+            || fileSystem.readdirSync(target).length !== 0) return false;
+        } catch (reconcileError) {
+          if (reconcileError?.code === 'ENOENT') return true;
+        }
+        return false;
+      }
+      Atomics.wait(SETUP_ROOT_RETRY_WAIT, 0, 0, SETUP_ROOT_RETRY_DELAYS_MS[attempt]);
+    }
   }
+  return false;
 }
 
-function cleanupOwnedSetupEntries(fileSystem, entries) {
+function cleanupOwnedSetupEntries(fileSystem, entries, platform) {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     try {
       if (entry.root) {
-        removeOwnedEmptySetupRoot(fileSystem, entry.target, entry.expected);
+        removeOwnedEmptySetupRoot(fileSystem, entry.target, entry.expected, platform);
       } else {
         claimAndRemoveOwnedPath({
           target: entry.target,
@@ -454,11 +489,17 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
   const setupEntries = [];
   try {
     fileSystem.mkdirSync(quarantinePath, { mode: 0o700 });
-    const quarantineStat = fileSystem.lstatSync(quarantinePath);
-    if (!quarantineStat.isDirectory() || quarantineStat.isSymbolicLink()) throw unsafeFilesystem();
+    const quarantineSetupStat = fileSystem.lstatSync(quarantinePath, { bigint: true });
+    if (!quarantineSetupStat.isDirectory() || quarantineSetupStat.isSymbolicLink()) {
+      throw unsafeFilesystem();
+    }
     setupEntries.push({
-      target: quarantinePath, expected: identity(quarantineStat), kind: 'directory', root: true,
+      target: quarantinePath, expected: identity(quarantineSetupStat), kind: 'directory', root: true,
     });
+    const quarantineIdentity = {
+      dev: Number(quarantineSetupStat.dev),
+      ino: Number(quarantineSetupStat.ino),
+    };
     setPrivatePathMode(fileSystem, quarantinePath, 0o700, platform);
     if (!privateModeMatches(fileSystem.lstatSync(quarantinePath), 0o700, platform)) {
       throw unsafeFilesystem();
@@ -508,7 +549,7 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
       projectDir: quarantineParent.resolvedProject,
       projectReal: quarantineParent.projectReal,
       quarantinePath,
-      quarantineIdentity: identity(quarantineStat),
+      quarantineIdentity,
       bundlePath,
       bundleIdentity: identity(bundleStat),
       uploadPath,
@@ -638,7 +679,7 @@ function createOwnedQuarantine(projectDir, id, mediaKind, fileSystem, lease,
     if (owned?.claimFd !== null && owned?.claimFd !== undefined) {
       try { fileSystem.closeSync(owned.claimFd); } catch (_) { /* owned descriptor */ }
     }
-    cleanupOwnedSetupEntries(fileSystem, setupEntries);
+    cleanupOwnedSetupEntries(fileSystem, setupEntries, platform);
     throw error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE' ? error : unsafeFilesystem();
   }
 }

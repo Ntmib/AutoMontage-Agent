@@ -235,6 +235,125 @@ test('clean setup failure removes the empty owned quarantine and releases retry'
   await importImage(projectDir, SECOND_ID);
 });
 
+test('clean setup failure removes the empty owned quarantine after transient Windows root rmdir errors', async (t) => {
+  for (const code of ['EPERM', 'EBUSY', 'ENOTEMPTY']) {
+    await t.test(code, async (subtest) => {
+      const projectDir = tempProject(subtest);
+      const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+      const fileSystem = Object.create(fs);
+      Object.defineProperty(fileSystem, 'platform', { value: 'win32' });
+      fileSystem.linkSync = (source, target) => {
+        if (target === path.join(quarantinePath, 'owner.anchor')) {
+          const error = new Error('injected owner anchor failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fs.linkSync(source, target);
+      };
+      let transientFailures = 2;
+      fileSystem.rmdirSync = (target) => {
+        if (target === quarantinePath && transientFailures > 0) {
+          transientFailures -= 1;
+          const error = new Error(`injected root ${code}`);
+          error.code = code;
+          throw error;
+        }
+        return fs.rmdirSync(target);
+      };
+
+      await assert.rejects(importImage(projectDir, FIRST_ID, {
+        fileSystem,
+        platform: 'win32',
+      }), (error) => error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE');
+      assert.equal(transientFailures, 0);
+      assert.equal(fs.existsSync(quarantinePath), false);
+      assert.deepEqual(fs.readdirSync(path.dirname(quarantinePath)), []);
+      await importImage(projectDir, SECOND_ID);
+    });
+  }
+});
+
+test('setup root bigint identity preserves an empty foreign inode after lossy collision', async (t) => {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const displacedPath = `${quarantinePath}.displaced`;
+  const fileSystem = Object.create(fs);
+  let replaced = false;
+  fileSystem.lstatSync = (target, options) => {
+    const stat = fs.lstatSync(target, options);
+    if (target !== quarantinePath) return stat;
+    const bigint = options?.bigint === true;
+    const inode = replaced ? 9007199254740992n : 9007199254740993n;
+    const spoofed = Object.create(stat);
+    Object.defineProperties(spoofed, {
+      dev: { value: bigint ? 7n : 7 },
+      ino: { value: bigint ? inode : Number(inode) },
+    });
+    if (!bigint && !replaced) {
+      fs.renameSync(quarantinePath, displacedPath);
+      fs.mkdirSync(quarantinePath, { mode: 0o700 });
+      replaced = true;
+    }
+    return spoofed;
+  };
+  fileSystem.linkSync = (source, target) => {
+    if (target === path.join(quarantinePath, 'owner.anchor')) {
+      const error = new Error('injected owner anchor failure after root replacement');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.linkSync(source, target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, { fileSystem }), (error) => (
+    error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE'
+  ));
+  assert.equal(fs.existsSync(quarantinePath), true);
+  assert.deepEqual(fs.readdirSync(quarantinePath), []);
+  assert.equal(fs.existsSync(displacedPath), true);
+});
+
+test('setup root authoritative identity preserves a replacement before later checks', async (t) => {
+  const projectDir = tempProject(t);
+  const quarantinePath = path.join(projectDir, 'tmp', 'review-imports', FIRST_ID);
+  const displacedPath = `${quarantinePath}.displaced`;
+  const fileSystem = Object.create(fs);
+  let replaced = false;
+  let foreignIdentity;
+  const quarantineLstatKinds = [];
+  fileSystem.lstatSync = (target, options) => {
+    const stat = fs.lstatSync(target, options);
+    if (target === quarantinePath) {
+      quarantineLstatKinds.push(options?.bigint === true ? 'bigint' : 'number');
+    }
+    if (target === quarantinePath && options?.bigint !== true && !replaced) {
+      fs.renameSync(quarantinePath, displacedPath);
+      fs.mkdirSync(quarantinePath, { mode: 0o700 });
+      foreignIdentity = fs.lstatSync(quarantinePath, { bigint: true });
+      replaced = true;
+    }
+    return stat;
+  };
+  fileSystem.linkSync = (source, target) => {
+    if (target === path.join(quarantinePath, 'owner.anchor')) {
+      const error = new Error('injected owner anchor failure after root replacement');
+      error.code = 'EIO';
+      throw error;
+    }
+    return fs.linkSync(source, target);
+  };
+
+  await assert.rejects(importImage(projectDir, FIRST_ID, { fileSystem }), (error) => (
+    error.status === 500 && error.code === 'MEDIA_IMPORT_FILESYSTEM_UNSAFE'
+  ));
+  assert.equal(quarantineLstatKinds[0], 'bigint');
+  const after = fs.lstatSync(quarantinePath, { bigint: true });
+  assert.equal(after.dev, foreignIdentity.dev);
+  assert.equal(after.ino, foreignIdentity.ino);
+  assert.deepEqual(fs.readdirSync(quarantinePath), []);
+  assert.equal(fs.existsSync(displacedPath), true);
+});
+
 test('simulated Windows setup cleanup retries transient owner tombstone removal and removes the empty quarantine', async (t) => {
   for (const code of ['EPERM', 'EBUSY', 'ENOTEMPTY']) {
     await t.test(code, async (subtest) => {

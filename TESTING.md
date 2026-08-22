@@ -132,9 +132,9 @@ recovery, handoff, final publication и безопасного логирова�
 переносимые подмножества duration/geometry, project transaction и import ownership. POSIX-only
 mode/umask, signal/hard-exit границы и rename открытого файла намеренно не выдаются за
 Windows-проверку. Import ownership отдельно воспроизводит временные `EPERM`/`EBUSY`/`ENOTEMPTY`:
-повтор разрешён только для identity-проверенного пустого tombstone, а чужой или недоказанный
-остаток должен сохраниться. Локально проверяются команды и YAML; hosted Windows run остаётся
-обязательным pre-merge gate.
+повтор разрешён только для identity-проверенных пустых tombstone и quarantine root, а чужой или
+недоказанный остаток должен сохраниться. Локально проверяются команды и YAML; hosted Windows run
+остаётся обязательным pre-merge gate.
 
 Статический guard для `scripts/build.js` запрещает `execSync` и `shell: true`. Опции
 `--frames`, `--max`, `--beatSec`, `--brandLock` и `--reframe` проверяются до ffprobe.
