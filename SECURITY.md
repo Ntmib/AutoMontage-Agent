@@ -76,7 +76,7 @@ it matches the dated section for `reviewedFor` and is not in the future.
     "direct untrusted-image input",
     "next release"
   ],
-  "reviewedAt": "2026-08-20",
+  "reviewedAt": "2026-08-22",
   "reviewedFor": "1.3.0",
   "revisitBy": "2026-09-04"
 }
