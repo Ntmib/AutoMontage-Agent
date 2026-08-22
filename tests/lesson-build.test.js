@@ -206,6 +206,7 @@ test('approved brief prepares ReelScenes with frozen geometry', () => {
   assert.deepEqual(prepared.approvedMedia, {
     brief,
     sourcePath: '/videos/source.mp4',
+    sourceAlias: 'source.mp4',
   });
 });
 
@@ -436,7 +437,15 @@ test('approved lesson props use one temporary media bundle and remove it after r
   const props = JSON.parse(fs.readFileSync(propsPath, 'utf8'));
   assert.match(props.faceSrc, /^\.automontage\/dynamic-[0-9a-f-]+\/media-1\.mp4$/);
   assert.equal(props.audioSrc, props.faceSrc);
-  assert.ok(invocations.some((entry) => entry.args.includes('ReelScenes')));
+  const render = invocations.find((entry) => entry.args.includes('ReelScenes'));
+  assert.ok(render);
+  const publicDirIndex = render.args.indexOf('--public-dir');
+  assert.ok(publicDirIndex > 0);
+  const publicDirectory = render.args[publicDirIndex + 1];
+  assert.equal(path.isAbsolute(publicDirectory), true);
+  assert.equal(publicDirectory.startsWith(`${ROOT}${path.sep}`), false);
+  assert.equal(fs.existsSync(publicDirectory), false);
+  assert.equal(JSON.stringify(props).includes(publicDirectory), false);
   assert.equal(fs.existsSync(path.join(ROOT, 'public', props.faceSrc)), false);
 });
 

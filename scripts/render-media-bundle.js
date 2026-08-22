@@ -1,9 +1,11 @@
 const { createHash, randomUUID } = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const { isCanonicalBrollReference } = require('./lesson/broll-media');
 const { sanitizeNamespace } = require('./public-media');
+const { fsyncDirectoryIfSupported } = require('./filesystem-capabilities');
 
 const COPY_BUFFER_BYTES = 64 * 1024;
 const MAX_CTIME_REPIN_ROUNDS = 3;
@@ -13,6 +15,7 @@ const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.we
 const VIDEO_EXTENSIONS = new Set(['.avi', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.webm']);
 const REMOTE_IMAGE = /^https?:\/\//i;
 const ASSERT_BUNDLE_CURRENT = Symbol('assertBundleCurrent');
+const ASSERT_BUNDLE_AFTER_CALLBACK = Symbol('assertBundleAfterCallback');
 const MACOS_ROOT_ALIASES = new Map([
   ['/etc', '/private/etc'],
   ['/tmp', '/private/tmp'],
@@ -178,34 +181,74 @@ function assertTrustedDirectoryChain(target, fileSystem) {
   };
 }
 
-function ensureLeaseBase(root, fileSystem) {
-  const rootChain = assertTrustedDirectoryChain(root, fileSystem);
-  const resolvedRoot = rootChain.resolved;
-  assertDirectory(resolvedRoot, fileSystem);
-  const publicDirectory = path.join(resolvedRoot, 'public');
-  const publicIdentity = assertDirectory(publicDirectory, fileSystem);
-  const leaseBase = path.join(publicDirectory, '.automontage');
-  let baseStat = lstat(fileSystem, leaseBase);
-  if (!baseStat) {
-    try {
-      fileSystem.mkdirSync(leaseBase, { mode: 0o700 });
-    } catch (error) {
-      if (!error || error.code !== 'EEXIST') throw error;
+function assertPrivateOwnedDirectory(target, fileSystem, expected = null) {
+  const stat = lstat(fileSystem, target);
+  if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) {
+    fail('isolated render directory contains a symbolic link or non-directory');
+  }
+  const identity = directoryIdentity(stat);
+  if (expected && !sameDirectory(expected, identity)) {
+    fail('isolated render directory identity changed');
+  }
+  if (process.platform !== 'win32' && (BigInt(stat.mode) & 0o077n) !== 0n) {
+    fail('isolated render directory is not owner-only');
+  }
+  if (typeof process.getuid === 'function' && BigInt(stat.uid) !== BigInt(process.getuid())) {
+    fail('isolated render directory owner changed');
+  }
+  return identity;
+}
+
+function createIsolatedLeaseBase(fileSystem) {
+  const temporaryChain = assertTrustedDirectoryChain(os.tmpdir(), fileSystem);
+  let isolatedRoot = null;
+  let publicDirectory = null;
+  let leaseBase = null;
+  const created = [];
+
+  function create(target) {
+    temporaryChain.assertCurrent();
+    if (lstat(fileSystem, target)) fail('isolated render directory already exists');
+    fileSystem.mkdirSync(target, { mode: 0o700 });
+    const identity = assertPrivateOwnedDirectory(target, fileSystem);
+    created.push({ target, identity });
+    return identity;
+  }
+
+  try {
+    temporaryChain.assertCurrent();
+    isolatedRoot = fileSystem.mkdtempSync(path.join(temporaryChain.resolved, 'automontage-render-'));
+    const isolatedRootIdentity = assertPrivateOwnedDirectory(isolatedRoot, fileSystem);
+    created.push({ target: isolatedRoot, identity: isolatedRootIdentity });
+    publicDirectory = path.join(isolatedRoot, 'public');
+    leaseBase = path.join(publicDirectory, '.automontage');
+    const publicIdentity = create(publicDirectory);
+    const baseIdentity = create(leaseBase);
+    return {
+      rootChain: temporaryChain,
+      isolatedRoot,
+      isolatedRootIdentity,
+      publicDirectory,
+      publicIdentity,
+      leaseBase,
+      baseIdentity,
+    };
+  } catch (error) {
+    for (let index = created.length - 1; index >= 0; index -= 1) {
+      const record = created[index];
+      try {
+        const current = lstat(fileSystem, record.target);
+        if (!current) continue;
+        if (current.isSymbolicLink() || !current.isDirectory()
+          || !sameDirectory(record.identity, directoryIdentity(current))
+          || fileSystem.readdirSync(record.target).length !== 0) break;
+        fileSystem.rmdirSync(record.target);
+      } catch (_) {
+        break;
+      }
     }
-    baseStat = lstat(fileSystem, leaseBase);
+    throw error;
   }
-  if (!baseStat || baseStat.isSymbolicLink() || !baseStat.isDirectory()) {
-    fail('bundle base contains a symbolic link or non-directory');
-  }
-  assertDirectory(publicDirectory, fileSystem, publicIdentity);
-  rootChain.assertCurrent();
-  return {
-    rootChain,
-    publicDirectory,
-    publicIdentity,
-    leaseBase,
-    baseIdentity: directoryIdentity(baseStat),
-  };
 }
 
 function canonicalSegments(reference) {
@@ -259,7 +302,7 @@ function resolveContainedReference({ storageRoot, reference, fileSystem }) {
   return {
     filePath: candidate,
     guards,
-    assertCurrent() {
+    assertCurrent(expectedFinalIdentity = null) {
       rootChain.assertCurrent();
       for (const guard of guards) {
         const stat = lstat(fileSystem, guard.target);
@@ -268,9 +311,12 @@ function resolveContainedReference({ storageRoot, reference, fileSystem }) {
           fail('media identity changed');
         }
         const currentIdentity = guard.directory ? directoryIdentity(stat) : fileIdentity(stat);
+        const expectedIdentity = guard.directory || !expectedFinalIdentity
+          ? guard.identity
+          : expectedFinalIdentity;
         if (guard.directory
-          ? !sameDirectory(guard.identity, currentIdentity)
-          : !sameFile(guard.identity, currentIdentity)) {
+          ? !sameDirectory(expectedIdentity, currentIdentity)
+          : !sameFile(expectedIdentity, currentIdentity)) {
           fail('media identity changed');
         }
       }
@@ -367,7 +413,7 @@ function openTracked(resolved, fileSystem) {
 }
 
 function assertTrackedCurrent(tracked, fileSystem) {
-  tracked.resolved.assertCurrent();
+  tracked.resolved.assertCurrent(tracked.identity);
   const descriptorStat = fileSystem.fstatSync(tracked.descriptor, { bigint: true });
   const pathStat = lstat(fileSystem, tracked.resolved.filePath);
   if (!descriptorStat.isFile() || !pathStat || pathStat.isSymbolicLink() || !pathStat.isFile()
@@ -516,6 +562,7 @@ function prepareRenderMediaBundle({
   props,
   approvedBrief,
   sourcePath,
+  sourceAlias,
   namespace,
   temporaryId = randomUUID(),
   fileSystem = fs,
@@ -531,6 +578,14 @@ function prepareRenderMediaBundle({
     fail('lesson props scene count does not match the approved brief');
   }
   if (typeof root !== 'string' || typeof sourcePath !== 'string') fail('root and source are required');
+  if (typeof sourceAlias !== 'string' || !sourceAlias
+    || !isCanonicalBrollReference(sourceAlias)) {
+    fail('trusted lesson source alias is required');
+  }
+  extensionForSource(sourceAlias);
+  if (props.faceSrc !== sourceAlias || props.audioSrc !== sourceAlias) {
+    fail('lesson props top-level source alias does not match the trusted source alias');
+  }
   const approvedSource = path.isAbsolute(approvedBrief.source)
     ? path.resolve(approvedBrief.source)
     : path.resolve(root, approvedBrief.source || '');
@@ -539,7 +594,8 @@ function prepareRenderMediaBundle({
 
   const id = safeTemporaryId(temporaryId);
   const safeNamespace = sanitizeNamespace(namespace || 'lesson');
-  const base = ensureLeaseBase(root, fileSystem);
+  assertTrustedDirectoryChain(root, fileSystem).assertCurrent();
+  const base = createIsolatedLeaseBase(fileSystem);
   const directoryName = `${safeNamespace}-${id}`;
   const directory = path.join(base.leaseBase, directoryName);
   let directoryIdentityValue = null;
@@ -552,8 +608,9 @@ function prepareRenderMediaBundle({
 
   function assertOwnedDirectoryCurrent() {
     base.rootChain.assertCurrent();
-    assertDirectory(base.publicDirectory, fileSystem, base.publicIdentity);
-    assertDirectory(base.leaseBase, fileSystem, base.baseIdentity);
+    assertPrivateOwnedDirectory(base.isolatedRoot, fileSystem, base.isolatedRootIdentity);
+    assertPrivateOwnedDirectory(base.publicDirectory, fileSystem, base.publicIdentity);
+    assertPrivateOwnedDirectory(base.leaseBase, fileSystem, base.baseIdentity);
     assertDirectory(directory, fileSystem, directoryIdentityValue);
   }
 
@@ -664,6 +721,53 @@ function prepareRenderMediaBundle({
     fail('bundle file ctime did not stabilize before render');
   }
 
+  function verifyOwnedBundleFileAfterCallback(name, record) {
+    const constants = fileSystem.constants || fs.constants;
+    if (!record.identity || !record.sha256) fail('bundle file verification is incomplete');
+    const filename = path.join(directory, name);
+    let descriptor;
+    try {
+      descriptor = fileSystem.openSync(
+        filename,
+        constants.O_RDONLY | (constants.O_NOFOLLOW || 0),
+      );
+      const descriptorStat = fileSystem.fstatSync(descriptor, { bigint: true });
+      const pathStat = lstat(fileSystem, filename);
+      if (!descriptorStat.isFile() || !pathStat || pathStat.isSymbolicLink()
+        || !pathStat.isFile()
+        || !sameFile(record.identity, fileIdentity(descriptorStat))
+        || !sameFile(record.identity, fileIdentity(pathStat))) {
+        fail('bundle file identity changed during the render callback');
+      }
+      const verified = hashOpenedDescriptor(
+        fileSystem,
+        descriptor,
+        record.identity,
+        'bundle file after render callback',
+      );
+      if (!verified.stable || verified.sha256 !== record.sha256) {
+        fail('bundle file changed during the render callback');
+      }
+      const finalPath = lstat(fileSystem, filename);
+      if (!finalPath || finalPath.isSymbolicLink() || !finalPath.isFile()
+        || !sameFile(record.identity, fileIdentity(finalPath))) {
+        fail('bundle file identity changed during the render callback');
+      }
+    } finally {
+      if (descriptor !== undefined) fileSystem.closeSync(descriptor);
+    }
+  }
+
+  function verifyBundleFilesAfterCallback() {
+    assertOwnedDirectoryCurrent();
+    assertExactOwnedEntries(directory);
+    for (const [name, record] of ownedFiles) {
+      verifyOwnedBundleFileAfterCallback(name, record);
+    }
+    assertOwnedDirectoryCurrent();
+    assertExactOwnedEntries(directory);
+  }
+
   function attemptCleanupContainerCreate() {
     cleanupContainerCreateStatus = 'attempting';
     try {
@@ -746,34 +850,36 @@ function prepareRenderMediaBundle({
   function cleanup() {
     if (cleanupPhase === 'cleaned') return;
     base.rootChain.assertCurrent();
-    assertDirectory(base.publicDirectory, fileSystem, base.publicIdentity);
-    assertDirectory(base.leaseBase, fileSystem, base.baseIdentity);
+    assertPrivateOwnedDirectory(base.isolatedRoot, fileSystem, base.isolatedRootIdentity);
+    assertPrivateOwnedDirectory(base.publicDirectory, fileSystem, base.publicIdentity);
+    assertPrivateOwnedDirectory(base.leaseBase, fileSystem, base.baseIdentity);
 
     if (cleanupPhase === 'original') {
       const currentDirectory = lstat(fileSystem, directory);
       if (!currentDirectory) {
-        cleanupPhase = 'cleaned';
-        return;
+        cleanupPhase = 'bundle-cleaned';
       }
-      if (currentDirectory.isSymbolicLink() || !currentDirectory.isDirectory()
-        || !sameDirectory(directoryIdentityValue, directoryIdentity(currentDirectory))) {
+      if (currentDirectory && (currentDirectory.isSymbolicLink() || !currentDirectory.isDirectory()
+        || !sameDirectory(directoryIdentityValue, directoryIdentity(currentDirectory)))) {
         fail('bundle directory was replaced; cleanup refused');
       }
-      assertExactOwnedEntries(directory);
+      if (currentDirectory) assertExactOwnedEntries(directory);
 
-      const cleanupToken = safeTemporaryId(randomUUID());
-      cleanupContainer = path.join(
-        base.leaseBase,
-        `.${directoryName}.cleanup-${cleanupToken}`,
-      );
-      cleanupContainerCreateStatus = 'unattempted';
-      cleanupPhase = 'container-create-uncertain';
-      const existingContainer = lstat(fileSystem, cleanupContainer);
-      if (existingContainer) {
-        cleanupContainerCreateStatus = 'foreign';
-        fail('cleanup container candidate already exists; cleanup refused');
+      if (currentDirectory) {
+        const cleanupToken = safeTemporaryId(randomUUID());
+        cleanupContainer = path.join(
+          base.leaseBase,
+          `.${directoryName}.cleanup-${cleanupToken}`,
+        );
+        cleanupContainerCreateStatus = 'unattempted';
+        cleanupPhase = 'container-create-uncertain';
+        const existingContainer = lstat(fileSystem, cleanupContainer);
+        if (existingContainer) {
+          cleanupContainerCreateStatus = 'foreign';
+          fail('cleanup container candidate already exists; cleanup refused');
+        }
+        attemptCleanupContainerCreate();
       }
-      attemptCleanupContainerCreate();
     }
 
     if (cleanupPhase === 'container-create-uncertain') {
@@ -878,6 +984,32 @@ function prepareRenderMediaBundle({
         }
         fileSystem.rmdirSync(cleanupContainer);
       }
+      cleanupPhase = 'bundle-cleaned';
+    }
+
+    if (cleanupPhase === 'bundle-cleaned') {
+      const hierarchy = [
+        [base.leaseBase, base.baseIdentity, 'bundle base'],
+        [base.publicDirectory, base.publicIdentity, 'isolated public directory'],
+        [base.isolatedRoot, base.isolatedRootIdentity, 'isolated render root'],
+      ];
+      for (const [target, identity, label] of hierarchy) {
+        const current = lstat(fileSystem, target);
+        if (!current) continue;
+        if (current.isSymbolicLink() || !current.isDirectory()
+          || !sameDirectory(identity, directoryIdentity(current))) {
+          fail(`${label} identity changed; cleanup refused`);
+        }
+        if (fileSystem.readdirSync(target).length !== 0) {
+          fail(`${label} contains unexpected files; cleanup refused`);
+        }
+        try {
+          fileSystem.rmdirSync(target);
+        } catch (error) {
+          if (lstat(fileSystem, target)) throw error;
+        }
+      }
+      base.rootChain.assertCurrent();
       cleanupPhase = 'cleaned';
     }
   }
@@ -904,11 +1036,29 @@ function prepareRenderMediaBundle({
         const key = `${tracked.identity.dev}:${tracked.identity.ino}`;
         const existing = copiedByIdentity.get(key);
         if (existing) {
-          assertTrackedCurrent(tracked, fileSystem);
-          assertOwnedDirectoryCurrent();
           if (existing.extension !== extension || existing.mediaRole !== mediaRole) {
             fail('inode dedup has an incompatible media role or extension');
           }
+          if (sameFile(existing.sourceIdentity, tracked.identity)) {
+            assertTrackedCurrent(tracked, fileSystem);
+          } else {
+            if (!sameFileExceptCtime(existing.sourceIdentity, tracked.identity)) {
+              fail('inode dedup source identity changed');
+            }
+            const verified = hashOpenedDescriptorStable(
+              fileSystem,
+              tracked.descriptor,
+              tracked.identity,
+              'deduplicated media source',
+            );
+            if (verified.sha256 !== existing.sha256) {
+              fail('inode dedup source hash changed');
+            }
+            tracked.identity = verified.identity;
+            assertTrackedCurrent(tracked, fileSystem);
+            existing.sourceIdentity = verified.identity;
+          }
+          assertOwnedDirectoryCurrent();
           if (expectedSha && existing.sha256 !== expectedSha) fail('render media hash mismatch');
           return existing.publicPath;
         }
@@ -941,6 +1091,7 @@ function prepareRenderMediaBundle({
           sha256: copied.sha256,
           extension,
           mediaRole,
+          sourceIdentity: tracked.identity,
         });
         return publicPath;
       } finally {
@@ -954,7 +1105,6 @@ function prepareRenderMediaBundle({
       null,
       'video',
     );
-    const originalFaceSrc = props.faceSrc;
     clonedProps.faceSrc = sourcePublicPath;
     clonedProps.audioSrc = sourcePublicPath;
 
@@ -973,7 +1123,7 @@ function prepareRenderMediaBundle({
         fail('lesson props scene face reference does not match the approved brief');
       }
       if (approvedHasFace) {
-        if (approvedScene.faceSrc === originalFaceSrc) {
+        if (approvedScene.faceSrc === sourceAlias) {
           clonedScene.faceSrc = sourcePublicPath;
         } else {
           const customExtension = extensionForCustomFace(approvedScene.faceSrc);
@@ -1038,16 +1188,16 @@ function prepareRenderMediaBundle({
     return {
       props: clonedProps,
       directory,
+      publicDirectory: base.publicDirectory,
       cleanup,
       [ASSERT_BUNDLE_CURRENT]: verifyBundleFilesCurrent,
+      [ASSERT_BUNDLE_AFTER_CALLBACK]: verifyBundleFilesAfterCallback,
     };
   } catch (error) {
-    if (directoryIdentityValue) {
-      try {
-        cleanup();
-      } catch (cleanupError) {
-        attachCleanupDiagnostic(error, cleanupError);
-      }
+    try {
+      cleanup();
+    } catch (cleanupError) {
+      attachCleanupDiagnostic(error, cleanupError);
     }
     throw error;
   }
@@ -1055,13 +1205,14 @@ function prepareRenderMediaBundle({
 
 function withRenderMediaBundle(options, operation) {
   if (typeof operation !== 'function') fail('operation must be a function');
+  if (arguments.length > 2) fail('pre-render prepare operation is unsupported');
   const lease = prepareRenderMediaBundle(options);
   let operationError = null;
   let operationFailed = false;
   try {
     lease[ASSERT_BUNDLE_CURRENT]();
     const result = operation(lease);
-    lease[ASSERT_BUNDLE_CURRENT]();
+    lease[ASSERT_BUNDLE_AFTER_CALLBACK]();
     return result;
   } catch (error) {
     operationError = error;

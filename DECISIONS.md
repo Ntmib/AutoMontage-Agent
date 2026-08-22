@@ -370,8 +370,20 @@ scene type и точный исходный `faceSrc`, после чего ра�
 или repository-public video. Он проходит существующие trusted-chain, no-follow, identity,
 bounded copy, SHA-256, File Provider repin и owned cleanup barriers и получает одноразовое имя.
 
-Точное совпадение с top-level source alias переиспользует main snapshot. Другой inode
-deduplicate-ится только при совместимых video role и extension. Top-level `audioSrc` всегда
-указывает на main source, а custom `OffthreadVideo` остаётся muted и использует глобальный
-`sourceStartFrame`. Отклонены live pathname, отдельное custom audio и новый resolver: они либо
-возвращали race/path leak, либо дублировали уже проверенный security boundary.
+Source alias не выводится из входных props: канонический lesson builder явно передаёт
+`source.mp4`, а top-level `faceSrc`/`audioSrc` обязаны точно ему соответствовать. Только exact
+scene match с этим trusted alias переиспользует main snapshot. Same-inode dedup хранит полную
+identity первого source и SHA-256: exact reuse разрешён, ctime-only drift требует стабильного
+полного rehash, остальные изменения отклоняются. Совместимыми остаются только video role и
+одинаковое extension.
+
+Repository находится под macOS File Provider, а браузерное чтение его `public` само меняет
+`ctime`, поэтому lesson snapshots обслуживаются из owner-only системного temp через официальный
+Remotion `--public-dir`. В этот каталог попадает только утверждённый owned bundle: весь repository
+`public` и ignored/private media не копируются. Baseline фиксируется до единственного реального
+render, а после всего callback выполняется strict identity/hash check без ctime re-pin. Поэтому
+mutation + byte/mtime restore во время Remotion остаётся заметной, а номинальное чтение больше не
+вызывает File Provider drift; второго output или manifest/history entry нет. Top-level
+`audioSrc` всегда указывает на main source, custom `OffthreadVideo` muted и использует глобальный
+`sourceStartFrame`. Отклонены live pathname, отдельное custom audio, post-render baseline и новый
+resolver: они возвращали бы race/path leak или ослабляли уже проверенный security boundary.

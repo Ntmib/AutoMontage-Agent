@@ -142,22 +142,25 @@ realTest('real custom face render keeps global video timing and only the main so
     PATH: tools ? `${tools}${path.delimiter}${process.env.PATH || ''}` : process.env.PATH,
   };
 
-  const render = checked(process.execPath, [
-    path.join(ROOT, 'scripts', 'cli.js'),
-    workspace.sourcePath,
-    '--template', 'lesson',
-    '--brief', path.relative(workspace.dir, briefPath),
-    '--project-dir', workspace.dir,
-    '--version-label', 'custom-face-real',
-  ], {
-    cwd: ROOT, env: environment, timeout: 220_000, maxBuffer: 32 * 1024 * 1024,
-  });
-  assert.equal(`${render.stdout}${render.stderr}`.includes(projectCustom), false);
-  assert.deepEqual(fs.readFileSync(briefPath), approvedBytes);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const render = checked(process.execPath, [
+      path.join(ROOT, 'scripts', 'cli.js'),
+      workspace.sourcePath,
+      '--template', 'lesson',
+      '--brief', path.relative(workspace.dir, briefPath),
+      '--project-dir', workspace.dir,
+      '--version-label', `custom-face-real-${attempt}`,
+    ], {
+      cwd: ROOT, env: environment, timeout: 220_000, maxBuffer: 32 * 1024 * 1024,
+    });
+    assert.equal(`${render.stdout}${render.stderr}`.includes(projectCustom), false);
+    assert.deepEqual(fs.readFileSync(briefPath), approvedBytes);
+  }
 
   const manifest = readProjectManifest(workspace.dir);
-  const completed = manifest.renders.find((entry) => entry.status === 'complete');
-  assert.ok(completed);
+  const completedRenders = manifest.renders.filter((entry) => entry.status === 'complete');
+  assert.equal(completedRenders.length, 3);
+  const completed = completedRenders.at(-1);
   const final = path.join(workspace.dir, completed.dir, 'final.mp4');
   const props = JSON.parse(fs.readFileSync(path.join(workspace.dir, completed.dir, 'props.json')));
   assert.equal(props.audioSrc, props.faceSrc);

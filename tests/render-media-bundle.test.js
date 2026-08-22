@@ -12,6 +12,29 @@ const {
 
 const FIRST_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_ID = '22222222-2222-4222-8222-222222222222';
+const trackedRenderRoots = new Map();
+const trackedFs = {
+  ...fs,
+  mkdtempSync(prefix, options) {
+    const created = fs.mkdtempSync(prefix, options);
+    if (path.basename(prefix) === 'automontage-render-') {
+      const stat = fs.lstatSync(created, { bigint: true });
+      trackedRenderRoots.set(created, { dev: stat.dev, ino: stat.ino });
+    }
+    return created;
+  },
+};
+
+test.after(() => {
+  for (const [target, identity] of trackedRenderRoots) {
+    const stat = fs.lstatSync(target, { bigint: true, throwIfNoEntry: false });
+    if (stat && !stat.isSymbolicLink() && stat.isDirectory()
+      && stat.dev === identity.dev && stat.ino === identity.ino
+      && path.basename(target).startsWith('automontage-render-')) {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  }
+});
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
@@ -52,8 +75,10 @@ function bundleInput(fixture, scenes, propsScenes = scenes) {
     props,
     approvedBrief,
     sourcePath: fixture.sourcePath,
+    sourceAlias: 'source.mp4',
     namespace: 'lesson demo',
     temporaryId: FIRST_ID,
+    fileSystem: trackedFs,
   };
 }
 
@@ -92,8 +117,7 @@ test('one bundle snapshots source, legacy image, and structured image/video with
   const lease = prepareRenderMediaBundle(input);
 
   assert.equal(lease.directory, path.join(
-    fixture.root,
-    'public',
+    lease.publicDirectory,
     '.automontage',
     `lesson-demo-${FIRST_ID}`,
   ));
@@ -206,6 +230,232 @@ test('custom face hard-link with a different extension fails instead of reusing 
     invoked = true;
   }), /incompatible|extension|role/i);
   assert.equal(invoked, false);
+});
+
+test('trusted source alias rejects crafted top-level props before the render callback', (t) => {
+  const fixture = makeFixture(t);
+  const reference = 'assets/faces/custom.mp4';
+  writeFile(path.join(fixture.workspace.dir, ...reference.split('/')), 'custom-face');
+  const input = bundleInput(fixture, [
+    { scene: 'fullscreen', faceSrc: reference },
+  ]);
+  input.props.faceSrc = reference;
+  input.props.audioSrc = reference;
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle(input, () => {
+    invoked = true;
+  }), /source alias|top-level|lesson props/i);
+  assert.equal(invoked, false);
+});
+
+test('render bundle requires the trusted lesson source alias before the render callback', (t) => {
+  const fixture = makeFixture(t);
+  const input = bundleInput(fixture, []);
+  delete input.sourceAlias;
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle(input, () => {
+    invoked = true;
+  }), /source alias/i);
+  assert.equal(invoked, false);
+});
+
+test('same-inode dedup rejects ctime-only projected byte drift after the first snapshot', (t) => {
+  const fixture = makeFixture(t);
+  const reference = 'assets/faces/source.mp4';
+  const customPath = path.join(fixture.workspace.dir, ...reference.split('/'));
+  fs.mkdirSync(path.dirname(customPath), { recursive: true });
+  fs.linkSync(fixture.sourcePath, customPath);
+  const descriptors = new Map();
+  let baselineIdentity = null;
+  let mutated = false;
+  const isSourcePath = (filename) => filename === fixture.sourcePath || filename === customPath;
+  const projectSourceIdentity = (stat) => {
+    if (!mutated || !baselineIdentity) return stat;
+    const projected = Object.create(stat);
+    for (const key of ['dev', 'ino', 'size', 'mtimeNs', 'mode', 'nlink']) {
+      Object.defineProperty(projected, key, {
+        configurable: true, enumerable: true, value: baselineIdentity[key],
+      });
+    }
+    Object.defineProperty(projected, 'ctimeNs', {
+      configurable: true, enumerable: true, value: baselineIdentity.ctimeNs + 1n,
+    });
+    return projected;
+  };
+  const adversarialFs = {
+    ...trackedFs,
+    openSync(filename, flags, mode) {
+      const descriptor = fs.openSync(filename, flags, mode);
+      descriptors.set(descriptor, filename);
+      return descriptor;
+    },
+    closeSync(descriptor) {
+      const filename = descriptors.get(descriptor);
+      const result = fs.closeSync(descriptor);
+      descriptors.delete(descriptor);
+      if (!mutated && typeof filename === 'string'
+        && /[\\/]\.automontage[\\/].*[\\/]media-1\.mp4$/.test(filename)) {
+        baselineIdentity = fs.lstatSync(fixture.sourcePath, { bigint: true });
+        const changed = fs.readFileSync(fixture.sourcePath);
+        changed[0] ^= 0xff;
+        fs.writeFileSync(fixture.sourcePath, changed);
+        mutated = true;
+      }
+      return result;
+    },
+    fstatSync(descriptor, options) {
+      const stat = fs.fstatSync(descriptor, options);
+      return isSourcePath(descriptors.get(descriptor)) ? projectSourceIdentity(stat) : stat;
+    },
+    lstatSync(filename, options) {
+      const stat = fs.lstatSync(filename, options);
+      return isSourcePath(filename) ? projectSourceIdentity(stat) : stat;
+    },
+  };
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle({
+    ...bundleInput(fixture, [{ scene: 'fullscreen', faceSrc: reference }]),
+    fileSystem: adversarialFs,
+  }, () => {
+    invoked = true;
+  }), /dedup|identity|hash|changed/i);
+  assert.equal(mutated, true);
+  assert.equal(invoked, false);
+});
+
+test('bundle mutation restored during the callback still fails closed', (t) => {
+  const fixture = makeFixture(t);
+  const descriptors = new Map();
+  let bundlePath = null;
+  let baselineIdentity = null;
+  let callbackFinished = false;
+  const isBundlePath = (filename) => callbackFinished && filename === bundlePath;
+  const projectBundleIdentity = (stat) => {
+    if (!baselineIdentity) return stat;
+    const projected = Object.create(stat);
+    for (const key of ['dev', 'ino', 'size', 'mtimeNs', 'mode', 'nlink']) {
+      Object.defineProperty(projected, key, {
+        configurable: true, enumerable: true, value: baselineIdentity[key],
+      });
+    }
+    Object.defineProperty(projected, 'ctimeNs', {
+      configurable: true, enumerable: true, value: baselineIdentity.ctimeNs + 1n,
+    });
+    return projected;
+  };
+  const adversarialFs = {
+    ...trackedFs,
+    openSync(filename, flags, mode) {
+      const descriptor = fs.openSync(filename, flags, mode);
+      descriptors.set(descriptor, filename);
+      return descriptor;
+    },
+    closeSync(descriptor) {
+      descriptors.delete(descriptor);
+      return fs.closeSync(descriptor);
+    },
+    fstatSync(descriptor, options) {
+      const stat = fs.fstatSync(descriptor, options);
+      return isBundlePath(descriptors.get(descriptor)) ? projectBundleIdentity(stat) : stat;
+    },
+    lstatSync(filename, options) {
+      const stat = fs.lstatSync(filename, options);
+      return isBundlePath(filename) ? projectBundleIdentity(stat) : stat;
+    },
+  };
+  let invoked = false;
+
+  assert.throws(() => withRenderMediaBundle({
+    ...bundleInput(fixture, []),
+    fileSystem: adversarialFs,
+  }, (lease) => {
+    invoked = true;
+    bundlePath = path.join(lease.directory, 'media-1.mp4');
+    baselineIdentity = fs.lstatSync(bundlePath, { bigint: true });
+    const original = fs.readFileSync(bundlePath);
+    const changed = Buffer.from(original);
+    changed[0] ^= 0xff;
+    fs.writeFileSync(bundlePath, changed);
+    fs.writeFileSync(bundlePath, original);
+    callbackFinished = true;
+  }), /callback|identity|ctime|changed/i);
+  assert.equal(invoked, true);
+  assert.equal(fs.existsSync(path.join(
+    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
+  )), false);
+});
+
+test('an unguarded pre-render callback cannot mutate and restore a bundle before its baseline', (t) => {
+  const fixture = makeFixture(t);
+  let prepareInvoked = false;
+  let renderInvoked = false;
+
+  assert.throws(() => withRenderMediaBundle(
+    bundleInput(fixture, []),
+    () => {
+      renderInvoked = true;
+      return 'rendered';
+    },
+    (lease) => {
+      prepareInvoked = true;
+      const bundlePath = path.join(lease.directory, 'media-1.mp4');
+      const baseline = fs.statSync(bundlePath, { bigint: true });
+      const original = fs.readFileSync(bundlePath);
+      const changed = Buffer.from(original);
+      changed[0] ^= 0xff;
+      fs.writeFileSync(bundlePath, changed);
+      fs.writeFileSync(bundlePath, original);
+      fs.utimesSync(
+        bundlePath,
+        Number(baseline.atimeNs) / 1e9,
+        Number(baseline.mtimeNs) / 1e9,
+      );
+    },
+  ), /pre-render|prepare operation|callback boundary|unsupported/i);
+  assert.equal(prepareInvoked, false);
+  assert.equal(renderInvoked, false);
+});
+
+test('render bundles use an owner-only isolated public directory outside the repository', (t) => {
+  const fixture = makeFixture(t);
+  let publicDirectory;
+  let bundleDirectory;
+
+  assert.equal(withRenderMediaBundle(bundleInput(fixture, []), (lease) => {
+    publicDirectory = lease.publicDirectory;
+    bundleDirectory = lease.directory;
+    assert.equal(path.isAbsolute(publicDirectory), true);
+    assert.equal(publicDirectory.startsWith(`${fixture.root}${path.sep}`), false);
+    assert.equal(bundleDirectory.startsWith(`${publicDirectory}${path.sep}`), true);
+    assert.equal(fs.lstatSync(publicDirectory).mode & 0o077, 0);
+    return 'rendered';
+  }), 'rendered');
+
+  assert.equal(fs.existsSync(bundleDirectory), false);
+  assert.equal(fs.existsSync(publicDirectory), false);
+  assert.equal(fs.existsSync(path.join(fixture.root, 'public', '.automontage')), false);
+});
+
+test('isolated public cleanup refuses a foreign replacement and preserves its bytes', (t) => {
+  const fixture = makeFixture(t);
+  const lease = prepareRenderMediaBundle(bundleInput(fixture, []));
+  const ownedPublic = `${lease.publicDirectory}.owned`;
+  fs.renameSync(lease.publicDirectory, ownedPublic);
+  fs.mkdirSync(lease.publicDirectory, { mode: 0o700 });
+  const foreign = path.join(lease.publicDirectory, 'foreign.txt');
+  fs.writeFileSync(foreign, 'foreign-must-survive');
+  t.after(() => {
+    fs.rmSync(path.dirname(lease.publicDirectory), { recursive: true, force: true });
+  });
+
+  assert.throws(() => lease.cleanup(), /directory identity changed|cleanup refused/i);
+  assert.equal(fs.readFileSync(foreign, 'utf8'), 'foreign-must-survive');
+  assert.equal(fs.readFileSync(path.join(
+    ownedPublic, '.automontage', `lesson-demo-${FIRST_ID}`, 'media-1.mp4',
+  ), 'utf8'), 'speaker-bytes');
 });
 
 test('approved brief is authoritative for every scene custom face reference and type', async (t) => {
@@ -325,7 +575,7 @@ test('custom face source replacement during its bounded copy aborts and cleans o
   const descriptors = new Map();
   let replaced = false;
   const racingFs = {
-    ...fs,
+    ...trackedFs,
     openSync(filename, flags, mode) {
       const descriptor = fs.openSync(filename, flags, mode);
       descriptors.set(descriptor, filename);
@@ -391,7 +641,7 @@ test('custom bundle append and overwrite after copy abort before the callback', 
       const isCustomBundle = (filename) => typeof filename === 'string'
         && /[\\/]\.automontage[\\/].*[\\/]media-2\.mp4$/.test(filename);
       const mutatingFs = {
-        ...fs,
+        ...trackedFs,
         openSync(filename, flags, mode) {
           const descriptor = fs.openSync(filename, flags, mode);
           descriptors.set(descriptor, filename);
@@ -444,7 +694,7 @@ test('custom bundle ctime drift during hash is accepted only after a complete st
     return proxy;
   };
   const fileProviderFs = {
-    ...fs,
+    ...trackedFs,
     openSync(filename, flags, mode) {
       const descriptor = fs.openSync(filename, flags, mode);
       descriptors.set(descriptor, filename);
@@ -598,7 +848,7 @@ test('copy uses no-follow descriptors, bounded reads, and rejects a changed sour
   const reads = [];
   let replaced = false;
   const racingFs = {
-    ...fs,
+    ...trackedFs,
     openSync(filename, flags, mode) {
       opens.push({ filename, flags });
       return fs.openSync(filename, flags, mode);
@@ -630,13 +880,19 @@ test('copy uses no-follow descriptors, bounded reads, and rejects a changed sour
 
 test('bundle aborts if its directory is replaced while a destination is opened', (t) => {
   const fixture = makeFixture(t);
-  const bundleDirectory = path.join(
-    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
-  );
-  const movedDirectory = `${bundleDirectory}.owned`;
+  let bundleDirectory = null;
+  let movedDirectory = null;
   let replaced = false;
   const racingFs = {
-    ...fs,
+    ...trackedFs,
+    mkdirSync(target, options) {
+      const result = fs.mkdirSync(target, options);
+      if (path.basename(target) === `lesson-demo-${FIRST_ID}`) {
+        bundleDirectory = target;
+        movedDirectory = `${target}.owned`;
+      }
+      return result;
+    },
     openSync(filename, flags, mode) {
       if (!replaced && path.dirname(filename) === bundleDirectory
         && (flags & fs.constants.O_CREAT) !== 0) {
@@ -683,7 +939,7 @@ test('prepare failure removes only its owned bundle and preserves an unrelated l
   writeFile(path.join(unrelated, 'keep.txt'), 'keep');
   let writes = 0;
   const failingFs = {
-    ...fs,
+    ...trackedFs,
     writeSync(...args) {
       writes += 1;
       if (writes > 1) throw new Error('simulated copy failure');
@@ -753,26 +1009,28 @@ test('cleanup refuses replaced directories and never deletes their contents', (t
   assert.equal(fs.readFileSync(path.join(lease.directory, 'unrelated.txt'), 'utf8'), 'unrelated');
 });
 
-test('a colliding exclusive bundle id cannot remove the first lease', (t) => {
+test('the same public alias remains isolated across independent render roots', (t) => {
   const fixture = makeFixture(t);
   const input = bundleInput(fixture, []);
   const first = prepareRenderMediaBundle(input);
+  const second = prepareRenderMediaBundle(input);
 
-  assert.throws(() => prepareRenderMediaBundle(input), /exist|exclusive|collision/i);
+  assert.notEqual(first.publicDirectory, second.publicDirectory);
+  assert.equal(first.props.faceSrc, second.props.faceSrc);
   assert.equal(fs.readFileSync(path.join(first.directory, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
   first.cleanup();
+  assert.equal(fs.readFileSync(path.join(second.directory, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
+  second.cleanup();
 });
 
 test('cleanup claims its owned directory before an original-path replacement and never recursively removes foreign data', (t) => {
   const fixture = makeFixture(t);
-  const bundleDirectory = path.join(
-    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
-  );
-  const movedByOldCleanup = `${bundleDirectory}.old-owned`;
+  let bundleDirectory = null;
+  let movedByOldCleanup = null;
   let injected = false;
   let recursiveRemovalCalls = 0;
   const racingFs = {
-    ...fs,
+    ...trackedFs,
     renameSync(source, destination) {
       const result = fs.renameSync(source, destination);
       if (!injected && source === bundleDirectory && destination.includes('.cleanup-')) {
@@ -797,8 +1055,10 @@ test('cleanup claims its owned directory before an original-path replacement and
     ...bundleInput(fixture, []),
     fileSystem: racingFs,
   });
+  bundleDirectory = lease.directory;
+  movedByOldCleanup = `${bundleDirectory}.old-owned`;
 
-  lease.cleanup();
+  assert.throws(() => lease.cleanup(), /unexpected files|cleanup refused/i);
 
   assert.equal(injected, true);
   assert.equal(recursiveRemovalCalls, 0);
@@ -812,13 +1072,11 @@ test('cleanup claims its owned directory before an original-path replacement and
 
 test('cleanup claim race refuses a pre-rename foreign swap without deleting either directory', (t) => {
   const fixture = makeFixture(t);
-  const bundleDirectory = path.join(
-    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
-  );
-  const movedOwned = `${bundleDirectory}.owned-by-lease`;
+  let bundleDirectory = null;
+  let movedOwned = null;
   let injected = false;
   const racingFs = {
-    ...fs,
+    ...trackedFs,
     renameSync(source, destination) {
       if (!injected && source === bundleDirectory && destination.includes('.cleanup-')) {
         injected = true;
@@ -833,6 +1091,8 @@ test('cleanup claim race refuses a pre-rename foreign swap without deleting eith
     ...bundleInput(fixture, []),
     fileSystem: racingFs,
   });
+  bundleDirectory = lease.directory;
+  movedOwned = `${bundleDirectory}.owned-by-lease`;
 
   assert.throws(() => lease.cleanup(), /replaced directory|claim/i);
 
@@ -847,13 +1107,11 @@ test('cleanup claim race refuses a pre-rename foreign swap without deleting eith
 
 test('cleanup resumes after a transient post-rename identity read and reclaims its claimed bundle', (t) => {
   const fixture = makeFixture(t);
-  const bundleDirectory = path.join(
-    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
-  );
+  let bundleDirectory = null;
   let claimedDirectory = null;
   let failClaimRead = false;
   const transientFs = {
-    ...fs,
+    ...trackedFs,
     renameSync(source, destination) {
       const result = fs.renameSync(source, destination);
       if (source === bundleDirectory && destination.includes('.cleanup-')) {
@@ -876,26 +1134,22 @@ test('cleanup resumes after a transient post-rename identity read and reclaims i
     ...bundleInput(fixture, []),
     fileSystem: transientFs,
   });
+  bundleDirectory = lease.directory;
 
   assert.throws(() => lease.cleanup(), /transient post-rename/);
   assert.equal(fs.readFileSync(path.join(claimedDirectory, 'media-1.mp4'), 'utf8'), 'speaker-bytes');
   assert.doesNotThrow(() => lease.cleanup());
   assert.equal(fs.existsSync(claimedDirectory), false);
-  assert.deepEqual(
-    fs.readdirSync(path.dirname(bundleDirectory)).filter((name) => name.includes('.cleanup-')),
-    [],
-  );
+  assert.equal(fs.existsSync(path.dirname(bundleDirectory)), false);
 });
 
 test('cleanup retry retains a foreign directory substituted after an unverified claim', (t) => {
   const fixture = makeFixture(t);
-  const bundleDirectory = path.join(
-    fixture.root, 'public', '.automontage', `lesson-demo-${FIRST_ID}`,
-  );
+  let bundleDirectory = null;
   let claimedDirectory = null;
   let failClaimRead = false;
   const transientFs = {
-    ...fs,
+    ...trackedFs,
     renameSync(source, destination) {
       const result = fs.renameSync(source, destination);
       if (source === bundleDirectory && destination.includes('.cleanup-')) {
@@ -918,6 +1172,7 @@ test('cleanup retry retains a foreign directory substituted after an unverified 
     ...bundleInput(fixture, []),
     fileSystem: transientFs,
   });
+  bundleDirectory = lease.directory;
 
   assert.throws(() => lease.cleanup(), /transient post-rename/);
   const movedOwned = `${claimedDirectory}.owned`;
@@ -937,7 +1192,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     let cleanupMkdirCalls = 0;
     let failFirstLstat = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
         cleanupMkdirCalls += 1;
@@ -966,10 +1221,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     assert.doesNotThrow(() => lease.cleanup());
     assert.equal(cleanupMkdirCalls, 1);
     assert.equal(fs.existsSync(cleanupContainer), false);
-    assert.deepEqual(
-      fs.readdirSync(path.dirname(cleanupContainer)).filter((name) => name.includes('.cleanup-')),
-      [],
-    );
+    assert.equal(fs.existsSync(path.dirname(cleanupContainer)), false);
   });
 
   await t.test('mkdir wrapper throwing after creation retains the unproven candidate', () => {
@@ -977,7 +1229,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     let cleanupContainer = null;
     let cleanupMkdirCalls = 0;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
         cleanupMkdirCalls += 1;
@@ -1008,7 +1260,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     const attemptedContainers = [];
     let failFirstMkdir = true;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
         attemptedContainers.push(target);
@@ -1039,7 +1291,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     let failFirstMkdir = true;
     let cleanupMkdirCalls = 0;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
         cleanupMkdirCalls += 1;
@@ -1071,7 +1323,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     let cleanupContainer = null;
     let failFirstLstat = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
         cleanupContainer = target;
@@ -1106,11 +1358,11 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
 
   await t.test('captured candidate identity replacement is retained', () => {
     const fixture = makeFixture(t);
-    const leaseBase = path.join(fixture.root, 'public', '.automontage');
+    let leaseBase = null;
     let cleanupContainer = null;
     let failBaseCheck = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
         cleanupContainer = target;
@@ -1132,6 +1384,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
       ...bundleInput(fixture, []),
       fileSystem: transientFs,
     });
+    leaseBase = path.dirname(lease.directory);
 
     assert.throws(() => lease.cleanup(), /transient post-capture base/);
     const movedOwned = `${cleanupContainer}.owned`;
@@ -1148,7 +1401,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     let cleanupContainer = null;
     let failEmptyCheck = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
         cleanupContainer = target;
@@ -1186,7 +1439,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     let cleanupContainer = null;
     let failFirstLstat = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-')) return fs.mkdirSync(target, options);
         cleanupContainer = target;
@@ -1221,7 +1474,7 @@ test('cleanup reconciles one uncertain tombstone create without choosing a secon
     let cleanupContainer = null;
     let injected = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       mkdirSync(target, options) {
         if (!path.basename(target).includes('.cleanup-') || injected) {
           return fs.mkdirSync(target, options);
@@ -1250,7 +1503,7 @@ test('cleanup retries partial unlink and tombstone rmdir failures without leakin
     let unlinkCalls = 0;
     let failed = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       unlinkSync(target) {
         unlinkCalls += 1;
         if (!failed && unlinkCalls === 2) {
@@ -1276,7 +1529,7 @@ test('cleanup retries partial unlink and tombstone rmdir failures without leakin
     const fixture = makeFixture(t);
     let failed = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       unlinkSync(target) {
         const result = fs.unlinkSync(target);
         if (!failed) {
@@ -1302,7 +1555,7 @@ test('cleanup retries partial unlink and tombstone rmdir failures without leakin
     const fixture = makeFixture(t);
     let failed = false;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       rmdirSync(target) {
         const result = fs.rmdirSync(target);
         if (!failed && path.basename(target) === 'bundle') {
@@ -1329,7 +1582,7 @@ test('cleanup retries partial unlink and tombstone rmdir failures without leakin
     let failed = false;
     let cleanupContainer = null;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       rmdirSync(target) {
         if (!failed && path.basename(target).includes('.cleanup-')) {
           failed = true;
@@ -1357,7 +1610,7 @@ test('cleanup retries partial unlink and tombstone rmdir failures without leakin
     let failed = false;
     let cleanupContainer = null;
     const transientFs = {
-      ...fs,
+      ...trackedFs,
       rmdirSync(target) {
         const result = fs.rmdirSync(target);
         if (!failed && path.basename(target).includes('.cleanup-')) {
@@ -1410,7 +1663,7 @@ test('ctime-only File Provider drift is re-pinned only after a full bundle hash 
         return shifted;
       };
       const fileProviderFs = {
-        ...fs,
+        ...trackedFs,
         openSync(filename, flags, mode) {
           const descriptor = fs.openSync(filename, flags, mode);
           descriptors.set(descriptor, filename);
@@ -1495,7 +1748,7 @@ test('ctime-only File Provider drift is re-pinned only after a full bundle hash 
         return shifted;
       };
       const unstableFileProviderFs = {
-        ...fs,
+        ...trackedFs,
         openSync(filename, flags, mode) {
           const descriptor = fs.openSync(filename, flags, mode);
           descriptors.set(descriptor, filename);
@@ -1575,7 +1828,7 @@ test('ctime re-pin rejects changed bytes even when every non-ctime field is proj
     return projected;
   };
   const adversarialFs = {
-    ...fs,
+    ...trackedFs,
     openSync(filename, flags, mode) {
       const descriptor = fs.openSync(filename, flags, mode);
       descriptors.set(descriptor, filename);
@@ -1642,7 +1895,7 @@ test('ctime re-pin rejects a same-size mutation after the verified bytes were re
     return projected;
   };
   const adversarialFs = {
-    ...fs,
+    ...trackedFs,
     openSync(filename, flags, mode) {
       const descriptor = fs.openSync(filename, flags, mode);
       descriptors.set(descriptor, filename);
@@ -1708,7 +1961,7 @@ test('same-inode destination mutation after fsync or lease return aborts before 
         let destinationCloses = 0;
         let mutated = false;
         const mutatingFs = {
-          ...fs,
+          ...trackedFs,
           openSync(filename, flags, mode) {
             const descriptor = fs.openSync(filename, flags, mode);
             descriptors.set(descriptor, filename);
@@ -1807,7 +2060,7 @@ test('trusted roots allow only the exact stable macOS first-level aliases', asyn
   await t.test('writable non-root first-level alias', { skip: process.platform !== 'darwin' }, () => {
     const fixture = makeFixture(t, '/tmp');
     const untrustedFs = {
-      ...fs,
+      ...trackedFs,
       lstatSync(target, options) {
         const stat = fs.lstatSync(target, options);
         if (path.resolve(target) !== '/tmp' || !stat.isSymbolicLink()) return stat;

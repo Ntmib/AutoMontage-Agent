@@ -183,6 +183,12 @@ Approved lesson может задать отдельный локальный vi
 видео; звук custom face video не добавляется. Absolute paths, URL, traversal и не-video
 расширения отклоняются до запуска Remotion.
 
+Top-level `faceSrc`/`audioSrc` не являются источником доверия: lesson builder отдельно передаёт
+канонический source alias, и оба поля обязаны ему точно соответствовать. Утверждённые media
+копируются в owner-only системный temp, который Remotion получает через `--public-dir`; host path
+не попадает в props. Baseline фиксируется до render callback, после него сверка строгая: даже
+восстановленный byte-for-byte файл с новым `ctime` закрывает сборку.
+
 ### Локальная проверка Review Workbench
 
 Review Workbench необязателен и работает только с уже созданной project-папкой. Обычный запуск

@@ -133,6 +133,10 @@ orphan, и следующая draft-ревизия пропускает заня
 repository-public video. Props обязаны сохранить точный исходный reference и scene type до
 bundle boundary; после проверки cloned scene получает отдельный `.automontage/...` snapshot,
 а top-level `audioSrc` не меняется.
+Канонический builder отдельно передаёт trusted source alias (`source.mp4`): top-level
+`faceSrc`/`audioSrc` обязаны совпасть с ним, поэтому forged props не превращают custom reference
+в alias главного видео. Same-inode dedup хранит полную source identity и SHA-256; ctime-only
+повтор требует стабильного полного rehash, любое другое расхождение отклоняется.
 
 Первичный lesson/scenario draft тоже использует этот contract: build context не резервирует
 номер заранее, генератор сначала создаёт временную no-replace пару, а `publishBriefRevision()`
@@ -317,13 +321,16 @@ Workbench изолирован от OpenCut runtime/project format и Remotion S
 видео в браузере, не меняет текст, не делает global ripple и не реализует effects registry,
 keyframes или masks. Канонический путь остаётся прежним: draft -> внешнее approval -> approved
 brief -> `scripts/build.js --brief` -> Remotion. Перед вызовом Remotion lesson build копирует
-source, approved custom scene face videos и все локальные legacy/structured b-roll в один immutable одноразовый каталог
-`public/.automontage/`, переписывает только clone props на безопасные basenames, ещё раз сверяет
-identity/hash до и после render callback и удаляет owned bundle после success/error. На iCloud File Provider допустим только
-`ctime`-only metadata drift: при неизменных `dev/ino/size/mtime/mode/nlink` файл заново полностью
-хэшируется и лишь затем получает новый bounded identity baseline. Если `ctime` сдвинулся во время
-чтения, этот digest отбрасывается и выполняется ограниченный полный повтор. Изменение bytes или
-любого другого identity-поля останавливает build до Remotion. Approved JSON не меняется.
+source, approved custom scene face videos и все локальные legacy/structured b-roll в один
+immutable одноразовый owner-only `public` под системным temp, переписывает только clone props на
+безопасные `.automontage/...` basenames и передаёт каталог Remotion отдельным `--public-dir` argv.
+Repository `public` целиком не копируется; lesson fonts уже встроены в bundle, а remote legacy
+images остаются HTTPS. File Provider `ctime` может быть ограниченно re-pin-нут только до начала
+render callback после полного стабильного SHA-256 при неизменных
+`dev/ino/size/mtime/mode/nlink`. Baseline фиксируется до единственного Remotion render; после
+всего callback identity/hash сверяются строго без ctime re-pin, поэтому mutation + byte/mtime
+restore всё равно закрывает build. Owned temp-root удаляется после success/error. Approved JSON
+не меняется и не содержит host path.
 
 ## 4. Remotion-слой
 

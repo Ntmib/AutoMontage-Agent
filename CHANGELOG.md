@@ -30,6 +30,11 @@
 - Custom scene video сверяется с authoritative approved brief, открывается no-follow и проходит
   identity/hash/TOCTOU/File Provider barriers до и после render callback; unsafe path, URL,
   symlink, не-video extension и props mismatch отклоняются до Remotion.
+- Main-source alias больше не выводится из props: builder передаёт trusted alias, same-inode
+  dedup сверяет полную source identity + SHA-256, а owner-only isolated Remotion `--public-dir`
+  позволяет зафиксировать baseline до render callback и запрещает любой последующий ctime drift,
+  включая mutation + restore. Три последовательных real renders подтверждают отсутствие File
+  Provider false-fail и второго render/history entry.
 - Импорт потоково пишет только в owner-only quarantine, проверяет размер, тип, decode,
   геометрию, длительность, свободное место и symlink/file identity; браузер получает только
   opaque id и token-protected routes без project path или media SHA-256.

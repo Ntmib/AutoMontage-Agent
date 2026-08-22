@@ -2,6 +2,7 @@ const path = require('path');
 const { buildReelScenesProps } = require('./brief');
 
 const LESSON_DEFAULT_THEME = 'lesson-neutral';
+const LESSON_SOURCE_ALIAS = 'source.mp4';
 
 const DEFAULT_DUCKING = {
   thresholdDb: -28,
@@ -88,7 +89,12 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
     );
   }
 
-  const props = buildReelScenesProps({ brief, theme, includeMusic: false });
+  const props = buildReelScenesProps({
+    brief,
+    theme,
+    sourceFile: LESSON_SOURCE_ALIAS,
+    includeMusic: false,
+  });
   const requestedFrames = Number(framesOverride);
   if (Number.isFinite(requestedFrames) && requestedFrames > 0) {
     props.durationInFrames = Math.min(
@@ -110,6 +116,7 @@ function prepareLessonRender({ brief, theme, sourceVideo, framesOverride = null 
     approvedMedia: {
       brief,
       sourcePath: requestedSource,
+      sourceAlias: LESSON_SOURCE_ALIAS,
     },
   };
 }
@@ -134,6 +141,7 @@ function bindLessonSourceLease(props, publicPath) {
 
 module.exports = {
   LESSON_DEFAULT_THEME,
+  LESSON_SOURCE_ALIAS,
   assertLessonOptions,
   bindLessonSourceLease,
   buildLessonMusicMixArgs,

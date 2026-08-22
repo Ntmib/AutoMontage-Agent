@@ -429,35 +429,36 @@ if (lessonAction === 'render') {
     }
   }
 
-  const finalL = withRenderMediaBundle({
-    root: ROOT,
-    workspace: buildContext.project,
-    props: prepared.props,
-    approvedBrief: prepared.approvedMedia.brief,
-    sourcePath: prepared.approvedMedia.sourcePath,
-    namespace: buildContext.project ? buildContext.project.manifest.slug : 'dynamic',
-  }, (lease) => {
-    const lessonProps = lease.props;
-    const lessonPropsPath = buildContext.paths.props;
-    const rawMp4L = buildContext.paths.raw;
-    const outMp4L = buildContext.paths.final;
-    fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
-    fs.writeFileSync(lessonPropsPath, JSON.stringify(lessonProps, null, 2));
-    const lessonRender = buildContext.project
-      ? {
-        version: buildContext.paths.render.version,
-        label: buildContext.paths.render.label,
-        dir: buildContext.paths.render.dir,
-        briefPath,
-      }
-      : null;
-    let final = runRenderLifecycle(buildContext.project, lessonRender, () => {
+  const lessonPropsPath = buildContext.paths.props;
+  const rawMp4L = buildContext.paths.raw;
+  const outMp4L = buildContext.paths.final;
+  const lessonRender = buildContext.project
+    ? {
+      version: buildContext.paths.render.version,
+      label: buildContext.paths.render.label,
+      dir: buildContext.paths.render.dir,
+      briefPath,
+    }
+    : null;
+  let finalL = runRenderLifecycle(buildContext.project, lessonRender, () => (
+    withRenderMediaBundle({
+      root: ROOT,
+      workspace: buildContext.project,
+      props: prepared.props,
+      approvedBrief: prepared.approvedMedia.brief,
+      sourcePath: prepared.approvedMedia.sourcePath,
+      sourceAlias: prepared.approvedMedia.sourceAlias,
+      namespace: buildContext.project ? buildContext.project.manifest.slug : 'dynamic',
+    }, (lease) => {
+      fs.mkdirSync(path.dirname(lessonPropsPath), { recursive: true });
+      fs.writeFileSync(lessonPropsPath, JSON.stringify(lease.props, null, 2));
       log(`рендер утверждённого ТЗ (${prepared.composition}) → ${rawMp4L} …`);
       const renderCommand = remotionRenderCommand(remotion, {
         entry: 'src/index.js',
         composition: prepared.composition,
         output: rawMp4L,
         props: lessonPropsPath,
+        publicDir: lease.publicDirectory,
       });
       runTool(renderCommand.command, renderCommand.args, { cwd: ROOT, stage: 'lesson render' });
 
@@ -484,18 +485,17 @@ if (lessonAction === 'render') {
         fs.unlinkSync(mixedMp4L);
       }
       return outMp4L;
+    })
+  ));
+  if (outDir) {
+    const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
+    finalL = copyOutputFile({
+      cwd: process.cwd(),
+      outdir: outDir,
+      outputName,
+      source: finalL,
     });
-    if (outDir) {
-      const outputName = buildContext.project ? buildContext.project.manifest.slug : id;
-      final = copyOutputFile({
-        cwd: process.cwd(),
-        outdir: outDir,
-        outputName,
-        source: final,
-      });
-    }
-    return final;
-  });
+  }
   console.log(`\n✅ готово по утверждённому ТЗ: ${finalL}  (${prepared.props.width}x${prepared.props.height})`);
   console.log('   отправлять как ДОКУМЕНТ [ФАЙЛ:] иначе Telegram сплющит вертикаль.');
   process.exit(0);

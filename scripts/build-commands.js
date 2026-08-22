@@ -57,6 +57,7 @@ function remotionRenderCommand(resolved, {
   composition,
   output,
   props,
+  publicDir = null,
 }) {
   return {
     command: resolved.command,
@@ -68,6 +69,7 @@ function remotionRenderCommand(resolved, {
       hostPath(output),
       '--props',
       hostPath(props),
+      ...(publicDir ? ['--public-dir', hostPath(publicDir)] : []),
       '--codec=h264',
       '--log=error',
     ],

@@ -52,9 +52,10 @@ npm test
   immutable cleanup boundaries;
 - approval/render media: descriptor probe/hash, normalized metadata/proxy, silent/audio rules,
   repeated asset/custom face dedup, authoritative faceSrc matching, одноразовый render bundle,
-  безопасный полный rehash при File Provider
-  `ctime`-only drift, bounded retry при drift во время hash, fail-closed same-size/append/overwrite
-  и `Img`/`OffthreadVideo` audio envelopes;
+  trusted source-alias contract, безопасный полный rehash при File Provider `ctime`-only drift,
+  same-inode source identity, owner-only isolated Remotion `--public-dir`, bounded retry при drift
+  во время hash, strict whole-render callback mutation + restore, foreign-root cleanup refusal,
+  fail-closed same-size/append/overwrite и `Img`/`OffthreadVideo` envelopes;
 - portable opened-media probe: реальные PNG/JPEG/WebP, H.264 MP4 с `moov` в конце и WebM идут
   через opened descriptor + `pipe:0` без host path; Windows-mode filesystem отвергает POSIX
   flags/modes, но всё равно требует regular type, containment, identity и совпадающие bytes;
@@ -232,10 +233,11 @@ AUTOMONTAGE_FFMPEG_DIR=/opt/homebrew/opt/ffmpeg-full/bin \
 ```
 
 `custom-face-media-real.test.js` создаёт main video с тоном 440 Hz и двухцветный custom video
-с собственным тоном 880 Hz. Реальный двухсценный CLI/Remotion render обязан показать вторую
-половину custom video по глобальному таймкоду, сохранить 440 Hz через обе сцены, не добавить
-880 Hz и удалить одноразовый bundle. В обычном `npm test` этот тяжёлый acceptance честно
-skipped; перед завершением изменения его запускают отдельной командой без skip.
+с собственным тоном 880 Hz. Три последовательных двухсценовых CLI/Remotion render на реальном
+File Provider обязаны показать вторую половину custom video по глобальному таймкоду, сохранить
+440 Hz через обе сцены, не добавить 880 Hz и удалить каждый одноразовый bundle. В обычном
+`npm test` этот тяжёлый acceptance честно skipped; перед завершением изменения его запускают
+отдельной командой без skip.
 
 `media-duration-geometry.test.js` создаёт настоящие пары video 1 s/audio 3 s и video 3 s/audio
 1 s, нечётные landscape/portrait и rotation fixture. Проверка требует visual `durationSec`,
