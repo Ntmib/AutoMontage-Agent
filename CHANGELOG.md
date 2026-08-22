@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-22
+
 ### Добавлено
 
 - Approved lesson снова поддерживает локальный custom `scene.faceSrc` из project `assets/...`
@@ -24,6 +26,14 @@
   decode/ffprobe, контрольные кадры, аудиозамеры и проверку неизменности прежних brief/renders.
 - `check:release` разделяет обычную проверку development-дерева с pending `[Unreleased]` и
   строгий режим публикации `--release`, где этот раздел обязан быть пустым.
+- Локальный Review Workbench открывает project lesson в read-only timeline с видео, словами,
+  сценами и timing audit; token-protected loopback API не вызывает Remotion и не рендерит draft.
+- Явный `--edit` разрешает только adjacent boundary и allowlisted b-roll, хранит undo/redo в
+  памяти и сохраняет правки новой draft-ревизией без изменения approved.
+- Локальный Review Workbench показывает необязательную waveform-дорожку исходника. PNG
+  кэшируется внутри project workspace с повторной проверкой identity каталога после ffmpeg;
+  отсутствие или ошибка ffmpeg не мешают открыть review.
+- Отдельный Chromium job проверяет Review browser flow независимо от обычного Node CI.
 
 ### Безопасность
 
@@ -45,9 +55,26 @@
   private tombstone до проверки и удаления, а shutdown abort-ит import с bounded SIGTERM→SIGKILL.
 - Прямой Review CLI и публичный `automontage review` теперь ждут tracked import-finalizers перед
   exit 130/143; wrapper пересылает сигнал дочернему серверу и не оставляет lease/quarantine orphan.
+- Все Review API/media routes требуют случайный session token, POST также проверяет loopback
+  Origin; traversal, symlink, oversized body, unknown command и stale session закрываются без
+  раскрытия host paths или token.
+- Review Save резервирует revision между процессами через exclusive no-follow lock; только один
+  конкурент публикует согласованную Markdown/JSON-пару и manifest entry.
+- `--no-open` и ошибка browser launch передают bearer URL через временный mode-`0600` файл,
+  печатают только путь и очищают owned файл при закрытии сервера, обычном `SIGINT`/`SIGTERM`
+  или через 10 минут.
+- State, preview, validate и save сверяют исходный device/inode media snapshot; подмена не
+  перепривязывает opaque handle к новым байтам.
+- Transitive `nanoid` обновлён в lockfile с 3.3.16 до исправленной совместимой 3.3.18; high
+  `GHSA-2v37-7h3g-55p8` устранён без direct dependency, override или обновления Remotion.
 
 ### Исправлено
 
+- Windows cleanup повторяет только временные `EPERM`/`EBUSY`/`ENOTEMPTY` при удалении
+  identity-проверенных пустых tombstone и quarantine root; чужие и недоказанные остатки
+  сохраняются, а завершившийся `rmdir`, сообщивший ошибку, согласуется без ложного orphan.
+  Rollback setup хранит точные BigInt device/inode, поэтому длинные NTFS file id не округляются
+  и не блокируют очистку либо принятие соседнего чужого inode.
 - Image и video master normalization полагаются на одинаково включённый по умолчанию
   autorotation, поэтому импорт работает и с системным FFmpeg 6.1, и с более новыми версиями.
 - Video import предпочитает корректный `avg_frame_rate`, но безопасно использует
@@ -107,37 +134,6 @@
   media/proxy SHA-256 и проходит реальный безопасно санитизированный ответ `500`.
 - Убрана прозрачность 0 на первом кадре сцены: прежний fade-in без перекрытия создавал пустой
   тёмный кадр на каждом cut между b-roll-сценами.
-
-## [1.3.0] - 2026-08-20
-
-### Добавлено
-
-- Локальный Review Workbench открывает project lesson в read-only timeline с видео, словами,
-  сценами и timing audit; token-protected loopback API не вызывает Remotion и не рендерит draft.
-- Явный `--edit` разрешает только adjacent boundary и allowlisted b-roll, хранит undo/redo в
-  памяти и сохраняет правки новой draft-ревизией без изменения approved.
-- Локальный Review Workbench показывает необязательную waveform-дорожку исходника. PNG
-  кэшируется внутри project workspace с повторной проверкой identity каталога после ffmpeg;
-  отсутствие или ошибка ffmpeg не мешают открыть review.
-- Отдельный Chromium job проверяет Review browser flow независимо от обычного Node CI.
-
-### Безопасность
-
-- Все Review API/media routes требуют случайный session token, POST также проверяет loopback
-  Origin; traversal, symlink, oversized body, unknown command и stale session закрываются без
-  раскрытия host paths или token.
-- Review Save резервирует revision между процессами через exclusive no-follow lock; только один
-  конкурент публикует согласованную Markdown/JSON-пару и manifest entry.
-- `--no-open` и ошибка browser launch передают bearer URL через временный mode-`0600` файл,
-  печатают только путь и очищают owned файл при закрытии сервера, обычном `SIGINT`/`SIGTERM`
-  или через 10 минут.
-- State, preview, validate и save сверяют исходный device/inode media snapshot; подмена не
-  перепривязывает opaque handle к новым байтам.
-- Transitive `nanoid` обновлён в lockfile с 3.3.16 до исправленной совместимой 3.3.18; high
-  `GHSA-2v37-7h3g-55p8` устранён без direct dependency, override или обновления Remotion.
-
-### Исправлено
-
 - Save повторно проверяет manifest/base snapshot, блокирует controls на время commit и после
   успеха принимает только серверную ревизию; validate/save conflict немедленно очищает
   active/redo stacks и блокирует мутации до успешной загрузки fresh state и явного discard.
