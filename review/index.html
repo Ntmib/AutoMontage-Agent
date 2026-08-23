@@ -41,18 +41,31 @@
       </header>
 
       <div class="review-layout">
-        <section class="panel player-panel" aria-labelledby="source-title">
+        <section class="panel player-panel" data-source-player aria-labelledby="source-title">
           <div class="panel-heading">
             <div>
-              <p class="panel-kicker">Источник</p>
-              <h2 id="source-title">Исходное видео</h2>
+              <p class="panel-kicker">Видео для правок речи и границ</p>
+              <h2 id="source-title">ИСХОДНИК</h2>
             </div>
             <output class="timecode" data-timecode aria-live="off">00:00.000</output>
           </div>
           <div class="video-frame">
-            <video controls preload="metadata" aria-label="Исходное видео"></video>
+            <video controls preload="metadata" data-source-video aria-label="Исходное видео"></video>
           </div>
           <p class="player-note">Клик по сцене или слову переводит видео к точному таймкоду.</p>
+        </section>
+
+        <section class="panel player-panel preview-player-panel" data-preview-player aria-labelledby="preview-title">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">Настоящий Remotion-результат</p>
+              <h2 id="preview-title">СМОНТИРОВАННЫЙ ПРЕДПРОСМОТР</h2>
+            </div>
+            <span class="preview-kind" data-preview-kind hidden></span>
+          </div>
+          <div class="video-frame" data-preview-frame hidden></div>
+          <p class="preview-empty" data-preview-empty>Предпросмотр ещё не собран</p>
+          <p class="player-note">Здесь видны сцены, графика, шрифты, музыка и отметка «ЧЕРНОВИК».</p>
         </section>
 
         <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">

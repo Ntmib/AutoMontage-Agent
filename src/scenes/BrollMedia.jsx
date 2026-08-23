@@ -36,15 +36,22 @@ export const sourceVolumeForFrame = ({ frame, scenes, fps }) => {
   });
 };
 
+export const brollMediaPresentation = (media, fps) => ({
+  objectFit: media?.fit || 'cover',
+  trimBefore: media?.kind === 'video' ? Math.round(media.trimStartSec * fps) : 0,
+  muted: media?.kind === 'video' && media.audioMode === 'mute',
+});
+
 export const BrollMedia = ({ media, legacySrc, durationInFrames }) => {
   const { fps } = useVideoConfig();
   const source = media?.src || legacySrc;
   if (!source) return null;
+  const presentation = brollMediaPresentation(media, fps);
 
   const style = {
     width: '100%',
     height: '100%',
-    objectFit: media?.fit || 'cover',
+    objectFit: presentation.objectFit,
     objectPosition: '50% 40%',
     filter: 'brightness(0.85)',
   };
@@ -64,9 +71,9 @@ export const BrollMedia = ({ media, legacySrc, durationInFrames }) => {
     });
   return <OffthreadVideo
     src={mediaSrc(source)}
-    trimBefore={Math.round(media.trimStartSec * fps)}
+    trimBefore={presentation.trimBefore}
     style={style}
-    muted={mode === 'mute'}
+    muted={presentation.muted}
     volume={volume}
   />;
 };

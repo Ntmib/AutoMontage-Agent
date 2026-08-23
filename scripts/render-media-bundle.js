@@ -556,26 +556,30 @@ function attachCleanupDiagnostic(operationError, cleanupError) {
   }
 }
 
-function prepareRenderMediaBundle({
-  root,
-  workspace,
-  props,
-  approvedBrief,
-  sourcePath,
-  sourceAlias,
-  namespace,
-  temporaryId = randomUUID(),
-  fileSystem = fs,
-} = {}) {
+function prepareLessonMediaBundle(options = {}, policy) {
+  const {
+    root,
+    workspace,
+    props,
+    sourcePath,
+    sourceAlias,
+    namespace,
+    temporaryId = randomUUID(),
+    fileSystem = fs,
+  } = options;
+  const authoritativeBrief = options[policy.briefKey];
   if (!props || typeof props !== 'object' || !Array.isArray(props.scenes)) {
     fail('lesson props are required');
   }
-  if (!approvedBrief || typeof approvedBrief !== 'object' || !Array.isArray(approvedBrief.scenes)) {
-    fail('approved brief media context is required');
+  if (!authoritativeBrief || typeof authoritativeBrief !== 'object'
+    || !Array.isArray(authoritativeBrief.scenes)) {
+    fail(`${policy.purpose} brief media context is required`);
   }
-  if (approvedBrief.status !== 'approved') fail('brief must be approved before render');
-  if (props.scenes.length !== approvedBrief.scenes.length) {
-    fail('lesson props scene count does not match the approved brief');
+  if (authoritativeBrief.status !== policy.requireStatus) {
+    fail(`brief must be ${policy.requireStatus} before ${policy.purpose}`);
+  }
+  if (props.scenes.length !== authoritativeBrief.scenes.length) {
+    fail(`lesson props scene count does not match the ${policy.requireStatus} brief`);
   }
   if (typeof root !== 'string' || typeof sourcePath !== 'string') fail('root and source are required');
   if (typeof sourceAlias !== 'string' || !sourceAlias
@@ -586,9 +590,9 @@ function prepareRenderMediaBundle({
   if (props.faceSrc !== sourceAlias || props.audioSrc !== sourceAlias) {
     fail('lesson props top-level source alias does not match the trusted source alias');
   }
-  const approvedSource = path.isAbsolute(approvedBrief.source)
-    ? path.resolve(approvedBrief.source)
-    : path.resolve(root, approvedBrief.source || '');
+  const approvedSource = path.isAbsolute(authoritativeBrief.source)
+    ? path.resolve(authoritativeBrief.source)
+    : path.resolve(root, authoritativeBrief.source || '');
   const resolvedSourcePath = path.resolve(sourcePath);
   if (approvedSource !== resolvedSourcePath) fail('source path does not match the approved brief');
 
@@ -1108,8 +1112,8 @@ function prepareRenderMediaBundle({
     clonedProps.faceSrc = sourcePublicPath;
     clonedProps.audioSrc = sourcePublicPath;
 
-    for (let index = 0; index < approvedBrief.scenes.length; index += 1) {
-      const approvedScene = approvedBrief.scenes[index];
+    for (let index = 0; index < authoritativeBrief.scenes.length; index += 1) {
+      const approvedScene = authoritativeBrief.scenes[index];
       const clonedScene = clonedProps.scenes[index];
       const hasLegacy = approvedScene && Object.hasOwn(approvedScene, 'brollSrc');
       const hasStructured = approvedScene && Object.hasOwn(approvedScene, 'brollMedia');
@@ -1203,10 +1207,17 @@ function prepareRenderMediaBundle({
   }
 }
 
-function withRenderMediaBundle(options, operation) {
+function prepareRenderMediaBundle(options) {
+  return prepareLessonMediaBundle(options, {
+    briefKey: 'approvedBrief',
+    purpose: 'render',
+    requireStatus: 'approved',
+  });
+}
+
+function withLessonMediaBundle(options, operation, policy) {
   if (typeof operation !== 'function') fail('operation must be a function');
-  if (arguments.length > 2) fail('pre-render prepare operation is unsupported');
-  const lease = prepareRenderMediaBundle(options);
+  const lease = prepareLessonMediaBundle(options, policy);
   let operationError = null;
   let operationFailed = false;
   try {
@@ -1228,7 +1239,26 @@ function withRenderMediaBundle(options, operation) {
   }
 }
 
+function withRenderMediaBundle(options, operation) {
+  if (arguments.length > 2) fail('pre-render prepare operation is unsupported');
+  return withLessonMediaBundle(options, operation, {
+    briefKey: 'approvedBrief',
+    purpose: 'render',
+    requireStatus: 'approved',
+  });
+}
+
+function withPreviewMediaBundle(options, operation) {
+  if (arguments.length > 2) fail('pre-preview prepare operation is unsupported');
+  return withLessonMediaBundle(options, operation, {
+    briefKey: 'previewBrief',
+    purpose: 'preview',
+    requireStatus: 'draft',
+  });
+}
+
 module.exports = {
   prepareRenderMediaBundle,
+  withPreviewMediaBundle,
   withRenderMediaBundle,
 };

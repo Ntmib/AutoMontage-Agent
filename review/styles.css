@@ -203,9 +203,13 @@ h1 {
 
 .review-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(18rem, 0.7fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
   align-items: start;
+}
+
+.diagnostics-panel {
+  grid-column: 1 / -1;
 }
 
 .panel {
@@ -263,6 +267,31 @@ video {
   margin: 0.75rem 0 0;
   color: hsl(var(--muted-foreground));
   font-size: 0.76rem;
+}
+
+.preview-kind {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid hsl(var(--amber) / 0.5);
+  border-radius: 99rem;
+  color: hsl(var(--amber));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.preview-empty {
+  display: grid;
+  min-height: 12rem;
+  place-items: center;
+  margin: 0;
+  border: 1px dashed hsl(var(--border-strong));
+  border-radius: var(--radius-sm);
+  color: hsl(var(--muted-foreground));
+  background: hsl(220 14% 3% / 0.35);
+  text-align: center;
 }
 
 .health-light {

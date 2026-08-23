@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "status": "draft",
+  "source": "source.mp4",
+  "theme": "lesson-neutral",
+  "title": "ВЕРТИКАЛЬНЫЙ WORKFLOW",
+  "output": {
+    "aspect": "vertical",
+    "width": 1080,
+    "height": 1920,
+    "fps": 25,
+    "durationInFrames": 600
+  },
+  "corrections": [],
+  "scenes": [
+    {"scene": "fullscreen", "start": 0, "end": 4, "caption": "ИСХОДНИК"},
+    {
+      "scene": "bottom-diagram",
+      "start": 4,
+      "end": 9,
+      "headCream": "ТРИ",
+      "headOrange": "ЭТАПА",
+      "steps": ["Draft", "Preview", "Approved"]
+    },
+    {
+      "scene": "broll",
+      "start": 9,
+      "end": 14,
+      "headCream": "ФОТО",
+      "headOrange": "БЕЗ ИСКАЖЕНИЯ",
+      "brollMedia": {
+        "kind": "image",
+        "src": "assets/broll/example.png",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "fit": "cover"
+      }
+    },
+    {
+      "scene": "blur-overlay",
+      "start": 14,
+      "end": 19,
+      "label": "СКОРОСТЬ",
+      "big": "2×",
+      "headCream": "БЫСТРЕЕ",
+      "headOrange": "ПРОВЕРКА"
+    },
+    {
+      "scene": "stat",
+      "start": 19,
+      "end": 24,
+      "label": "РЕЗУЛЬТАТ",
+      "statCream": "7",
+      "statOrange": "СЦЕН",
+      "headCream": "ОДИН",
+      "headOrange": "КАТАЛОГ"
+    }
+  ]
+}

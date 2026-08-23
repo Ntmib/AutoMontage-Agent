@@ -86,6 +86,13 @@ function revisionLabel(revision) {
   return `v${String(revision).padStart(2, '0')}`;
 }
 
+function formatPreviewTime(seconds) {
+  const safe = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safe / 60);
+  const rest = (safe - (minutes * 60)).toFixed(2).padStart(5, '0');
+  return `${String(minutes).padStart(2, '0')}:${rest}`;
+}
+
 function prepareBrowserState(state, token) {
   return {
     ...state,
@@ -108,9 +115,37 @@ function renderMetadata(state, token) {
     `${state.output.width}×${state.output.height} · ${state.output.fps} FPS`
   );
 
-  const video = document.querySelector('video');
+  const video = document.querySelector('video[data-source-video]');
   const mediaUrl = authenticatedMediaUrl(state.source.url, token);
   if (video.getAttribute('src') !== mediaUrl) video.src = mediaUrl;
+  const previewFrame = document.querySelector('[data-preview-frame]');
+  const previewEmpty = document.querySelector('[data-preview-empty]');
+  const previewKind = document.querySelector('[data-preview-kind]');
+  if (state.currentPreview) {
+    let previewVideo = previewFrame.querySelector('video[data-preview-video]');
+    if (!previewVideo) {
+      previewVideo = document.createElement('video');
+      previewVideo.controls = true;
+      previewVideo.preload = 'metadata';
+      previewVideo.dataset.previewVideo = '';
+      previewVideo.setAttribute('aria-label', 'Смонтированный предпросмотр');
+      previewFrame.replaceChildren(previewVideo);
+    }
+    const previewUrl = authenticatedMediaUrl(state.currentPreview.url, token);
+    if (previewVideo.getAttribute('src') !== previewUrl) previewVideo.src = previewUrl;
+    previewFrame.hidden = false;
+    previewEmpty.hidden = true;
+    previewKind.hidden = false;
+    previewKind.textContent = state.currentPreview.kind === 'full'
+      ? 'ПОЛНЫЙ РОЛИК'
+      : `ФРАГМЕНТ ${formatPreviewTime(state.currentPreview.fromSec)}–${formatPreviewTime(state.currentPreview.toSec)}`;
+  } else {
+    previewFrame.replaceChildren();
+    previewFrame.hidden = true;
+    previewEmpty.hidden = false;
+    previewKind.hidden = true;
+    previewKind.textContent = '';
+  }
   let revision = document.querySelector('[data-revision]');
   if (!revision) {
     revision = document.createElement('span');
@@ -659,7 +694,7 @@ function createEditor(initialState, token) {
     if (timelineCleanup) timelineCleanup();
     timelineCleanup = renderTimeline({
       root: document.querySelector('[data-timeline-root]'),
-      video: document.querySelector('video'),
+      video: document.querySelector('video[data-source-video]'),
       state,
       timecode: document.querySelector('[data-timecode]'),
       diff: validation.diff,
@@ -1073,7 +1108,7 @@ function renderReadOnly(state, token) {
   renderDiagnostics(browserState.timing);
   renderTimeline({
     root: document.querySelector('[data-timeline-root]'),
-    video: document.querySelector('video'),
+    video: document.querySelector('video[data-source-video]'),
     state: browserState,
     timecode: document.querySelector('[data-timecode]'),
   });

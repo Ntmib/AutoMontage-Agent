@@ -63,6 +63,37 @@ export const getSplitBulletDelay = (index, fps, variant, bulletDelaySec = null) 
     : 30 + index * 7;
 };
 
+export const getFullscreenOverlaySide = (facePos, width, height) => {
+  if (height > width) return 'bottom';
+  return (facePos?.x ?? 0.5) >= 0.5 ? 'left' : 'right';
+};
+
+export const getEndCenterProgress = (frame, durationInFrames, fps, enabled) => {
+  if (!enabled || !Number.isFinite(durationInFrames) || !Number.isFinite(fps) || fps <= 0) return 0;
+  const progress = clip01((frame - (durationInFrames - fps)) / fps);
+  return 1 - ((1 - progress) ** 3);
+};
+
+export const getSideOverlayStepDelay = (index, fps, stepStartsSec = null) => (
+  Number.isFinite(stepStartsSec?.[index])
+    ? Math.round(stepStartsSec[index] * fps)
+    : Math.round(fps * (0.75 + index * 0.42))
+);
+
+const SideOverlaySteps = ({ items = [], k, fps, stepStartsSec }) => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 32 }}>
+    {items.slice(0, 4).map((item, index) => {
+      const enter = useRise(getSideOverlayStepDelay(index, fps, stepStartsSec), 18);
+      return (
+        <div key={index} style={{ ...enter, display: 'flex', alignItems: 'center', gap: 15 }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: k.orange, boxShadow: `0 0 20px ${k.orange}88`, flexShrink: 0 }} />
+          <span style={{ color: k.cream, fontFamily: k.fonts.body, fontSize: 30, fontWeight: 500 }}>{item}</span>
+        </div>
+      );
+    })}
+  </div>
+);
+
 export const getStatFontSize = (text, width, land) => {
   const base = land ? 240 : 340;
   const fitted = Math.floor(width / (Math.max(1, text.length) * 0.48));
@@ -169,9 +200,33 @@ const SalesFunnelDiagram = ({ p, k, s, width, height, frame, fps }) => {
 
 // 1. FULLSCREEN: спикер на весь экран, чип сверху, караоке-строка снизу (в сейф-зоне)
 export const SceneFullscreen = (p) => {
-  const t = useTheme(); const k = tk(t); const { width, height } = useVideoConfig(); const s = safeFor(width, height);
+  const t = useTheme(); const k = tk(t); const frame = useCurrentFrame(); const { width, height, fps } = useVideoConfig(); const s = safeFor(width, height);
   const land = width > height;
   const r = useRise(4, 24);
+  if (p.variant === 'side-overlay' && land) {
+    const side = getFullscreenOverlaySide(p.facePos, width, height);
+    const textWidth = Math.round((width - s.left - s.right) * 0.42);
+    const centerProgress = getEndCenterProgress(frame, p.durationInFrames, fps, p.centerOnFade);
+    const initialLeft = side === 'left' ? s.left : width - s.right - textWidth;
+    const centeredLeft = (width - textWidth) / 2;
+    const overlayLeft = initialLeft + (centeredLeft - initialLeft) * centerProgress;
+    const lineHeight = `${clamp(frame, 2, Math.round(fps * 0.7), 0, 100)}%`;
+    const shade = side === 'left'
+      ? 'linear-gradient(90deg, rgba(7,9,18,.76) 0%, rgba(7,9,18,.42) 36%, transparent 66%)'
+      : 'linear-gradient(270deg, rgba(7,9,18,.76) 0%, rgba(7,9,18,.42) 36%, transparent 66%)';
+    const lineDock = side === 'left' ? { right: -28 } : { left: -28 };
+    return (
+      <AbsoluteFill style={{ background: k.bg, color: k.cream }}>
+        <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} />
+        <AbsoluteFill style={{ background: shade }} />
+        <div style={{ position: 'absolute', left: overlayLeft, top: s.top, bottom: s.bottom, width: textWidth, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+          <div style={{ position: 'absolute', ...lineDock, top: 0, width: 2, height: lineHeight, background: `linear-gradient(180deg, ${k.orange}, transparent)`, opacity: 0.8 * (1 - centerProgress) }} />
+          <FitHeading cream={p.headCream || p.caption} orange={p.headOrange || ''} width={textWidth} maxSize={76} style={r} />
+          {p.steps ? <SideOverlaySteps items={p.steps} k={k} fps={fps} stepStartsSec={p.stepStartsSec} /> : null}
+        </div>
+      </AbsoluteFill>
+    );
+  }
   return (
     <AbsoluteFill style={{ background: k.bg }}>
       <FaceLayer faceSrc={p.faceSrc} facePos={p.facePos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} />
@@ -411,7 +466,11 @@ export const SceneStat = (p) => {
   );
 };
 
-// 7. BROLL: картинка на весь экран, спикер кружком в углу, текст снизу
+export const shouldShowBrollSpeakerPip = (faceSrc, showSpeakerPip) => (
+  Boolean(faceSrc) && showSpeakerPip !== false
+);
+
+// 7. BROLL: медиа на весь экран, опциональный спикер в углу, текст снизу
 export const SceneBroll = (p) => {
   const t = useTheme(); const k = tk(t); const { width, height } = useVideoConfig(); const s = safeFor(width, height);
   const land = width > height; const cardEnter = useRise(0, 20);
@@ -428,7 +487,7 @@ export const SceneBroll = (p) => {
         : <AbsoluteFill style={{ background: 'repeating-linear-gradient(135deg,#241a12,#241a12 40px,#1d1610 40px,#1d1610 80px)' }}><AbsoluteFill style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6f5e49', fontFamily: k.fonts.mono, fontSize: 38 }}>[ B-ROLL ]</AbsoluteFill></AbsoluteFill>}
       <AbsoluteFill style={{ background: 'linear-gradient(180deg, transparent 45%, rgba(0,0,0,.8))' }} />
       <Chip text={p.videoTitle || 'ВИДЕО'} />
-      {p.faceSrc ? <div style={{ position: 'absolute', right: s.right, top: circleTop, width: circle, height: circle, borderRadius: 26, overflow: 'hidden', border: `1px solid ${k.orange}70`, ...cardEnter }}><FaceLayer faceSrc={p.faceSrc} facePos={speakerPos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} /></div> : null}
+      {shouldShowBrollSpeakerPip(p.faceSrc, p.showSpeakerPip) ? <div style={{ position: 'absolute', right: s.right, top: circleTop, width: circle, height: circle, borderRadius: 26, overflow: 'hidden', border: `1px solid ${k.orange}70`, ...cardEnter }}><FaceLayer faceSrc={p.faceSrc} facePos={speakerPos} faceZoom={p.faceZoom} sourceStartFrame={p.sourceStartFrame} /></div> : null}
       <div style={{ position: 'absolute', left: s.left, width: textW, bottom: s.bottom }}>
         <FitHeading cream={p.headCream} orange={p.headOrange} width={textW} maxSize={92} />
         {p.sub ? <div style={{ marginTop: 20, fontSize: 34, opacity: 0.92 }}>{p.sub}</div> : null}

@@ -47,9 +47,10 @@ const SafeGuide = () => {
 };
 
 // Режиссёр сцен: рендерит список сцен по таймкодам с переходами.
-export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc = null, facePos = null, faceZoom = 1, audioSrc = null, musicSrc = null, musicGainDb = -17, musicFadeInSec = 0, musicFadeOutSec = 0, musicTrimBeforeFrames = 0, musicPlaybackRate = 1, videoTitle = 'ВИДЕО', debug = false }) => {
+export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc = null, facePos = null, faceZoom = 1, audioSrc = null, musicSrc = null, musicGainDb = -17, musicFadeInSec = 0, musicFadeOutSec = 0, musicTrimBeforeFrames = 0, musicPlaybackRate = 1, videoTitle = 'ВИДЕО', draftPreview = false, debug = false }) => {
   const t = getTheme(theme);
-  const { fps, durationInFrames } = useVideoConfig();
+  const { fps, durationInFrames, width, height } = useVideoConfig();
+  const safe = safeFor(width, height);
   const timedScenes = scenes.map((scene) => ({
     scene,
     ...getSceneTiming(scene, fps),
@@ -87,6 +88,31 @@ export const SceneDirector = ({ theme = 'lesson-neutral', scenes = [], faceSrc =
             </Sequence>
           );
         })}
+        {draftPreview && (
+          <div
+            data-draft-preview-watermark="true"
+            style={{
+              position: 'absolute',
+              top: safe.top,
+              right: safe.right,
+              zIndex: 1000,
+              color: '#FFFFFF',
+              background: 'rgba(0, 0, 0, 0.48)',
+              border: '2px solid rgba(255, 255, 255, 0.55)',
+              borderRadius: 8,
+              padding: '8px 14px',
+              fontFamily: 'Arial, sans-serif',
+              fontSize: Math.max(18, Math.round(Math.min(width, height) * 0.026)),
+              fontWeight: 800,
+              letterSpacing: '0.12em',
+              lineHeight: 1,
+              opacity: 0.72,
+              pointerEvents: 'none',
+            }}
+          >
+            ЧЕРНОВИК
+          </div>
+        )}
         {debug && <SafeGuide />}
       </AbsoluteFill>
     </ThemeContext.Provider>

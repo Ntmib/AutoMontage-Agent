@@ -15,10 +15,26 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["originalPath", "localPath"],
+      "required": ["originalPath", "originalLocalPath", "localPath", "revision", "history"],
       "properties": {
         "originalPath": {"type": "string", "minLength": 1},
-        "localPath": {"$ref": "#/definitions/projectPath"}
+        "originalLocalPath": {"$ref": "#/definitions/projectPath"},
+        "localPath": {"$ref": "#/definitions/projectPath"},
+        "revision": {"type": "integer", "minimum": 1},
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["revision", "localPath", "editPath", "transcriptPath"],
+            "properties": {
+              "revision": {"type": "integer", "minimum": 2},
+              "localPath": {"$ref": "#/definitions/projectPath"},
+              "editPath": {"$ref": "#/definitions/projectPath"},
+              "transcriptPath": {"$ref": "#/definitions/projectPath"}
+            }
+          }
+        }
       }
     },
     "transcript": {
@@ -47,6 +63,28 @@
       }
     },
     "currentBrief": {"anyOf": [{"$ref": "#/definitions/projectPath"}, {"type": "null"}]},
+    "currentPreview": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["filePath", "briefPath", "kind", "fromSec", "toSec", "width", "height", "fps", "generatedAt", "sha256"],
+          "properties": {
+            "filePath": {"$ref": "#/definitions/projectPath"},
+            "briefPath": {"$ref": "#/definitions/projectPath"},
+            "kind": {"enum": ["full", "excerpt"]},
+            "fromSec": {"type": "number", "minimum": 0},
+            "toSec": {"type": "number", "exclusiveMinimum": 0},
+            "width": {"type": "integer", "minimum": 1},
+            "height": {"type": "integer", "minimum": 1},
+            "fps": {"type": "number", "exclusiveMinimum": 0},
+            "generatedAt": {"type": "string", "minLength": 1},
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          }
+        },
+        {"type": "null"}
+      ]
+    },
     "renders": {
       "type": "array",
       "items": {

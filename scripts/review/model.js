@@ -195,6 +195,7 @@ function buildReviewState({
     : new Map(listReviewAssetRecords({ root, projectDir: resolvedProjectDir })
       .map((asset, index) => [`asset-${index + 1}`, asset]));
   const reviewBrief = buildReviewCandidateBase({ canonicalBrief: brief, assetFiles: registry });
+  const preview = manifest.currentPreview || null;
 
   let transcriptPath;
   try {
@@ -223,6 +224,16 @@ function buildReviewState({
       durationInFrames: brief.output.durationInFrames,
     },
     source: { url: '/media/source' },
+    currentPreview: preview ? {
+      url: '/media/current-preview',
+      kind: preview.kind,
+      fromSec: preview.fromSec,
+      toSec: preview.toSec,
+      width: preview.width,
+      height: preview.height,
+      fps: preview.fps,
+      generatedAt: preview.generatedAt,
+    } : null,
     brief: {
       status: reviewBrief.status,
       title: reviewBrief.title,

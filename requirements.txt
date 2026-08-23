@@ -3,4 +3,4 @@ faster-whisper>=1.2.1   # распознавание речи → субтитр
 opencv-python>=4.8      # ОПЦ: детекция лица (--autopos, --reframe). Базовый монтаж без неё
 numpy>=1.24             # ОПЦ: обработка кадров и генерация бита (идёт с opencv)
 # Отдельно нужны системный ffmpeg и (для картинок-плашек) браузер Chromium для Playwright —
-# ставятся не через pip. Node-зависимости — npm install. Подробно: HANDOFF.md.
+# ставятся не через pip. Node-зависимости - npm install. Подробно: README.md и TESTING.md.

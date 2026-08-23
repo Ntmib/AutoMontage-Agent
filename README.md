@@ -91,15 +91,18 @@ automontage --help                  # все опции
   `AUTOMONTAGE_FFMPEG_DIR="$(brew --prefix ffmpeg-full)/bin"`.
 - **Windows** – ставь Node.js и Python с официальных сайтов (при установке Python отметь «Add to PATH»). ffmpeg: `winget install Gyan.FFmpeg`. Команда `automontage` появится автоматически (npm сам делает `.cmd`-обёртку). Временные файлы, пути и запуск – уже адаптированы под Windows.
 
-### 🔑 Ключи для автоматического lesson-ТЗ
+### Подписка вместо API-ключей
 
-Для автоматической расшифровки смысла и подготовки lesson-ТЗ нужен один LLM-провайдер:
-`ANTHROPIC_API_KEY` или `OPENAI_API_KEY`. Ключ задаётся только в локальном окружении,
-не пишется в код и не попадает в репозиторий.
+Обычный монтаж под ключ работает через твою подписку Claude Code или Codex. Агент локально
+транскрибирует видео через faster-whisper, читает транскрипт в текущей сессии и сам готовит
+lesson-ТЗ. Он не должен просить, проверять или расходовать `ANTHROPIC_API_KEY` и
+`OPENAI_API_KEY` для транскрипции, draft, preview, Review, approval, render или QA.
 
-Основной Dynamic-монтаж и `automontage demo` работают без API-ключей. Встроенной генерации
-изображений через OpenAI API в текущей версии нет: используй свои файлы, публичные активы
-или изображение, подготовленное внешним инструментом.
+Отдельный OpenAI API нужен только если ты явно попросил сгенерировать новые изображения через
+OpenAI. Это отдельная платная операция, она не запускается автоматически. Если используешь свои
+файлы или публичные активы, API-ключ не нужен вообще. Сохранённый в кодовой базе provider-режим
+`scripts/gen-brief.js` является явным legacy/developer opt-in и не входит в стандартный путь
+навыка `reel-turnkey`.
 
 ---
 
@@ -137,20 +140,56 @@ workspace-путь. Эти проверки рассчитаны на manifest �
 остаётся в общем `tmp/`, поэтому в одном checkout всё ещё запускай только одну активную сборку.
 Для параллельных роликов используй отдельные clone/worktree.
 
-Создать новый lesson-проект с форматом исходника:
+### Быстрый маршрут lesson-монтажа
+
+Начни не с provider-скрипта, а с запроса агенту в Claude Code или Codex:
+
+> Собери lesson-ролик под ключ из `source.mp4`. Формат как у исходника, тема
+> `lesson-neutral`. Работай локально по подписке, не используй provider API и сначала покажи
+> смонтированный draft-preview.
+
+Агент создаст project workspace, локально запустит faster-whisper, подготовит и провалидирует
+draft Markdown/JSON. Дальше весь проверяемый маршрут выглядит так:
 
 ```bash
-node scripts/build.js video.mp4 --template lesson \
-  --project "AI agent lesson" \
-  --aspect source \
-  --theme lesson-neutral
+# Только если до режиссуры нужно удалить паузы или дубли:
+automontage master --project-dir projects/<id> --edit edit/vNN-source.json
+
+automontage review --project-dir projects/<id> --edit
+automontage preview --project-dir projects/<id> --brief brief/vNN-draft.lesson.json
+npm run qa:preview -- --project-dir projects/<id>
+
+node scripts/project/approve-brief.js projects/<id> brief/vNN-draft.lesson.json
+node scripts/build.js projects/<id>/input/source.mp4 --template lesson \
+  --project-dir projects/<id> --brief brief/vNN-approved.lesson.json \
+  --version-label first-render
 ```
 
-Для lesson `--theme` можно не указывать: встроенная `lesson-neutral` используется по
-умолчанию. Dynamic сохраняет прежний default `craft`; приватные темы задаются явно через
-`--theme <id>` и `THEMES_EXT`.
+`input/` и `transcript/` хранят активную версию исходника и локальные таймкоды, `brief/` —
+неизменяемые draft/approved-ревизии, `previews/` — черновой Remotion-результат, `renders/` —
+версии approved-сборок, а `final/` — один принятый MP4. В браузере **«ИСХОДНИК»** нужен для
+речи и точных границ; **«СМОНТИРОВАННЫЙ ПРЕДПРОСМОТР»** показывает графику, сцены, b-roll и
+музыку. Это разные файлы и разные задачи, поэтому один плеер не подменяет другой.
+
+Для lesson встроенная `lesson-neutral` используется по умолчанию. Dynamic сохраняет прежний
+default `craft`; приватные темы задаются явно через `--theme <id>` и `THEMES_EXT`.
 Если явный внешний id не найден, `THEMES_EXT` не задан или `theme.json` повреждён,
 сборка останавливается до Remotion: незаметной подмены на `craft` нет.
+
+Если до монтажа нужно убрать паузы или неудачные дубли, не перезаписывай исходник и не запускай
+Whisper повторно. Сохрани frame-aligned список оставляемых диапазонов, например
+`edit/v02-source.json`, и собери новую immutable-ревизию master:
+
+```bash
+automontage master \
+  --project-dir projects/2026.08.05_ai-agent-lesson \
+  --edit edit/v02-source.json
+```
+
+Команда создаёт `input/source-v02.mp4` и пересчитанный `transcript/words-v02.json`, переключает
+manifest на source revision 2 и сбрасывает только устаревший `currentPreview`. Оригинал,
+предыдущие source/transcript-ревизии и draft не изменяются. Следующий draft обязан явно ссылаться
+на новую source revision; старый draft нельзя незаметно утвердить или отправить в final.
 
 После проверки ТЗ утвердить конкретную ревизию и отрендерить её:
 
@@ -196,11 +235,43 @@ Review Workbench необязателен и работает только с у
 read-only: он показывает видео, waveform, слова, сцены и аудит таймингов, но не вызывает Remotion
 и не меняет `project.json`, brief или историю рендеров.
 
+Полный маршрут по окну - от первого запуска до Save, approval, render и проверки MP4 - описан в
+[пошаговой инструкции Review Workbench](docs/REVIEW-WORKBENCH.md).
+
 ```bash
 automontage review --project-dir projects/2026.08.20_demo
 automontage review --project-dir projects/2026.08.20_demo --edit
 automontage review --project-dir projects/2026.08.20_demo --no-open
 ```
+
+Чтобы увидеть не голый исходник, а настоящий черновой монтаж со сценами, темой, шрифтами,
+музыкой и графикой, отдельно собери low-resolution Remotion-preview текущего draft:
+
+```bash
+automontage preview \
+  --project-dir projects/2026.08.20_demo \
+  --brief brief/vNN-draft.lesson.json
+
+# Быстрая проверка выбранного диапазона исходного таймкода:
+automontage preview \
+  --project-dir projects/2026.08.20_demo \
+  --brief brief/vNN-draft.lesson.json \
+  --from-sec 31.5 --to-sec 57.5
+```
+
+Команда использует ту же композицию `ReelScenes` и тот же аудиопорядок, что финал, но ставит
+метку **«ЧЕРНОВИК»**, снижает качество и пишет только в `previews/`. API-ключи ей не нужны.
+Предыдущий `previews/current-preview.mp4` заменяется только после полного успешного decode.
+
+После сборки можно получить машинно проверяемый отчёт без API-ключей:
+
+```bash
+npm run qa:preview -- --project-dir projects/2026.08.20_demo
+```
+
+Отчёт проверяет SHA-256 и полный decode, геометрию/FPS/длительность, первый и последний кадр,
+точный диапазон full/excerpt и отдельно измеряет голос и музыку под речью. Он также доказывает,
+что черновая операция не меняла `renders`, `latestRender` или `final`.
 
 `--edit` разрешает перенос общей границы соседних сцен и назначение фото или видео в готовую
 `broll`-сцену. Свободно менять текст, тип сцены и эффекты здесь нельзя.
@@ -320,7 +391,9 @@ SIGKILL, а CLI ждёт полного import-finalizer: controller, quarantine
 свежего disk state; устаревшие команды не применяются автоматически. Approved-ревизии остаются
 неизменными.
 
-Draft никогда не передаётся в render. В Review нет кнопок approval и render: новую ревизию нужно
+Draft никогда не передаётся в **финальный** render. Отдельная команда `automontage preview`
+имеет собственную draft-only границу и не может писать `renders/`, `final/` или `latestRender`.
+В Review нет кнопок approval и финального render: новую ревизию нужно
 отдельно утвердить через `scripts/project/approve-brief.js`, затем собрать существующей командой
 с `--brief`, как показано выше.
 
@@ -339,9 +412,13 @@ Review намеренно не поддерживает свободное ре�
 
 ## Большие файлы через Telegram (для тех, кто ставит бота)
 
-Если подаёшь видео через своего Telegram-бота, у облачного Bot API лимит – бот принимает/отдаёт максимум 20–50 МБ. Чтобы работать с большими файлами (до 2 ГБ) прямо в чате:
+Если подаёшь видео через своего Telegram-бота, облачный Bot API позволяет скачивать файлы до
+20 МБ и загружать до 50 МБ. Local Bot API снимает лимит скачивания и поднимает загрузку до
+2000 МБ - это зафиксировано в [официальной таблице Telegram](https://core.telegram.org/bots/features#local-bot-api).
+Чтобы работать с большими файлами прямо в чате:
 
-1. Подними локальный Telegram Bot API сервер (`telegram-bot-api`, есть Docker-образ) на своей машине, например на `localhost:8081`.
+1. Подними Telegram Bot API server (`telegram-bot-api`, есть Docker-образ) в режиме `--local`
+   на своей машине, например на `localhost:8081`.
 2. В настройках своего бота укажи `apiRoot` / `baseApiUrl = http://localhost:8081` (опция есть в grammY, telegraf, node-telegram-bot-api и др.).
 3. После этого бот сможет принимать и отправлять большие видео без сжатия.
 
@@ -394,8 +471,11 @@ Remotion (анимация плашек кодом), faster-whisper (распо�
 `HANDOFF.md`, `PLAN.md`, `docs/STEP-*`, `docs/PHASE4-adaptive.md` и `docs/UPGRADES.md`
 сохранены как исторические планы. Для текущего поведения используй документы ниже.
 
-### Документация для разработки
+### Документация
 
+- [docs/TEMPLATES.md](docs/TEMPLATES.md) – команды, форматы и канонический lesson-процесс.
+- [docs/REVIEW-WORKBENCH.md](docs/REVIEW-WORKBENCH.md) – полная работа с монтажом в браузере.
+- [docs/SCENE-CATALOG.md](docs/SCENE-CATALOG.md) – семь официальных сцен и их возможности.
 - [ARCHITECTURE.md](ARCHITECTURE.md) – модули, потоки данных и границы системы.
 - [TESTING.md](TESTING.md) – от быстрых тестов до проверки готового MP4.
 - [DECISIONS.md](DECISIONS.md) – решения, которые не нужно заново переигрывать в каждой сессии.
@@ -405,8 +485,10 @@ Remotion (анимация плашек кодом), faster-whisper (распо�
 
 ### Версии и история изменений
 
-Текущая версия: **v1.3.0**. Источник номера – `version` в `package.json` и корневая запись
-в `package-lock.json`; состав релиза описан в [CHANGELOG.md](CHANGELOG.md).
+Текущая опубликованная версия: **v1.3.0**
+([GitHub Release](https://github.com/Ntmib/AutoMontage-Agent/releases/tag/v1.3.0)). Источник номера
+в репозитории – `version` в `package.json` и корневая запись в `package-lock.json`; состав
+релиза описан в [CHANGELOG.md](CHANGELOG.md).
 
 Проект использует SemVer: первая цифра меняется при несовместимых изменениях, вторая – при
 новых обратно совместимых возможностях, третья – при исправлениях. Будущая работа сначала

@@ -103,8 +103,7 @@ function ensureApproved(brief) {
   if (!result.ok) throw new Error(result.errors.join('\n'));
 }
 
-function buildReelScenesProps({ brief, theme, sourceFile = 'source.mp4', includeMusic = true }) {
-  ensureApproved(brief);
+function buildLessonProps({ brief, theme, sourceFile = 'source.mp4', includeMusic = true }) {
   const props = {
     theme: theme ?? brief.theme,
     scenes: brief.scenes,
@@ -128,6 +127,23 @@ function buildReelScenesProps({ brief, theme, sourceFile = 'source.mp4', include
     props.musicPlaybackRate = brief.music.playbackRate ?? 1;
   }
   return props;
+}
+
+function buildDraftPreviewProps({ brief, theme, sourceFile = 'source.mp4' }) {
+  const result = validateLessonBrief(brief);
+  if (!result.ok) throw new Error(result.errors.join('\n'));
+  if (brief.status !== 'draft') {
+    throw new Error('предпросмотр требует текущий brief со статусом draft');
+  }
+  return {
+    ...buildLessonProps({ brief, theme, sourceFile, includeMusic: false }),
+    draftPreview: true,
+  };
+}
+
+function buildReelScenesProps(options) {
+  ensureApproved(options.brief);
+  return buildLessonProps(options);
 }
 
 function clock(seconds) {
@@ -188,6 +204,7 @@ function formatBriefMarkdown(brief) {
 
 module.exports = {
   OFFICIAL_SCENES,
+  buildDraftPreviewProps,
   buildReelScenesProps,
   formatBriefMarkdown,
   isRenderableBrollSource,

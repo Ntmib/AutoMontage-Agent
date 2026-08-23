@@ -86,9 +86,32 @@ function normalizeScene(scene, availableBroll) {
 
   if (requested === 'fullscreen') {
     const caption = cleanString(scene.caption);
-    return caption ? { ...base, caption } : fallbackSplit(scene);
+    if (!caption) return fallbackSplit(scene);
+    const result = { ...base, caption };
+    if (scene.variant === 'side-overlay') {
+      result.variant = 'side-overlay';
+      const steps = cleanArray(scene.steps, 4);
+      if (steps.length) result.steps = steps;
+      const starts = (Array.isArray(scene.stepStartsSec) ? scene.stepStartsSec : [])
+        .slice(0, steps.length)
+        .map(Number);
+      if (starts.length === steps.length && starts.every((value) => Number.isFinite(value) && value >= 0)) {
+        result.stepStartsSec = starts;
+      }
+      if (scene.centerOnFade === true) result.centerOnFade = true;
+      if (scene.headCream) result.headCream = cleanString(scene.headCream);
+      if (scene.headOrange) result.headOrange = cleanString(scene.headOrange);
+    }
+    return result;
   }
-  if (requested === 'split') return fallbackSplit(scene);
+  if (requested === 'split') {
+    const result = fallbackSplit(scene);
+    if (scene.variant === 'animated-gradient') result.variant = 'animated-gradient';
+    if (Number.isFinite(Number(scene.bulletDelaySec)) && Number(scene.bulletDelaySec) >= 0) {
+      result.bulletDelaySec = Number(scene.bulletDelaySec);
+    }
+    return result;
+  }
   if (requested === 'bottom-diagram') {
     const steps = cleanArray(scene.steps, 4);
     if (!steps.length) return fallbackSplit(scene);
@@ -140,14 +163,19 @@ function normalizeScene(scene, availableBroll) {
     return result;
   }
 
-  const brollSrc = cleanString(scene.brollSrc);
+  const requestedMedia = scene.brollMedia && typeof scene.brollMedia === 'object'
+    ? structuredClone(scene.brollMedia)
+    : null;
+  const brollSrc = requestedMedia ? cleanString(requestedMedia.src) : cleanString(scene.brollSrc);
   if (!brollSrc || !availableBroll.includes(brollSrc)) return fallbackSplit(scene);
   const result = {
     ...base,
-    brollSrc,
     headCream: cleanString(scene.headCream, 'ЖИВОЙ'),
     headOrange: cleanString(scene.headOrange, 'ПРИМЕР'),
   };
+  if (requestedMedia) result.brollMedia = requestedMedia;
+  else result.brollSrc = brollSrc;
+  if (scene.showSpeakerPip === false) result.showSpeakerPip = false;
   if (scene.sub) result.sub = cleanString(scene.sub);
   return result;
 }
@@ -220,13 +248,13 @@ function buildSystemPrompt({ maxScenes, availableBroll }) {
     : 'broll не используй: доступных файлов нет.';
   return `Ты режиссёр обучающего видео. Ты НЕ создаёшь дизайн и НЕ придумываешь новые сцены.
 Выбирай не более ${maxScenes} сцен только из фиксированной библиотеки:
-- fullscreen: короткий заход или связка, поля caption;
-- split: основное объяснение, поля num, headCream, headOrange, bullets;
+- fullscreen: короткий заход или связка, поля caption; для текста в свободной части горизонтального кадра variant side-overlay, steps, stepStartsSec;
+- split: основное объяснение, поля num, headCream, headOrange, bullets; для постепенной подачи variant animated-gradient;
 - bottom-diagram: последовательность, поля headCream, headOrange, steps;
 - blur-overlay: сильный акцент, поля label, big, headCream, headOrange, sub;
 - text-only: дословная цитата, поля label, quoteCream, quoteOrange, author;
 - stat: реально произнесённая метрика, поля label, statCream, statOrange, headCream, headOrange, sub;
-- broll: реальный визуальный пример, поля brollSrc, headCream, headOrange, sub.
+- broll: реальный визуальный пример, поля brollSrc или brollMedia, headCream, headOrange, sub, showSpeakerPip.
 
 Правила:
 - chart запрещён;
@@ -235,6 +263,11 @@ function buildSystemPrompt({ maxScenes, availableBroll }) {
 - start и end бери из таймкодов речи, интервалы не должны пересекаться;
 - тексты, цитаты и цифры только из транскрипта, без новых фактов;
 - заголовки короткие, буллетов и шагов не больше 4;
+- screencast означает настоящее видео b-roll, никогда не zoom/pan скриншота;
+- пункты появляются на соответствующей произнесённой фразе через stepStartsSec;
+- в горизонтальном кадре предпочитай side-overlay в свободной части вместо разрезания лица;
+- product demo b-roll по умолчанию сохраняет голос мастера: audioMode mute;
+- финальной сцене оставляй не меньше одной секунды для centerOnFade;
 - stat используй только для точного числа из речи;
 - ${brollRule}
 - найди оставшиеся ошибки распознавания и верни их в corrections с from, to, reason, start, end.
@@ -262,8 +295,8 @@ async function callAnthropic(system, user) {
   return json.content[0].text;
 }
 
-async function callOpenAI(system, user) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+async function callOpenAI(system, user, fetchImpl = fetch) {
+  const response = await fetchImpl('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -273,6 +306,7 @@ async function callOpenAI(system, user) {
       model: 'gpt-5',
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       response_format: { type: 'json_object' },
+      reasoning_effort: 'minimal',
     }),
   });
   const json = await response.json();
@@ -404,6 +438,7 @@ async function main() {
 module.exports = {
   applyDictionary,
   buildSystemPrompt,
+  callOpenAI,
   normalizeGeneratedBrief,
   parseBriefOptions,
   parseJsonResponse,

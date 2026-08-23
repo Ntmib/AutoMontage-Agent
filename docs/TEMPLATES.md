@@ -33,27 +33,66 @@
 - `--aspect vertical`: 1080x1920 с FPS исходника.
 - `--aspect horizontal`: 1920x1080 с FPS исходника.
 - `--face-x`, `--face-y` и `--face-zoom` фиксируют проверенное кадрирование спикера в ТЗ.
+- Для горизонтального talking-head с намеренно свободной половиной кадра `fullscreen` может
+  использовать `variant: "side-overlay"`: спикер остаётся на исходном видео, а заголовок и до
+  четырёх лёгких анимированных шагов располагаются на противоположной стороне без карточки.
+  Если шаги должны входить по смысловым словам речи, `stepStartsSec` задаёт для каждого пункта
+  секунду появления относительно начала сцены; без него действует стандартный короткий stagger.
+  Для финального `side-overlay` флаг `centerOnFade: true` плавно переносит заголовок из свободной
+  стороны в центр в течение последней секунды сцены и одновременно убирает разделительную линию.
 - `--tighten` и `--reframe` нужно применять к отдельному исходнику до создания lesson-ТЗ.
 
-Этап 1. Транскрибация, проруф и черновик ТЗ:
+Этап 1. Транскрибация, проруф и черновик ТЗ выполняются агентом в текущей подписанной сессии.
+Достаточно попросить:
+
+> Собери lesson-ролик под ключ из `<видео>`. Формат как у исходника, тема `lesson-neutral`.
+> Работай локально по подписке, не используй provider API и сначала покажи draft-preview.
+
+Агент создаёт `projects/YYYY.MM.DD_<slug>/`, копирует исходник, запускает локальный
+faster-whisper, сам формирует `brief/v01-draft.lesson.md` + `.json`, валидирует и публикует их
+через project workspace. `ANTHROPIC_API_KEY` и `OPENAI_API_KEY` для этого не нужны. Отдельный
+provider-скрипт `scripts/gen-brief.js` остаётся только явным legacy/developer opt-in и не должен
+запускаться обычным навыком `reel-turnkey`.
+
+Если нужно сначала вырезать паузы или неудачные дубли, создай frame-aligned
+`edit/v02-source.json` и выполни до новой режиссуры:
 
 ```bash
-node scripts/build.js <видео> --template lesson \
-  --project "ТЕМА РОЛИКА" \
-  --aspect source --theme lesson-neutral --title "ТЕМА"
+automontage master --project-dir projects/YYYY.MM.DD_<slug> \
+  --edit edit/v02-source.json
 ```
 
-Команда создаёт `projects/YYYY.MM.DD_<slug>/`, копирует туда исходник, пишет транскрипт и
-`brief/v01-draft.lesson.md` + `.json`, затем останавливается до Remotion. Для этого этапа
-нужен `ANTHROPIC_API_KEY` или `OPENAI_API_KEY`.
+Оригинал не меняется: публикуются новая source revision и пересчитанный transcript без повторного
+Whisper. Старый draft остаётся историей и не подходит для нового master; следующий draft должен
+ссылаться на активную source revision.
 
-Необязательно открыть локальную проверку draft можно до утверждения:
+При необходимости draft можно проверить локально до утверждения:
+
+Полная пользовательская последовательность по самому окну, включая границы, импорт,
+Save → approval → render и частые ошибки, находится в [REVIEW-WORKBENCH.md](REVIEW-WORKBENCH.md).
 
 ```bash
 automontage review --project-dir projects/2026.08.20_demo
 automontage review --project-dir projects/2026.08.20_demo --edit
 automontage review --project-dir projects/2026.08.20_demo --no-open
 ```
+
+Review всегда разделяет два видео: **«ИСХОДНИК»** нужен для речи и границ, а
+**«СМОНТИРОВАННЫЙ ПРЕДПРОСМОТР»** показывает настоящий результат `ReelScenes`. Второй плеер
+появляется после отдельной команды:
+
+```bash
+automontage preview --project-dir projects/2026.08.20_demo \
+  --brief brief/vNN-draft.lesson.json
+```
+
+Для фрагмента добавь парные `--from-sec N --to-sec N`. В интерфейсе всегда показывается
+`ПОЛНЫЙ РОЛИК` либо точный диапазон фрагмента. Preview помечен «ЧЕРНОВИК», имеет пониженное
+качество и не даёт draft права на финальный render.
+
+Возможности семи официальных сцен, допустимые варианты и обязательные проверки собраны в
+[каталоге сцен](SCENE-CATALOG.md). Там же зафиксировано: screencast - это настоящее video,
+а не статичный screenshot; `brollMedia` управляет fit/trim/mute, а master voice остаётся главным.
 
 Первая команда read-only и не меняет brief, manifest или render history. Вторая разрешает
 adjacent boundary, загрузку AVIF/GIF/JPEG/PNG/WebP или MP4/MOV/M4V/WebM и назначение image/video
@@ -68,7 +107,8 @@ bearer URL; файл живёт не дольше 10 минут, до закры
 После внешнего `409` controls блокируются до безопасной повторной проверки/свежего state;
 устаревшие команды не перебазируются молча. Waveform является best-effort: при его ошибке видео,
 слова и timeline продолжают работать. Review не умеет менять текст, effects, keyframes, masks,
-делать global ripple/OpenCut-экспорт, удалять/перезаписывать imported asset или рендерить draft.
+делать global ripple/OpenCut-экспорт, удалять/перезаписывать imported asset или запускать render.
+Черновой Remotion-preview собирается только отдельной командой `automontage preview`.
 
 Legacy image остаётся совместимым и не требует миграции:
 
@@ -111,6 +151,7 @@ Normalized video добавляет старт и звук:
   "end": 9,
   "headCream": "СКРИНКАСТ",
   "headOrange": "ШАГ 1",
+  "showSpeakerPip": false,
   "brollMedia": {
     "kind": "video",
     "src": "assets/broll/video/123e4567-e89b-42d3-a456-426614174001/media.mp4",
@@ -124,6 +165,8 @@ Normalized video добавляет старт и звук:
 
 - `fit: "contain"` показывает весь кадр с возможными полями; `cover` заполняет сцену с
   возможной обрезкой краёв.
+- `showSpeakerPip: false` оставляет b-roll единственным видео на весь кадр. Если ключ не задан,
+  поверх b-roll сохраняется стандартное окно спикера для обратной совместимости.
 - `audioMode: "mute"` оставляет исходный голос; `mix` добавляет звук клипа на −18 dB;
   `replace` заменяет исходный голос только внутри сцены с короткой огибающей на стыках.
 - У silent video разрешён только `mute`.

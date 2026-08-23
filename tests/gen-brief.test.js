@@ -7,6 +7,7 @@ const path = require('node:path');
 const dictionary = require('../scripts/data/proofread-dictionary.json');
 const {
   applyDictionary,
+  callOpenAI,
   normalizeGeneratedBrief,
   parseBriefOptions,
   writeGeneratedBriefOutputs,
@@ -30,6 +31,24 @@ const context = {
 test('brief CLI defaults to the public lesson theme', () => {
   assert.equal(parseBriefOptions([]).theme, 'lesson-neutral');
   assert.equal(parseBriefOptions(['--theme', 'private-brand-test']).theme, 'private-brand-test');
+});
+
+test('OpenAI brief generation requests minimal reasoning to avoid idle VPN resets', async () => {
+  let requestBody = null;
+  const fetchImpl = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '{"scenes":[],"corrections":[]}' } }],
+      }),
+    };
+  };
+
+  const content = await callOpenAI('system prompt', 'user prompt', fetchImpl);
+
+  assert.equal(content, '{"scenes":[],"corrections":[]}');
+  assert.equal(requestBody.reasoning_effort, 'minimal');
 });
 
 test('dictionary corrects transcript and records every replacement', () => {
@@ -130,6 +149,47 @@ test('available broll remains in the draft and corrections are merged', () => {
   assert.equal(brief.scenes[0].scene, 'broll');
   assert.equal(brief.corrections.length, 2);
   assert.deepEqual(brief.output, context.output);
+});
+
+test('generator preserves documented negative-space and real screencast variants', () => {
+  const screencast = {
+    kind: 'video',
+    src: 'assets/broll/screencast.mp4',
+    sha256: 'b'.repeat(64),
+    trimStartSec: 1.2,
+    fit: 'contain',
+    audioMode: 'mute',
+  };
+  const brief = normalizeGeneratedBrief({
+    scenes: [
+      {
+        scene: 'fullscreen',
+        start: 0,
+        end: 6,
+        caption: 'ТРИ ШАГА',
+        variant: 'side-overlay',
+        steps: ['Один', 'Два', 'Три'],
+        stepStartsSec: [0.8, 2.4, 4.4],
+        centerOnFade: true,
+      },
+      {
+        scene: 'broll',
+        start: 6,
+        end: 10,
+        headCream: 'РЕАЛЬНЫЙ',
+        headOrange: 'СКРИНКАСТ',
+        showSpeakerPip: false,
+        brollMedia: screencast,
+      },
+    ],
+  }, { ...context, availableBroll: [screencast.src] });
+
+  assert.deepEqual(brief.scenes[0], {
+    scene: 'fullscreen', start: 0, end: 6, caption: 'ТРИ ШАГА', variant: 'side-overlay',
+    steps: ['Один', 'Два', 'Три'], stepStartsSec: [0.8, 2.4, 4.4], centerOnFade: true,
+  });
+  assert.deepEqual(brief.scenes[1].brollMedia, screencast);
+  assert.equal(brief.scenes[1].showSpeakerPip, false);
 });
 
 test('scene limit is enforced after the LLM response', () => {

@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "status": "draft",
+  "source": "source.mp4",
+  "theme": "lesson-neutral",
+  "title": "БЫСТРЫЙ МОНТАЖ",
+  "facePos": {"x": 0.7, "y": 0.45},
+  "output": {
+    "aspect": "horizontal",
+    "width": 1920,
+    "height": 1080,
+    "fps": 25,
+    "durationInFrames": 625
+  },
+  "corrections": [],
+  "scenes": [
+    {
+      "scene": "fullscreen",
+      "start": 0,
+      "end": 6,
+      "variant": "side-overlay",
+      "caption": "ТРИ ШАГА",
+      "headCream": "МОНТАЖ",
+      "headOrange": "БЕЗ РУТИНЫ",
+      "steps": ["Открыть проект", "Проверить сцены", "Собрать preview"],
+      "stepStartsSec": [0.8, 2.4, 4.4]
+    },
+    {
+      "scene": "split",
+      "start": 6,
+      "end": 11,
+      "variant": "animated-gradient",
+      "num": "02",
+      "headCream": "ТЕКСТ ИДЁТ",
+      "headOrange": "ЗА РЕЧЬЮ",
+      "bullets": ["Первый тезис", "Второй тезис", "Третий тезис"],
+      "bulletDelaySec": 0.4
+    },
+    {
+      "scene": "broll",
+      "start": 11,
+      "end": 16,
+      "headCream": "РЕАЛЬНЫЙ",
+      "headOrange": "СКРИНКАСТ",
+      "showSpeakerPip": false,
+      "brollMedia": {
+        "kind": "video",
+        "src": "assets/broll/screencast.mp4",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "trimStartSec": 1.2,
+        "fit": "contain",
+        "audioMode": "mute"
+      }
+    },
+    {
+      "scene": "text-only",
+      "start": 16,
+      "end": 20,
+      "label": "ГЛАВНОЕ",
+      "quoteCream": "ПРОВЕРЯЕМ",
+      "quoteOrange": "НАСТОЯЩИЙ РЕЗУЛЬТАТ"
+    },
+    {
+      "scene": "fullscreen",
+      "start": 20,
+      "end": 25,
+      "variant": "side-overlay",
+      "caption": "ГОТОВО К ПРОВЕРКЕ",
+      "headCream": "ГОТОВО",
+      "headOrange": "К ПРОВЕРКЕ",
+      "centerOnFade": true
+    }
+  ]
+}

@@ -96,9 +96,10 @@
           "videoTitle": { "type": "string" },
           "faceSrc": { "type": "string" },
           "facePos": { "$ref": "#/definitions/facePos" },
-          "variant": { "enum": ["speaker-circle", "funnel", "blur-only", "social-logos", "animated-gradient", "keyword-bounce"] },
+          "variant": { "enum": ["speaker-circle", "funnel", "blur-only", "social-logos", "animated-gradient", "keyword-bounce", "side-overlay"] },
           "handle": { "type": "string" },
           "animateKeyword": { "type": "string" },
+          "centerOnFade": { "type": "boolean" },
           "bulletDelaySec": { "type": "number", "minimum": 0, "maximum": 10 },
           "logos": {
             "type": "array",
@@ -121,6 +122,12 @@
             "maxItems": 4,
             "items": { "type": "string" }
           },
+          "stepStartsSec": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": { "type": "number", "minimum": 0, "maximum": 60 }
+          },
           "label": { "type": "string" },
           "big": { "type": "string" },
           "sub": { "type": "string" },
@@ -130,6 +137,7 @@
           "statCream": { "type": "string" },
           "statOrange": { "type": "string" },
           "brollSrc": { "type": "string", "minLength": 1 },
+          "showSpeakerPip": { "type": "boolean" },
           "brollMedia": {
             "oneOf": [
               {

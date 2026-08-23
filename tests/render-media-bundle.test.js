@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const {
   prepareRenderMediaBundle,
+  withPreviewMediaBundle,
   withRenderMediaBundle,
 } = require('../scripts/render-media-bundle');
 
@@ -813,6 +814,48 @@ test('a draft brief cannot acquire a render media lease', (t) => {
 
   assert.throws(() => prepareRenderMediaBundle(input), /approved|утвержд/i);
   assert.equal(fs.existsSync(path.join(fixture.root, 'public', '.automontage')), false);
+});
+
+test('a draft acquires only an ephemeral preview media bundle', (t) => {
+  const fixture = makeFixture(t);
+  const input = bundleInput(fixture, []);
+  input.previewBrief = { ...input.approvedBrief, status: 'draft' };
+  delete input.approvedBrief;
+  input.props.draftPreview = true;
+  let directory;
+  let publicDirectory;
+
+  const result = withPreviewMediaBundle(input, (lease) => {
+    directory = lease.directory;
+    publicDirectory = lease.publicDirectory;
+    assert.match(lease.props.faceSrc, /^\.automontage\//);
+    assert.equal(lease.props.audioSrc, lease.props.faceSrc);
+    assert.equal(lease.props.draftPreview, true);
+    assert.equal(fs.existsSync(directory), true);
+    return 'previewed';
+  });
+
+  assert.equal(result, 'previewed');
+  assert.equal(fs.existsSync(directory), false);
+  assert.equal(fs.existsSync(publicDirectory), false);
+});
+
+test('preview bundle rejects approved briefs and render bundle still rejects drafts', (t) => {
+  const fixture = makeFixture(t);
+  const approvedInput = bundleInput(fixture, []);
+  approvedInput.previewBrief = approvedInput.approvedBrief;
+  delete approvedInput.approvedBrief;
+  assert.throws(
+    () => withPreviewMediaBundle(approvedInput, () => {}),
+    /draft/i,
+  );
+
+  const draftInput = bundleInput(fixture, []);
+  draftInput.approvedBrief.status = 'draft';
+  assert.throws(
+    () => withRenderMediaBundle(draftInput, () => {}),
+    /approved|утвержд/i,
+  );
 });
 
 test('local references reject traversal, ancestor symlinks, and non-regular files', async (t) => {
