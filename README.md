@@ -165,9 +165,9 @@ node scripts/build.js projects/<id>/input/source.mp4 --template lesson \
   --version-label first-render
 ```
 
-`input/` и `transcript/` хранят активную версию исходника и локальные таймкоды, `brief/` —
-неизменяемые draft/approved-ревизии, `previews/` — черновой Remotion-результат, `renders/` —
-версии approved-сборок, а `final/` — один принятый MP4. В браузере **«ИСХОДНИК»** нужен для
+`input/` и `transcript/` хранят активную версию исходника и локальные таймкоды, `brief/` -
+неизменяемые draft/approved-ревизии, `previews/` - черновой Remotion-результат, `renders/` -
+версии approved-сборок, а `final/` - один принятый MP4. В браузере **«ИСХОДНИК»** нужен для
 речи и точных границ; **«СМОНТИРОВАННЫЙ ПРЕДПРОСМОТР»** показывает графику, сцены, b-roll и
 музыку. Это разные файлы и разные задачи, поэтому один плеер не подменяет другой.
 
@@ -408,7 +408,7 @@ Draft никогда не передаётся в **финальный** render.
 
 Review намеренно не поддерживает свободное редактирование текста, эффекты, keyframes, masks,
 глобальный ripple, смену типа сцены, browser export и OpenCut runtime/project format. Такие
-возможности требуют отдельного дизайна и не входят в безопасный контур 1.3.0.
+возможности требуют отдельного дизайна и не входят в текущий безопасный контур.
 
 ## Большие файлы через Telegram (для тех, кто ставит бота)
 
@@ -485,8 +485,8 @@ Remotion (анимация плашек кодом), faster-whisper (распо�
 
 ### Версии и история изменений
 
-Текущая опубликованная версия: **v1.3.0**
-([GitHub Release](https://github.com/Ntmib/AutoMontage-Agent/releases/tag/v1.3.0)). Источник номера
+Текущая версия: **v1.4.0**
+([GitHub Release](https://github.com/Ntmib/AutoMontage-Agent/releases/tag/v1.4.0)). Источник номера
 в репозитории – `version` в `package.json` и корневая запись в `package-lock.json`; состав
 релиза описан в [CHANGELOG.md](CHANGELOG.md).
 
