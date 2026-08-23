@@ -45,7 +45,7 @@
       "showSpeakerPip": false,
       "brollMedia": {
         "kind": "video",
-        "src": "assets/broll/screencast.mp4",
+        "src": "assets/media/screencast.mp4",
         "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "trimStartSec": 1.2,
         "fit": "contain",
