@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildDraftPreviewProps,
   buildReelScenesProps,
   formatBriefMarkdown,
   validateLessonBrief,
@@ -55,12 +56,78 @@ test('valid draft can be reviewed before approval', () => {
   assert.deepEqual(validateLessonBrief(makeBrief()), { ok: true, errors: [] });
 });
 
+test('fullscreen side overlay accepts semantic step reveal times', () => {
+  const valid = makeBrief({
+    scenes: [{
+      scene: 'fullscreen',
+      variant: 'side-overlay',
+      start: 0,
+      end: 8,
+      caption: 'ПО СМЫСЛУ РЕЧИ',
+      steps: ['Первый смысл', 'Второй смысл'],
+      stepStartsSec: [1.2, 4.6],
+    }],
+  });
+  const invalid = structuredClone(valid);
+  invalid.scenes[0].stepStartsSec[1] = -1;
+
+  assert.deepEqual(validateLessonBrief(valid), { ok: true, errors: [] });
+  assert.equal(validateLessonBrief(invalid).ok, false);
+});
+
+test('b-roll can explicitly hide the speaker picture-in-picture', () => {
+  const valid = makeBrief({
+    scenes: [{
+      scene: 'broll',
+      start: 0,
+      end: 8,
+      headCream: 'ТАЙМЛАЙН',
+      headOrange: 'В БРАУЗЕРЕ',
+      showSpeakerPip: false,
+      brollMedia: {
+        kind: 'video',
+        src: 'assets/broll/timeline.mp4',
+        sha256: 'a'.repeat(64),
+        trimStartSec: 0,
+        fit: 'contain',
+        audioMode: 'mute',
+      },
+    }],
+  });
+  const invalid = structuredClone(valid);
+  invalid.scenes[0].showSpeakerPip = 'no';
+
+  assert.deepEqual(validateLessonBrief(valid), { ok: true, errors: [] });
+  assert.equal(validateLessonBrief(invalid).ok, false);
+});
+
 test('draft cannot produce render props', () => {
   const result = validateLessonBrief(makeBrief(), { requireApproved: true });
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join('\n'), /не утверждён/);
   assert.throws(() => buildReelScenesProps({ brief: makeBrief(), theme: 'lesson-neutral' }), /не утверждён/);
+});
+
+test('draft preview props accept only a valid draft and mark the composition', () => {
+  const brief = makeBrief();
+  const props = buildDraftPreviewProps({
+    brief,
+    theme: 'lesson-neutral',
+    sourceFile: 'source.mp4',
+  });
+
+  assert.equal(props.draftPreview, true);
+  assert.equal(props.faceSrc, 'source.mp4');
+  assert.equal(props.audioSrc, 'source.mp4');
+  assert.deepEqual(props.scenes, brief.scenes);
+  assert.throws(
+    () => buildDraftPreviewProps({
+      brief: makeBrief({ status: 'approved' }),
+      theme: 'lesson-neutral',
+    }),
+    /draft/,
+  );
 });
 
 test('experimental chart scene is rejected', () => {
@@ -408,6 +475,23 @@ test('split accepts an animated gradient presentation variant', () => {
       headCream: 'КАК ЭТО',
       headOrange: 'РАБОТАЕТ',
       bullets: ['Фото сверху', 'Текст снизу', 'Тёмный градиент', 'Всё двигается'],
+    }],
+  });
+
+  assert.deepEqual(validateLessonBrief(brief), { ok: true, errors: [] });
+});
+
+test('fullscreen accepts a side overlay with lightweight animated steps', () => {
+  const brief = makeBrief({
+    scenes: [{
+      scene: 'fullscreen',
+      start: 0,
+      end: 6,
+      variant: 'side-overlay',
+      caption: 'ВСЁ ПОД КОНТРОЛЕМ',
+      animateKeyword: 'КОНТРОЛЕМ',
+      centerOnFade: true,
+      steps: ['Исходник', 'Проверка', 'Готовый ролик'],
     }],
   });
 

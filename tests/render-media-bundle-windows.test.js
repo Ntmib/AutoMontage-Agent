@@ -5,7 +5,10 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { remotionRenderCommand } = require('../scripts/build-commands');
-const { withRenderMediaBundle } = require('../scripts/render-media-bundle');
+const {
+  withPreviewMediaBundle,
+  withRenderMediaBundle,
+} = require('../scripts/render-media-bundle');
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'automontage-render-win-'));
@@ -117,4 +120,28 @@ test('portable lesson bundle cleans its isolated publicDir after a render error'
   assert.equal(fs.existsSync(bundleDirectory), false);
   assert.equal(fs.existsSync(publicDirectory), false);
   assert.equal(fs.existsSync(temporaryRoot), false);
+});
+
+test('portable draft preview bundle uses the same isolated snapshot boundary', (t) => {
+  const item = fixture(t);
+  const draftInput = input(item, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+  draftInput.previewBrief = { ...draftInput.approvedBrief, status: 'draft' };
+  delete draftInput.approvedBrief;
+  draftInput.props.draftPreview = true;
+  let publicDirectory;
+
+  const result = withPreviewMediaBundle(draftInput, (lease) => {
+    publicDirectory = lease.publicDirectory;
+    assert.equal(path.isAbsolute(publicDirectory), true);
+    assert.equal(publicDirectory.startsWith(`${item.root}${path.sep}`), false);
+    assert.equal(lease.props.draftPreview, true);
+    assert.equal(
+      fs.readFileSync(path.join(lease.directory, path.basename(lease.props.faceSrc)), 'utf8'),
+      'main-video',
+    );
+    return 'previewed';
+  });
+
+  assert.equal(result, 'previewed');
+  assert.equal(fs.existsSync(publicDirectory), false);
 });

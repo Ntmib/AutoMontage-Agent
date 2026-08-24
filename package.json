@@ -1,6 +1,6 @@
 {
   "name": "automontage-agent",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Движок автомонтажа видео для ИИ-агента (Claude Code/Codex). Кросс-платформенный: Windows/macOS/Linux.",
   "license": "MIT",
   "repository": {
@@ -21,6 +21,9 @@
     "doctor": "node scripts/doctor.js",
     "demo": "node scripts/cli.js demo",
     "montage": "node scripts/build.js",
+    "preview": "node scripts/preview.js",
+    "qa:preview": "node scripts/qa-preview.js",
+    "test:video-edit": "node --test tests/lesson-preview.test.js tests/source-edit.test.js tests/qa-preview.test.js",
     "review": "node scripts/review/cli.js",
     "check:release": "node scripts/check-release.js",
     "smoke:release": "node scripts/smoke-release.js",

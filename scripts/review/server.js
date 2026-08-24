@@ -550,6 +550,31 @@ function serveFile(request, response, file) {
     sendError(response, 404, request.method === 'HEAD');
     return;
   }
+  if (expected.sha256) {
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    let bytesRead;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, position);
+      if (bytesRead > 0) {
+        hash.update(buffer.subarray(0, bytesRead));
+        position += bytesRead;
+      }
+    } while (bytesRead > 0);
+    const after = fs.fstatSync(descriptor);
+    const afterNanoseconds = fs.fstatSync(descriptor, { bigint: true });
+    if (!sameSnapshotIdentity(expected, {
+      dev: after.dev,
+      ino: after.ino,
+      size: after.size,
+      mtimeNs: afterNanoseconds.mtimeNs,
+    }) || !safeHashEqual(hash.digest('hex'), expected.sha256)) {
+      fs.closeSync(descriptor);
+      sendError(response, 404, request.method === 'HEAD');
+      return;
+    }
+  }
 
   const range = parseRange(request.headers.range, stat.size);
   if (range === false) {
@@ -580,6 +605,61 @@ function serveFile(request, response, file) {
   });
   stream.on('error', () => response.destroy());
   stream.pipe(response);
+}
+
+function verifiedCurrentPreview(projectDir) {
+  try {
+    const manifest = readProjectManifest(projectDir);
+    const metadata = manifest.currentPreview;
+    if (!metadata) return null;
+    const revisionPath = resolveProjectPath(projectDir, metadata.filePath, {
+      label: 'current preview revision', mustExist: true, type: 'file',
+    });
+    const revision = snapshotFile(revisionPath);
+    const currentPath = resolveProjectPath(projectDir, 'previews/current-preview.mp4', {
+      label: 'current preview', mustExist: true, type: 'file',
+    });
+    const current = snapshotFile(currentPath);
+    if (!revision || !current) return null;
+    return {
+      revision: { ...revision, sha256: metadata.sha256 },
+      current: { ...current, sha256: metadata.sha256 },
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function snapshotMatchesHash(expected) {
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(expected.filePath, openReadOnlyFlags(fs));
+    const stat = fs.fstatSync(descriptor);
+    const nanoseconds = fs.fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile() || !sameSnapshotIdentity(expected, {
+      dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: nanoseconds.mtimeNs,
+    })) return false;
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    let bytesRead;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, position);
+      if (bytesRead > 0) {
+        hash.update(buffer.subarray(0, bytesRead));
+        position += bytesRead;
+      }
+    } while (bytesRead > 0);
+    const after = fs.fstatSync(descriptor);
+    const afterNanoseconds = fs.fstatSync(descriptor, { bigint: true });
+    return sameSnapshotIdentity(expected, {
+      dev: after.dev, ino: after.ino, size: after.size, mtimeNs: afterNanoseconds.mtimeNs,
+    }) && safeHashEqual(hash.digest('hex'), expected.sha256);
+  } catch (_) {
+    return false;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
 }
 
 function safeHashEqual(actual, expected) {
@@ -1199,6 +1279,19 @@ async function routeRequest({
   }
   if (pathname === '/media/source') {
     serveFile(request, response, sourceFile);
+    return;
+  }
+  if (pathname === '/media/current-preview') {
+    const preview = verifiedCurrentPreview(projectDir);
+    if (!preview) {
+      sendError(response, 404, request.method === 'HEAD');
+      return;
+    }
+    if (!snapshotMatchesHash(preview.revision)) {
+      sendError(response, 404, request.method === 'HEAD');
+      return;
+    }
+    serveFile(request, response, preview.current);
     return;
   }
   if (pathname === '/media/waveform') {

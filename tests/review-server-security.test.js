@@ -147,6 +147,25 @@ function writeImportedVideoBundle(projectDir, {
   };
 }
 
+function registerCurrentPreview(fixture, bytes = Buffer.from('rendered preview fixture')) {
+  const revisionPath = path.join(fixture.workspace.dir, 'previews', 'v01-draft-full.mp4');
+  const currentPath = path.join(fixture.workspace.dir, 'previews', 'current-preview.mp4');
+  fs.writeFileSync(revisionPath, bytes);
+  fs.writeFileSync(currentPath, bytes);
+  const manifestPath = path.join(fixture.workspace.dir, 'project.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.currentPreview = {
+    filePath: 'previews/v01-draft-full.mp4',
+    briefPath: manifest.currentBrief,
+    kind: 'full', fromSec: 0, toSec: 4,
+    width: 960, height: 540, fps: 25,
+    generatedAt: '2026-08-23T17:05:00.000Z',
+    sha256: sha256(bytes),
+  };
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  return { currentPath, revisionPath, manifestPath };
+}
+
 function importHeaders(filename = 'clip.mp4', contentType = 'video/mp4') {
   return {
     'content-type': contentType,
@@ -1568,6 +1587,41 @@ test('review media requires authentication and resolves only opaque handles', as
   assert.equal((await request(session, '/media/assets/../../project.json', {
     token: session.token,
   })).status, 404);
+});
+
+test('current rendered preview is token-protected, ranged, and hash-pinned at request time', async (t) => {
+  const fixture = makeReviewProject(t);
+  const bytes = Buffer.from('0123456789-rendered-preview');
+  const preview = registerCurrentPreview(fixture, bytes);
+  const session = await startTestReviewServer({ root: ROOT, projectDir: fixture.projectDir, open: false });
+  t.after(() => closeServer(session.server));
+
+  assert.equal((await request(session, '/media/current-preview')).status, 401);
+  assert.equal((await request(session, '/media/current-preview', { token: 'wrong' })).status, 401);
+  const ranged = await request(session, '/media/current-preview', {
+    token: session.token,
+    headers: { range: 'bytes=2-7' },
+  });
+  assert.equal(ranged.status, 206);
+  assert.equal(ranged.headers['content-range'], `bytes 2-7/${bytes.length}`);
+  assert.deepEqual(ranged.body, bytes.subarray(2, 8));
+
+  fs.writeFileSync(preview.currentPath, Buffer.from('x'.repeat(bytes.length)));
+  assert.equal((await request(session, '/media/current-preview', { token: session.token })).status, 404);
+});
+
+test('current rendered preview refuses a symlink even when its target has registered bytes', async (t) => {
+  const fixture = makeReviewProject(t);
+  const bytes = Buffer.from('rendered preview fixture');
+  const preview = registerCurrentPreview(fixture, bytes);
+  const outside = path.join(fixture.root, 'outside-preview.mp4');
+  fs.writeFileSync(outside, bytes);
+  fs.unlinkSync(preview.currentPath);
+  fs.symlinkSync(outside, preview.currentPath);
+  const session = await startTestReviewServer({ root: ROOT, projectDir: fixture.projectDir, open: false });
+  t.after(() => closeServer(session.server));
+
+  assert.equal((await request(session, '/media/current-preview', { token: session.token })).status, 404);
 });
 
 test('review waveform is optional, token-protected, and exposes no cache path', async (t) => {

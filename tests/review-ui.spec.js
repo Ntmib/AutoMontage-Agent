@@ -55,6 +55,7 @@ async function makeBrowserReviewSession({
   higherRevision,
   runMediaProcessImpl,
   assetCount = 0,
+  preview = null,
 } = {}) {
   const fixture = makeReviewProject(
     { after: (cleanup) => cleanups.push(cleanup) },
@@ -131,6 +132,25 @@ async function makeBrowserReviewSession({
   const manifestPath = path.join(fixture.workspace.dir, 'project.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   manifest.source.localPath = 'input/source.webm';
+  if (preview) {
+    const previewBytes = fs.readFileSync(sourcePath);
+    const revisionPath = path.join(fixture.workspace.dir, 'previews', 'v01-draft-full.mp4');
+    const currentPath = path.join(fixture.workspace.dir, 'previews', 'current-preview.mp4');
+    fs.writeFileSync(revisionPath, previewBytes);
+    fs.writeFileSync(currentPath, previewBytes);
+    manifest.currentPreview = {
+      filePath: 'previews/v01-draft-full.mp4',
+      briefPath: manifest.currentBrief,
+      kind: preview.kind || 'full',
+      fromSec: preview.fromSec ?? 0,
+      toSec: preview.toSec ?? duration,
+      width: 80,
+      height: 45,
+      fps: 5,
+      generatedAt: '2026-08-23T17:05:00.000Z',
+      sha256: crypto.createHash('sha256').update(previewBytes).digest('hex'),
+    };
+  }
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   fs.copyFileSync(
     path.join(ROOT, 'docs', 'previews', 'lesson-presentation.png'),
@@ -388,6 +408,49 @@ test('read-only review shows semantic source, lanes and diagnostics without edit
   }
   await expect(page.locator('video')).toHaveJSProperty('autoplay', false);
   expect(mutatingRequests).toEqual([]);
+});
+
+test('rendered preview stays visibly separate from the source player and refreshes exact range metadata', async ({ page }) => {
+  await withBrowserReviewSession({
+    preview: { kind: 'excerpt', fromSec: 0.5, toSec: 3.5 },
+  }, async (session) => {
+    await openReview(page, session.url);
+
+    await expect(page.getByRole('heading', { name: 'ИСХОДНИК', exact: true })).toBeVisible();
+    await expect(page.getByText('Видео для правок речи и границ', { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'СМОНТИРОВАННЫЙ ПРЕДПРОСМОТР', exact: true })).toBeVisible();
+    await expect(page.getByText('Настоящий Remotion-результат', { exact: true })).toBeVisible();
+    await expect(page.getByText('ФРАГМЕНТ 00:00.50–00:03.50', { exact: true })).toBeVisible();
+    await expect(page.locator('video[data-source-video]')).toHaveCount(1);
+    await expect(page.locator('video[data-preview-video]')).toHaveCount(1);
+    await page.locator('video[data-source-video]').evaluate((video) => { video.currentTime = 1; });
+    await page.locator('video[data-preview-video]').evaluate((video) => { video.currentTime = 2; });
+    await expect.poll(() => page.locator('video[data-source-video]').evaluate((video) => video.currentTime)).toBeCloseTo(1, 1);
+    await expect.poll(() => page.locator('video[data-preview-video]').evaluate((video) => video.currentTime)).toBeCloseTo(2, 1);
+
+    await page.setViewportSize({ width: 360, height: 800 });
+    await expectNoPageOverflow(page);
+    await expect(page.locator('[data-source-player]')).toBeVisible();
+    await expect(page.locator('[data-preview-player]')).toBeVisible();
+
+    const manifestPath = path.join(session.fixture.workspace.dir, 'project.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.currentPreview.kind = 'full';
+    manifest.currentPreview.fromSec = 0;
+    manifest.currentPreview.toSec = 4;
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await openReview(page, `${session.origin}/?preview-refresh=1#token=${session.token}`);
+    await expect(page.getByText('ПОЛНЫЙ РОЛИК', { exact: true })).toBeVisible();
+  });
+});
+
+test('rendered preview empty state is explicit while the source player remains available', async ({ page }) => {
+  await withBrowserReviewSession({}, async (session) => {
+    await openReview(page, session.url);
+    await expect(page.getByText('Предпросмотр ещё не собран', { exact: true })).toBeVisible();
+    await expect(page.locator('video[data-source-video]')).toHaveCount(1);
+    await expect(page.locator('video[data-preview-video]')).toHaveCount(0);
+  });
 });
 
 test('browser diagnostics identify a nearby word-boundary suggestion from canonical state', async ({ page }) => {

@@ -51,6 +51,14 @@ function formatProjectId({ date, name }) {
 
 function migrateProjectManifest(manifest) {
   if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)
+    && manifest.source && typeof manifest.source === 'object') {
+    if (!Object.hasOwn(manifest.source, 'originalLocalPath')) {
+      manifest.source.originalLocalPath = manifest.source.localPath;
+    }
+    if (!Object.hasOwn(manifest.source, 'revision')) manifest.source.revision = 1;
+    if (!Object.hasOwn(manifest.source, 'history')) manifest.source.history = [];
+  }
+  if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)
     && !Object.hasOwn(manifest, 'transcript')) {
     manifest.transcript = {
       words: 'transcript/words.json',
@@ -292,6 +300,7 @@ function validateProjectManifest(manifest, { projectDir, fileSystem = fs } = {})
   if (!projectDir) return migratedManifest;
 
   const paths = [
+    ['manifest.source.originalLocalPath', migratedManifest.source.originalLocalPath],
     ['manifest.source.localPath', migratedManifest.source.localPath],
     ['manifest.transcript.words', migratedManifest.transcript.words],
     ['manifest.transcript.captions', migratedManifest.transcript.captions],
@@ -299,6 +308,12 @@ function validateProjectManifest(manifest, { projectDir, fileSystem = fs } = {})
     ['manifest.latestRender', migratedManifest.latestRender],
     ['manifest.final', migratedManifest.final],
   ];
+  if (migratedManifest.currentPreview) {
+    paths.push(
+      ['manifest.currentPreview.filePath', migratedManifest.currentPreview.filePath],
+      ['manifest.currentPreview.briefPath', migratedManifest.currentPreview.briefPath],
+    );
+  }
   migratedManifest.briefs.forEach((brief, index) => {
     paths.push([`manifest.briefs[${index}].jsonPath`, brief.jsonPath]);
     if (brief.markdownPath !== null) {
@@ -310,6 +325,13 @@ function validateProjectManifest(manifest, { projectDir, fileSystem = fs } = {})
     if (render.briefPath !== null) {
       paths.push([`manifest.renders[${index}].briefPath`, render.briefPath]);
     }
+  });
+  migratedManifest.source.history.forEach((entry, index) => {
+    paths.push(
+      [`manifest.source.history[${index}].localPath`, entry.localPath],
+      [`manifest.source.history[${index}].editPath`, entry.editPath],
+      [`manifest.source.history[${index}].transcriptPath`, entry.transcriptPath],
+    );
   });
   for (const [label, storedPath] of paths) {
     if (storedPath !== null) {
@@ -384,6 +406,7 @@ function ensureProjectDirectories(projectDir) {
   const directories = [
     'input',
     'transcript',
+    'edit',
     'brief',
     'assets/music',
     'assets/broll',
@@ -482,7 +505,10 @@ function createOrOpenProject({
     updatedAt: timestamp,
     source: {
       originalPath,
+      originalLocalPath: localPath,
       localPath,
+      revision: 1,
+      history: [],
     },
     transcript: {
       words: 'transcript/words.json',

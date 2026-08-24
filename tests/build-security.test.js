@@ -115,6 +115,46 @@ test('Remotion keeps entry refs relative and host output paths absolute', () => 
   assert.deepEqual(command.args.slice(7, 9), ['--public-dir', publicDir]);
 });
 
+test('Remotion preview options stay typed and become separate argv entries', () => {
+  const resolved = { command: process.execPath, argsPrefix: ['/repo/remotion-cli.js'] };
+  const command = remotionRenderCommand(resolved, {
+    entry: 'src/index.js',
+    composition: 'ReelScenes',
+    output: HOSTILE,
+    props: `${HOSTILE}.json`,
+    scale: 0.5,
+    crf: 28,
+    frameRange: { fromFrame: 250, toFrameExclusive: 500 },
+    concurrency: '50%',
+    overwrite: true,
+  });
+
+  assert.deepEqual(command.args.slice(-7), [
+    '--codec=h264',
+    '--log=error',
+    '--scale=0.5',
+    '--crf=28',
+    '--frames=250-499',
+    '--concurrency=50%',
+    '--overwrite',
+  ]);
+  for (const invalid of [
+    { scale: 0 },
+    { crf: 52 },
+    { frameRange: { fromFrame: 20, toFrameExclusive: 20 } },
+    { concurrency: '50%;touch sentinel' },
+    { overwrite: 'yes' },
+  ]) {
+    assert.throws(() => remotionRenderCommand(resolved, {
+      entry: 'src/index.js',
+      composition: 'ReelScenes',
+      output: HOSTILE,
+      props: `${HOSTILE}.json`,
+      ...invalid,
+    }), /scale|crf|frame|concurrency|overwrite/i);
+  }
+});
+
 test('build rejects non-finite, out-of-range and injected numeric options', () => {
   for (const [flag, value] of [
     ['--frames', '0'], ['--frames', '1.5'], ['--frames', 'Infinity'],

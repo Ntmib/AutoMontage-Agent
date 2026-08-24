@@ -22,6 +22,10 @@ function help() {
   automontage demo                    собрать демо-ролик из примера (без ключей и whisper)
   automontage doctor                  проверить окружение (что доустановить)
   automontage review --project-dir .  открыть локальную проверку монтажного листа
+  automontage preview --project-dir . --brief brief/v01-draft.lesson.json
+                                      собрать настоящий Remotion-предпросмотр draft
+  automontage master --project-dir . --edit edit/v02-source.json
+                                      собрать новую source-ревизию без повторного Whisper
   automontage --help                  эта справка
 
 Частые опции:
@@ -40,7 +44,7 @@ function help() {
   --version-label <имя>  подпись новой версии рендера, например ducking
   --scenario file.json  готовый монтажный лист
   --no-transcribe       не транскрибировать (для монтажа по готовому --scenario)
-  --model turbo|small   модель распознавания речи
+  --model <id>          Whisper-модель (по умолчанию large-v3-turbo; также base, small, large-v3)
   --tighten             срезать паузы и слова-паразиты (не вместе с lesson)
   --beat                ритмичный зум под музыку
   --autopos             плашки автоматически мимо лица
@@ -66,6 +70,26 @@ try {
 if (argv[0] === 'doctor') {
   try { execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'doctor.js')], { stdio: 'inherit', cwd: ROOT }); }
   catch (e) { process.exit(e.status || 1); }
+  process.exit(0);
+}
+
+// настоящий draft-preview: отдельная команда не попадает в approved final build.js
+if (argv[0] === 'preview') {
+  try {
+    execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'preview.js'), ...argv.slice(1)], {
+      stdio: 'inherit', cwd: process.cwd(), shell: false,
+    });
+  } catch (e) { process.exit(e.status || 1); }
+  process.exit(0);
+}
+
+// версионированный монтаж исходника: cut-list остаётся данными проекта
+if (argv[0] === 'master') {
+  try {
+    execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'project', 'build-master.js'), ...argv.slice(1)], {
+      stdio: 'inherit', cwd: process.cwd(), shell: false,
+    });
+  } catch (e) { process.exit(e.status || 1); }
   process.exit(0);
 }
 

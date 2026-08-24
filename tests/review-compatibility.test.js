@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildReelScenesProps } = require('../scripts/lesson/brief');
+const { buildDraftPreviewProps, buildReelScenesProps } = require('../scripts/lesson/brief');
 
 test('review additions do not change canonical lesson props', () => {
   const brief = require('../examples/lesson-neutral-approved.json');
@@ -16,4 +16,12 @@ test('review additions do not change canonical lesson props', () => {
 test('draft remains forbidden at the renderer boundary', () => {
   const draft = { ...require('../examples/lesson-neutral-approved.json'), status: 'draft' };
   assert.throws(() => buildReelScenesProps({ brief: draft, theme: {} }), /approved/);
+});
+
+test('review draft props use a separate marked preview boundary', () => {
+  const draft = { ...require('../examples/lesson-neutral-approved.json'), status: 'draft' };
+  const props = buildDraftPreviewProps({ brief: draft, theme: { id: 'fixture' } });
+
+  assert.equal(props.draftPreview, true);
+  assert.deepEqual(props.scenes, draft.scenes);
 });

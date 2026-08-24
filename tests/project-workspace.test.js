@@ -241,6 +241,20 @@ test('manifest rejects traversal in every workspace-owned path field', (t) => {
       manifest.briefs = [{ ...brief, jsonPath: '../../sentinel.mp4' }];
       manifest.currentBrief = '../../sentinel.mp4';
     }],
+    ['manifest.currentPreview.filePath', (manifest) => {
+      manifest.currentPreview = {
+        filePath: '../../sentinel.mp4', briefPath: 'brief/v01-draft.lesson.json',
+        kind: 'full', fromSec: 0, toSec: 4, width: 960, height: 540, fps: 25,
+        generatedAt: '2026-08-23T17:05:00.000Z', sha256: 'a'.repeat(64),
+      };
+    }],
+    ['manifest.currentPreview.briefPath', (manifest) => {
+      manifest.currentPreview = {
+        filePath: 'previews/v01-draft-full.mp4', briefPath: '../../sentinel.json',
+        kind: 'full', fromSec: 0, toSec: 4, width: 960, height: 540, fps: 25,
+        generatedAt: '2026-08-23T17:05:00.000Z', sha256: 'a'.repeat(64),
+      };
+    }],
     ['manifest.renders[0].dir', (manifest) => {
       manifest.renders = [{ ...render, dir: '../../sentinel.mp4' }];
     }],

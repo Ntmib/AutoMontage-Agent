@@ -43,6 +43,10 @@ assets/music/*.mp3
 props/placement_*.json
 scripts/*_frame.jpg
 
+# локальные артефакты Playwright/browser acceptance
+test-results/
+playwright-report/
+
 # системное
 .DS_Store
 Thumbs.db

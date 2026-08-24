@@ -74,6 +74,20 @@ npm test
 
 Любое исправление бага должно добавлять регрессионный тест его причины.
 
+### Пропорциональная проверка монтажа
+
+Для изменения cut-list, brief или draft-preview сначала запускай только быстрый контур:
+
+```bash
+npm run test:video-edit
+npm run qa:preview -- --project-dir <project>
+```
+
+Focused engine tests нужны при изменении общего `scripts/`, `src/` или `schema/`. Полный
+`npm test` запускается один раз после завершения согласованного этапа, а `check:release` и
+`smoke:release` - только перед выпуском или merge. Brief-only правка клиентского ролика не должна
+сама по себе запускать весь repository gate.
+
 Для waveform и защищённого process boundary отдельно можно запустить:
 
 ```bash
@@ -203,14 +217,22 @@ node scripts/dynamic-gate.js path/to/scenario.json path/to/transcript.json
 
 ## 5. Проверка lesson-процесса
 
+Пользовательский маршрут по Review Workbench и финальному MP4 описан в
+[docs/REVIEW-WORKBENCH.md](docs/REVIEW-WORKBENCH.md); ниже - техническая проверка того же контура.
+
 1. Запустить `--template lesson --project "Test lesson"` без `--brief`.
 2. Убедиться, что созданы project-папка, локальный транскрипт, Markdown и JSON со статусом
    `draft`, а Remotion не стартовал.
 3. Проверить исправления распознавания, сцены, тексты, таймкоды и кадрирование.
-4. Только после явного утверждения создать approved-копию через
+4. Собрать настоящий draft-preview командой `automontage preview`, проверить H.264/AAC,
+   половинную геометрию, точный FPS, полный decode, метку «ЧЕРНОВИК» и full/excerpt range.
+   Искусственный сбой Remotion/finish/music обязан сохранить прежний `current-preview.mp4`.
+5. В Review проверить отдельные плееры **«ИСХОДНИК»** и **«СМОНТИРОВАННЫЙ ПРЕДПРОСМОТР»**;
+   `/media/current-preview` требует token, поддерживает Range и отклоняет hash/symlink replacement.
+6. Только после явного утверждения создать approved-копию через
    `scripts/project/approve-brief.js`.
-5. Рендерить локальным исходником через `--project-dir`, `--brief` и `--version-label`.
-6. Отдельно проверить, что draft, другой source, тема или аспект блокируются.
+7. Рендерить локальным исходником через `--project-dir`, `--brief` и `--version-label`.
+8. Отдельно проверить, что draft, другой source, тема или аспект блокируются финальным render.
 
 Для реальной проверки Review используй только копию fixture/project workspace. До запуска сними
 SHA-256 `project.json`, всех brief и approved-файлов. Read-only сессию закрой и подтверди те же
@@ -304,6 +326,32 @@ duration в 80 мс и больше является ошибкой с нену�
 Для локальной миграции существующего ролика дополнительно проверяется наличие исходника,
 истории brief, всех перенесённых версий рендера, превью и принятого финала в одной игнорируемой
 project-папке. Старые артефакты в `out/` при миграции не удаляются.
+
+### Preview/final equivalence и benchmark
+
+```bash
+npm run test:video-edit
+node --test tests/preview-final-equivalence.test.js
+node scripts/benchmark-preview.js \
+  --fixture 'horizontal-60s::/absolute/horizontal.props.json::/absolute/horizontal/public' \
+  --fixture 'vertical-60s::/absolute/vertical.props.json::/absolute/vertical/public' \
+  --output /tmp/automontage-preview-benchmark.json
+```
+
+Каждый benchmark выполняет cold preview, второй warm preview и final через одну композицию
+`ReelScenes` и одинаковый `finish.js`; в preview меняются только утверждённые scale 0.5, CRF 28
+и watermark. Поля времени измеряют wall clock именно Remotion render-фазы: общий finishing всё
+равно выполняется и его результат участвует в equivalence, но почти постоянная аудиообработка не
+выдаётся за ускорение графического рендера. `previewToFinalRatio` равен
+`previewWarmMs / finalMs`, поэтому критерий «не менее чем вдвое быстрее» означает значение
+`<= 0.5` отдельно для horizontal и vertical 60-second fixture. JSON с машинными временами
+остаётся локальным и не коммитится.
+
+Для трёх контрольных таймкодов preview масштабируется до final geometry алгоритмом Lanczos.
+На обоих кадрах чёрным закрывается только документированная верхняя правая зона watermark:
+30% ширины × 16% высоты; всё остальное сравнивается через FFmpeg SSIM. Порог `0.965` учитывает
+половинный raster и H.264, но достаточно строг, чтобы падать при другой раскладке, тексте,
+шрифте, b-roll frame или цветах темы. Любой один кадр ниже порога делает gate красным.
 
 ## 7. CI
 

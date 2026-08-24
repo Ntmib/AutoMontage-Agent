@@ -13,6 +13,31 @@ const {
 const { listReviewAssetRecords, resolveReviewAsset } = require('../scripts/review/assets');
 const { makeReviewProject } = require('./helpers/review-project');
 
+function registerCurrentPreview(fixture, {
+  kind = 'full', fromSec = 0, toSec = 4,
+} = {}) {
+  const bytes = Buffer.from('rendered preview fixture');
+  const revision = path.join(fixture.workspace.dir, 'previews', 'v01-draft-full.mp4');
+  const current = path.join(fixture.workspace.dir, 'previews', 'current-preview.mp4');
+  fs.writeFileSync(revision, bytes);
+  fs.writeFileSync(current, bytes);
+  const manifestPath = path.join(fixture.workspace.dir, 'project.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.currentPreview = {
+    filePath: 'previews/v01-draft-full.mp4',
+    briefPath: manifest.currentBrief,
+    kind,
+    fromSec,
+    toSec,
+    width: 960,
+    height: 540,
+    fps: 25,
+    generatedAt: '2026-08-23T17:05:00.000Z',
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+  };
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 test('review state exposes scenes and words without host paths', (t) => {
   const { projectDir } = makeReviewProject(t);
 
@@ -29,6 +54,7 @@ test('review state exposes scenes and words without host paths', (t) => {
     durationInFrames: 100,
   });
   assert.deepEqual(state.source, { url: '/media/source' });
+  assert.equal(state.currentPreview, null);
   assert.equal(state.brief.status, 'draft');
   assert.equal(state.brief.scenes.length, 2);
   assert.deepEqual(state.transcript.words, [
@@ -39,6 +65,25 @@ test('review state exposes scenes and words without host paths', (t) => {
   assert.equal(state.waveform, null);
   assert.doesNotMatch(JSON.stringify(state), /\/Users\/|C:\\Users\\/);
   assert.deepEqual(JSON.parse(JSON.stringify(state)), state);
+});
+
+test('review state exposes only current rendered preview metadata and an opaque media handle', (t) => {
+  const fixture = makeReviewProject(t);
+  registerCurrentPreview(fixture, { kind: 'excerpt', fromSec: 31.5, toSec: 57.5 });
+
+  const state = loadReviewState({ root: ROOT, projectDir: fixture.projectDir });
+
+  assert.deepEqual(state.currentPreview, {
+    url: '/media/current-preview',
+    kind: 'excerpt',
+    fromSec: 31.5,
+    toSec: 57.5,
+    width: 960,
+    height: 540,
+    fps: 25,
+    generatedAt: '2026-08-23T17:05:00.000Z',
+  });
+  assert.doesNotMatch(JSON.stringify(state.currentPreview), /previews|\.mp4|sha256|\/Users\/|C:\\Users\\/);
 });
 
 test('review state timing diagnostics use normalized word timestamps', (t) => {

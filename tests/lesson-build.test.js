@@ -12,6 +12,7 @@ const {
   getLessonAction,
   prepareLessonRender,
 } = require('../scripts/lesson/workflow');
+const { prepareLessonPreview } = require('../scripts/lesson/preview');
 const { createOrOpenProject } = require('../scripts/project/workspace');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -208,6 +209,97 @@ test('approved brief prepares ReelScenes with frozen geometry', () => {
     sourcePath: '/videos/source.mp4',
     sourceAlias: 'source.mp4',
   });
+});
+
+test('draft preview prepares the same ReelScenes contract and frame-snapped range', () => {
+  const draft = makeBrief('draft');
+  draft.music = {
+    file: '/videos/music/track.mp3',
+    gainDb: -22,
+    startSec: 0,
+  };
+  const approved = structuredClone(draft);
+  approved.status = 'approved';
+  const theme = { colors: { bg: '#16120E' } };
+
+  const preview = prepareLessonPreview({
+    brief: draft,
+    theme,
+    sourceVideo: '/videos/source.mp4',
+    fromSec: 1.011,
+    toSec: 4.019,
+  });
+  const final = prepareLessonRender({
+    brief: approved,
+    theme,
+    sourceVideo: '/videos/source.mp4',
+  });
+  const { draftPreview, ...previewProps } = preview.props;
+
+  assert.equal(preview.composition, 'ReelScenes');
+  assert.equal(draftPreview, true);
+  assert.deepEqual(previewProps, final.props);
+  assert.equal(preview.music.sourcePath, final.music.sourcePath);
+  assert.deepEqual(preview.music.mixArgs, [
+    '--gain', '-22',
+    '--start', '1',
+    '--rate', '1',
+    '--fade-in', '0',
+    '--fade-out', '0',
+    '--duration', '3.033333333333333',
+    '--threshold', '0.0398',
+    '--ratio', '8',
+    '--attack', '5',
+    '--release', '300',
+  ]);
+  assert.deepEqual(preview.range, {
+    kind: 'excerpt',
+    fromSec: 1,
+    toSec: 4.033333333333333,
+    fromFrame: 30,
+    toFrameExclusive: 121,
+  });
+  assert.deepEqual(preview.previewMedia, {
+    brief: draft,
+    sourcePath: '/videos/source.mp4',
+    sourceAlias: 'source.mp4',
+  });
+});
+
+test('draft preview rejects approved, mismatched source, and incomplete or invalid ranges', () => {
+  assert.throws(
+    () => prepareLessonPreview({
+      brief: makeBrief('approved'),
+      theme: 'lesson-neutral',
+      sourceVideo: '/videos/source.mp4',
+    }),
+    /draft/,
+  );
+  assert.throws(
+    () => prepareLessonPreview({
+      brief: makeBrief('draft'),
+      theme: 'lesson-neutral',
+      sourceVideo: '/videos/another.mp4',
+    }),
+    /другого исходника/,
+  );
+  for (const range of [
+    { fromSec: 1 },
+    { toSec: 2 },
+    { fromSec: -1, toSec: 2 },
+    { fromSec: 3, toSec: 2 },
+    { fromSec: 0, toSec: 11 },
+  ]) {
+    assert.throws(
+      () => prepareLessonPreview({
+        brief: makeBrief('draft'),
+        theme: 'lesson-neutral',
+        sourceVideo: '/videos/source.mp4',
+        ...range,
+      }),
+      /диапазон|границ|длительност/,
+    );
+  }
 });
 
 test('approved lesson keeps music out of Remotion and prepares post-render ducking', () => {
