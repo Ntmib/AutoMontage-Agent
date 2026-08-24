@@ -11,8 +11,8 @@
 
 - Стандартный монтаж под ключ теперь явно использует текущую подписку Claude Code/Codex и
   локальный faster-whisper: агент не запрашивает provider API-ключи для draft, preview, Review,
-  approval, render или QA. OpenAI API остаётся только отдельным opt-in для явно заказанной
-  генерации изображений.
+  approval, render или QA. OpenAI API остаётся только отдельным подтверждаемым opt-in для явно
+  заказанной генерации изображений, когда текущая модель не умеет выполнить её сама.
 - Команда `automontage master` выпускает immutable source/transcript revision из frame-aligned
   keep-ranges, сохраняет оригинал и пересчитывает таймкоды слов без повторного Whisper.
 - Добавлены каталог возможностей семи официальных lesson-сцен и горизонтальный/вертикальный
