@@ -15,7 +15,9 @@ export const CTACard = ({ head = 'ЖМИ НА КНОПКУ', btn = 'ССЫЛКА
   const pulse = 1 + Math.sin(frame / 7) * 0.03;
   // заголовок CTA ужимаем под ширину (uppercase — учитываем в измерении)
   const headFit = fitText({ text: head.toUpperCase(), withinWidth: 680, fontFamily: t.fonts.display, fontWeight: 700 });
-  const headSize = Math.min(64, Math.max(30, headFit.fontSize));
+  const headSize = Math.min(t.ctaHeadSize || 64, Math.max(30, headFit.fontSize));
+  const plain = !!t.plain;
+  const flatShadow = t.textShadow || '0 3px 16px rgba(0,0,0,.8)';
 
   return (
     <div style={{
@@ -25,14 +27,17 @@ export const CTACard = ({ head = 'ЖМИ НА КНОПКУ', btn = 'ССЫЛКА
       <div style={{
         fontFamily: t.fonts.display, fontWeight: 700, textTransform: 'uppercase',
         fontSize: headSize, color: t.colors.milk,
-        textShadow: t.motion.glow ? glowText(t, t.colors.accent) : '0 4px 18px rgba(61,46,36,.5)',
+        textShadow: plain ? flatShadow : (t.motion.glow ? glowText(t, t.colors.accent) : '0 4px 18px rgba(61,46,36,.5)'),
       }}>{head}</div>
       <div style={{
         marginTop: 22, display: 'inline-block', transform: `scale(${pulse})`,
-        fontFamily: t.fonts.mono, fontWeight: 700, fontSize: 34, letterSpacing: 2,
-        color: t.colors.milk, background: t.colors.accent,
-        padding: '22px 54px', borderRadius: 18, textTransform: 'uppercase',
-        boxShadow: t.motion.glow ? t.cardShadow : '0 16px 40px rgba(184,92,62,.5)',
+        fontFamily: t.fonts.mono, fontWeight: 700,
+        fontSize: t.ctaBtnSize || 34, letterSpacing: 2,
+        color: t.colors.milk, background: plain ? 'transparent' : t.colors.accent,
+        padding: plain ? 0 : '22px 54px',
+        borderRadius: plain ? 0 : 18, textTransform: 'uppercase',
+        boxShadow: plain ? 'none' : (t.motion.glow ? t.cardShadow : '0 16px 40px rgba(184,92,62,.5)'),
+        textShadow: plain ? flatShadow : undefined,
       }}>{btn}</div>
     </div>
   );
