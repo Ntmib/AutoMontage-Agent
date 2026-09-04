@@ -2,7 +2,7 @@
 
 Эта инструкция описывает полный путь от черновика монтажного листа до готового MP4 через
 локальное окно **«Проверка монтажа»**. Она актуальна для
-[AutoMontage-Agent v1.4.0](https://github.com/Ntmib/AutoMontage-Agent/releases/tag/v1.4.0).
+[AutoMontage-Agent v1.4.0](https://github.com/mcdenil-skills/AutoMontage-Agent/releases/tag/v1.4.0).
 
 Review Workbench - не второй видеоредактор и не Remotion Studio. Это контрольный стол перед
 рендером: здесь сверяют исходное видео, речь и сцены, двигают только границы соседних сцен,

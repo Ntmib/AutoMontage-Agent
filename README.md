@@ -52,7 +52,7 @@ automontage doctor      # или: node scripts/doctor.js
 Движок кросс-платформенный. После установки появляется команда `automontage`, доступная **из любой папки**.
 
 ```bash
-git clone https://github.com/Ntmib/AutoMontage-Agent.git
+git clone https://github.com/mcdenil-skills/AutoMontage-Agent.git
 cd AutoMontage-Agent
 npm ci                 # точные Node-зависимости из package-lock.json
 pip install -r requirements.txt   # Python: faster-whisper, opencv, numpy
@@ -64,7 +64,7 @@ npm install -g .       # ставит глобальную команду automo
 Этот короткий маршрут не требует API-ключей или Whisper-модели:
 
 ```bash
-git clone https://github.com/Ntmib/AutoMontage-Agent.git
+git clone https://github.com/mcdenil-skills/AutoMontage-Agent.git
 cd AutoMontage-Agent
 npm ci
 npm run doctor
@@ -488,7 +488,7 @@ Remotion (анимация плашек кодом), faster-whisper (распо�
 ### Версии и история изменений
 
 Текущая версия: **v1.4.0**
-([GitHub Release](https://github.com/Ntmib/AutoMontage-Agent/releases/tag/v1.4.0)). Источник номера
+([GitHub Release](https://github.com/mcdenil-skills/AutoMontage-Agent/releases/tag/v1.4.0)). Источник номера
 в репозитории – `version` в `package.json` и корневая запись в `package-lock.json`; состав
 релиза описан в [CHANGELOG.md](CHANGELOG.md).
 
