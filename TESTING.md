@@ -365,7 +365,8 @@ node scripts/benchmark-preview.js \
 обязательной проверкой checksum и запускает только переносимые probe/import/recovery/Save/
 approval/final-publication tests; полный POSIX-контракт остаётся в Linux `npm test`.
 Release-checker проверяет committed current tree без base и работает с shallow checkout.
-Отдельный job Gitleaks сканирует полную Git-историю на секреты.
+Отдельный job устанавливает закреплённый Gitleaks CLI и сканирует полную Git-историю на секреты
+без отдельной лицензии GitHub App для организации.
 Полные рендеры в CI не запускаются: им нужны тяжёлые медиа, ffmpeg/Whisper-модели и
 иногда приватные темы. Их проверяют локально по разделам выше.
 
