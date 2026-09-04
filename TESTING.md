@@ -123,7 +123,7 @@ path, canonical media reference и SHA-256.
 Для золотого пути свежего клона отдельно проверь:
 
 ```bash
-git clone https://github.com/Ntmib/AutoMontage-Agent.git
+git clone https://github.com/mcdenil-skills/AutoMontage-Agent.git
 cd AutoMontage-Agent
 npm ci
 npm run doctor

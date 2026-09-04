@@ -5,11 +5,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Ntmib/AutoMontage-Agent.git"
+    "url": "git+https://github.com/mcdenil-skills/AutoMontage-Agent.git"
   },
-  "homepage": "https://github.com/Ntmib/AutoMontage-Agent#readme",
+  "homepage": "https://github.com/mcdenil-skills/AutoMontage-Agent#readme",
   "bugs": {
-    "url": "https://github.com/Ntmib/AutoMontage-Agent/issues"
+    "url": "https://github.com/mcdenil-skills/AutoMontage-Agent/issues"
   },
   "bin": {
     "automontage": "scripts/cli.js"

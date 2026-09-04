@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Do not publish a working exploit or secret in a public issue. Use the repository's
-[private security advisory form](https://github.com/Ntmib/AutoMontage-Agent/security/advisories/new)
+[private security advisory form](https://github.com/mcdenil-skills/AutoMontage-Agent/security/advisories/new)
 and include the affected command, input shape, impact, and a minimal reproduction.
 
 ## Supported release
